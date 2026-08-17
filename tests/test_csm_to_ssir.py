@@ -44,6 +44,22 @@ class CSMToSSIRTests(unittest.TestCase):
         }
         self.assertIn("lowerAlpha", marker_types)
 
+    def test_additional_product_standard_examples_convert(self) -> None:
+        examples = {
+            "Q_YYJD_001-2024.csm.md": {"tables": 1, "figures": 1, "formulas": 0, "status": "partial"},
+            "Q_HKT_16016-2026.csm.md": {"tables": 1, "figures": 0, "formulas": 1, "status": "complete"},
+            "T_ZZB_1064-2019.csm.md": {"tables": 1, "figures": 0, "formulas": 0, "status": "partial"},
+        }
+        for file_name, expected in examples.items():
+            with self.subTest(file_name=file_name):
+                ssir, report = parse_csm_with_report(ROOT / "examples/csm" / file_name)
+                self.assertEqual(ssir["documentType"], "standard")
+                self.assertEqual(len(ssir["tables"]), expected["tables"])
+                self.assertEqual(len(ssir["figures"]), expected["figures"])
+                self.assertEqual(len(ssir["formulas"]), expected["formulas"])
+                self.assertEqual(report.overall_status, expected["status"])
+                self.assertEqual(ssir["qualityAssessments"][0]["overallStatus"], expected["status"])
+
     def test_template_formula_and_turtle_export(self) -> None:
         ssir = parse_csm(ROOT / "examples/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md")
         self.assertEqual(len(ssir["formulas"]), 1)

@@ -177,6 +177,9 @@ M1 初始 Golden 输入集如下：
 |------|----------|
 | `examples/csm/Q_PMRZ_9-2024.csm.md` | 前言、术语、图占位、表格、字母列项、产品标准质量提示 |
 | `examples/csm/Q_TQDZ_004-2026.csm.md` | 目次、参数/试验方法对应表、多类列表、检验规则、标签和随行文件、产品标准质量提示 |
+| `examples/csm/Q_YYJD_001-2024.csm.md` | 企业产品标准、参数表、图占位、ASCII 标准号提示和完整的出厂检验链路 |
+| `examples/csm/Q_HKT_16016-2026.csm.md` | 力矩电动机、技术参数表、公式、试验方法、检验规则和包装 |
+| `examples/csm/T_ZZB_1064-2019.csm.md` | 团体产品标准、效率表、抽样检验质量提示和规范性附录 |
 | `examples/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md` | CSM 输入契约、公式、附录和参考文献；仅做结构测试 |
 
 验收门槛：
