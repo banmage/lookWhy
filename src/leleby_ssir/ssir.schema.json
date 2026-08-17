@@ -1,0 +1,1711 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://leleby.io/schemas/ssir/v0.3.schema.json",
+  "title": "leleby SSIR Schema v0.3",
+  "description": "JSON Schema for leleby SSIR (Standard Structured Information Representation) v0.4 data model",
+  "type": "object",
+  "allOf": [
+    {
+      "$ref": "#/definitions/SSIRDocument"
+    }
+  ],
+  "definitions": {
+    "SSIRDocument": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ssir:[A-Za-z0-9._:/-]+$",
+          "description": "SSIR文档唯一标识符"
+        },
+        "ssirVersion": {
+          "type": "string",
+          "enum": [
+            "0.3",
+            "0.4"
+          ],
+          "description": "SSIR数据模型版本"
+        },
+        "documentType": {
+          "$ref": "#/definitions/DocumentType"
+        },
+        "metadata": {
+          "$ref": "#/definitions/DocumentMetadata"
+        },
+        "sourceFiles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SourceFile"
+          },
+          "minItems": 1
+        },
+        "canonicalText": {
+          "$ref": "#/definitions/CanonicalText"
+        },
+        "structuralRoot": {
+          "$ref": "#/definitions/StructuralNode"
+        },
+        "tables": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Table"
+          },
+          "description": "表格对象注册表"
+        },
+        "figures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Figure"
+          },
+          "description": "图对象注册表"
+        },
+        "formulas": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Formula"
+          },
+          "description": "公式对象注册表"
+        },
+        "unknownContents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/UnknownContent"
+          },
+          "description": "未知内容对象注册表"
+        },
+        "references": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Reference"
+          }
+        },
+        "documentRelationships": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DocumentRelationship"
+          }
+        },
+        "entityMentions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/EntityMention"
+          }
+        },
+        "relationMentions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RelationMention"
+          }
+        },
+        "processingRuns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ProcessingRun"
+          },
+          "minItems": 1
+        },
+        "qualityAssessments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/QualityAssessment"
+          }
+        },
+        "preservationLevel": {
+          "$ref": "#/definitions/PreservationLevel"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "ssirVersion",
+        "documentType",
+        "metadata",
+        "sourceFiles",
+        "structuralRoot",
+        "processingRuns",
+        "createdAt"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "documentType": {
+                "const": "standard"
+              }
+            },
+            "required": [
+              "documentType"
+            ]
+          },
+          "then": {
+            "properties": {
+              "metadata": {
+                "required": [
+                  "standard"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "DocumentType": {
+      "type": "string",
+      "enum": [
+        "standard",
+        "regulation",
+        "specification",
+        "enterpriseStandard",
+        "contract",
+        "testReport",
+        "other"
+      ]
+    },
+    "DocumentMetadata": {
+      "type": "object",
+      "properties": {
+        "common": {
+          "$ref": "#/definitions/CommonMetadata"
+        },
+        "standard": {
+          "$ref": "#/definitions/StandardMetadata"
+        }
+      },
+      "required": [
+        "common"
+      ],
+      "additionalProperties": false
+    },
+    "CommonMetadata": {
+      "type": "object",
+      "properties": {
+        "documentIdentifier": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "titleEn": {
+          "type": "string"
+        },
+        "language": {
+          "type": "string"
+        },
+        "publicationDate": {
+          "type": "string",
+          "format": "date"
+        },
+        "effectiveDate": {
+          "type": "string",
+          "format": "date"
+        },
+        "issuer": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "documentIdentifier",
+        "title"
+      ],
+      "additionalProperties": false
+    },
+    "StandardMetadata": {
+      "type": "object",
+      "properties": {
+        "standardNumber": {
+          "type": "string"
+        },
+        "chineseTitle": {
+          "type": "string"
+        },
+        "englishTitle": {
+          "type": "string"
+        },
+        "originalTitle": {
+          "type": "string"
+        },
+        "publishingBody": {
+          "type": "string"
+        },
+        "publishingBodyCode": {
+          "type": "string"
+        },
+        "ccs": {
+          "type": "string"
+        },
+        "ics": {
+          "type": "string"
+        },
+        "drafters": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "proposer": {
+          "type": "string"
+        },
+        "mirrorBody": {
+          "type": "string"
+        },
+        "adoption": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "standardNumber"
+      ],
+      "additionalProperties": false
+    },
+    "SourceFile": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^src:[A-Fa-f0-9]{16,}$"
+        },
+        "fileName": {
+          "type": "string"
+        },
+        "storageUri": {
+          "type": "string",
+          "format": "uri"
+        },
+        "fileHash": {
+          "$ref": "#/definitions/FileHash"
+        },
+        "fileSize": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mimeType": {
+          "type": "string"
+        },
+        "pageCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "metadata": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "fileName",
+        "fileHash",
+        "mimeType"
+      ],
+      "additionalProperties": false
+    },
+    "FileHash": {
+      "type": "object",
+      "properties": {
+        "algorithm": {
+          "type": "string",
+          "enum": [
+            "SHA-256",
+            "SHA-512",
+            "MD5",
+            "SHA-1"
+          ]
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "algorithm",
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    "CanonicalText": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ssir:[A-Za-z0-9._:/-]+/canonical$"
+        },
+        "text": {
+          "type": "string"
+        },
+        "normalizationPolicy": {
+          "$ref": "#/definitions/NormalizationPolicy"
+        },
+        "sourceElementRefs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "NormalizationPolicy": {
+      "type": "string",
+      "enum": [
+        "ssir-canonical-text-v1"
+      ],
+      "description": "SSIR Canonical Text Normalization Algorithm v1: 去除多余空白（保留段落间单个换行）、统一空格、Unicode NFC 规范化"
+    },
+    "NormativeRenderingProfile": {
+      "type": "string",
+      "enum": [
+        "gb-t-1-1-2020",
+        "iso-iec-directives-part-2",
+        "custom"
+      ],
+      "description": "规范性渲染配置文件，用于标识从 SSIR 生成传统文档时使用的规范化规则"
+    },
+    "StructuralNode": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ssir:[A-Za-z0-9._:/-]+/[A-Za-z0-9._-]+$"
+        },
+        "logicalId": {
+          "type": "string"
+        },
+        "nodeType": {
+          "$ref": "#/definitions/StructuralNodeType"
+        },
+        "level": {
+          "type": "integer"
+        },
+        "number": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "children": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/StructuralNode"
+          }
+        },
+        "contentElements": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ContentElement"
+          }
+        },
+        "sourceAnchors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SourceAnchor"
+          }
+        },
+        "sortOrder": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "logicalId",
+        "nodeType",
+        "sortOrder"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "nodeType": {
+                "not": {
+                  "const": "document"
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "sourceAnchors": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "StructuralNodeType": {
+      "type": "string",
+      "enum": [
+        "document",
+        "documentBlock",
+        "section",
+        "clause",
+        "subClause",
+        "item",
+        "subItem",
+        "annex",
+        "annexSection"
+      ]
+    },
+    "ContentElement": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ssir:[A-Za-z0-9._:/-]+/content/[A-Za-z0-9_-]+$"
+        },
+        "presentationType": {
+          "$ref": "#/definitions/PresentationType"
+        },
+        "parentNodeId": {
+          "type": "string",
+          "pattern": "^ssir:[A-Za-z0-9._:/-]+/[A-Za-z0-9._-]+$"
+        },
+        "semanticTypes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SemanticType"
+          }
+        },
+        "normativeStatus": {
+          "$ref": "#/definitions/NormativeStatus"
+        },
+        "sortOrder": {
+          "type": "integer"
+        },
+        "sourceAnchors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SourceAnchor"
+          },
+          "minItems": 1
+        },
+        "textContent": {
+          "type": "string"
+        },
+        "richText": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RichTextSpan"
+          }
+        },
+        "listItems": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ListItem"
+          }
+        },
+        "tableRef": {
+          "type": "string",
+          "pattern": "^ssir:[A-Za-z0-9._:/-]+/table/[A-Za-z0-9_-]+$"
+        },
+        "figureRef": {
+          "type": "string",
+          "pattern": "^ssir:[A-Za-z0-9._:/-]+/figure/[A-Za-z0-9_-]+$"
+        },
+        "formulaRef": {
+          "type": "string",
+          "pattern": "^ssir:[A-Za-z0-9._:/-]+/formula/[A-Za-z0-9_-]+$"
+        },
+        "unknownRef": {
+          "type": "string",
+          "pattern": "^ssir:[A-Za-z0-9._:/-]+/unknown/[A-Za-z0-9_-]+$"
+        }
+      },
+      "required": [
+        "id",
+        "presentationType",
+        "parentNodeId",
+        "sortOrder",
+        "sourceAnchors"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "presentationType": {
+                "const": "table"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "tableRef"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "presentationType": {
+                "const": "figure"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "figureRef"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "presentationType": {
+                "const": "formula"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "formulaRef"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "presentationType": {
+                "const": "other"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "unknownRef"
+            ]
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "PresentationType": {
+      "type": "string",
+      "enum": [
+        "paragraph",
+        "heading",
+        "list",
+        "table",
+        "figure",
+        "formula",
+        "note",
+        "example",
+        "warning",
+        "quote",
+        "footnote",
+        "other"
+      ]
+    },
+    "SemanticType": {
+      "type": "string",
+      "enum": [
+        "scope",
+        "normativeReference",
+        "termDefinition",
+        "symbolDefinition",
+        "classification",
+        "requirement",
+        "testMethod",
+        "inspectionRule",
+        "markingRequirement",
+        "packagingTransportStorage",
+        "example",
+        "warning",
+        "note",
+        "appendixExplanation",
+        "bibliographicReference"
+      ]
+    },
+    "NormativeStatus": {
+      "type": "string",
+      "enum": [
+        "normative",
+        "informative",
+        "unknown",
+        "notApplicable"
+      ]
+    },
+    "RichTextSpan": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "bold": {
+          "type": "boolean"
+        },
+        "italic": {
+          "type": "boolean"
+        },
+        "subscript": {
+          "type": "boolean"
+        },
+        "superscript": {
+          "type": "boolean"
+        },
+        "underline": {
+          "type": "boolean"
+        },
+        "style": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "ListItem": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "text": {
+          "type": "string"
+        },
+        "richText": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RichTextSpan"
+          }
+        },
+        "marker": {
+          "type": "string"
+        },
+        "markerType": {
+          "$ref": "#/definitions/MarkerType"
+        },
+        "subItems": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ListItem"
+          }
+        },
+        "sourceAnchor": {
+          "$ref": "#/definitions/SourceAnchor"
+        },
+        "sortOrder": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "sortOrder"
+      ],
+      "additionalProperties": false
+    },
+    "MarkerType": {
+      "type": "string",
+      "enum": [
+        "lowerAlpha",
+        "upperAlpha",
+        "numeric",
+        "roman",
+        "bullet",
+        "dash",
+        "other"
+      ]
+    },
+    "Table": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ssir:[A-Za-z0-9._:/-]+/table/[A-Za-z0-9_-]+$"
+        },
+        "number": {
+          "type": "string"
+        },
+        "caption": {
+          "type": "string"
+        },
+        "rowCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "colCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/TableRow"
+          }
+        },
+        "tableNote": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sourceAnchors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SourceAnchor"
+          },
+          "minItems": 1
+        },
+        "crossPage": {
+          "type": "boolean"
+        },
+        "preservationStatus": {
+          "$ref": "#/definitions/PreservationStatus"
+        }
+      },
+      "required": [
+        "id",
+        "rowCount",
+        "colCount",
+        "rows",
+        "sourceAnchors"
+      ],
+      "additionalProperties": false
+    },
+    "TableRow": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "rowIndex": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cells": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/TableCell"
+          }
+        },
+        "isHeader": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "rowIndex",
+        "cells"
+      ],
+      "additionalProperties": false
+    },
+    "TableCell": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "rowIndex": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "colIndex": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "text": {
+          "type": "string"
+        },
+        "richText": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RichTextSpan"
+          }
+        },
+        "colspan": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1
+        },
+        "rowspan": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1
+        },
+        "isHeader": {
+          "type": "boolean"
+        },
+        "sourceAnchor": {
+          "$ref": "#/definitions/SourceAnchor"
+        }
+      },
+      "required": [
+        "id",
+        "rowIndex",
+        "colIndex"
+      ],
+      "additionalProperties": false
+    },
+    "Figure": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ssir:[A-Za-z0-9._:/-]+/figure/[A-Za-z0-9_-]+$"
+        },
+        "number": {
+          "type": "string"
+        },
+        "caption": {
+          "type": "string"
+        },
+        "assetRef": {
+          "type": "string"
+        },
+        "altText": {
+          "type": "string"
+        },
+        "sourceAnchors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SourceAnchor"
+          },
+          "minItems": 1
+        },
+        "preservationStatus": {
+          "$ref": "#/definitions/PreservationStatus"
+        }
+      },
+      "required": [
+        "id",
+        "sourceAnchors"
+      ],
+      "additionalProperties": false
+    },
+    "Formula": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ssir:[A-Za-z0-9._:/-]+/formula/[A-Za-z0-9_-]+$"
+        },
+        "number": {
+          "type": "string"
+        },
+        "rawText": {
+          "type": "string"
+        },
+        "latex": {
+          "type": "string"
+        },
+        "sourceAnchors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SourceAnchor"
+          },
+          "minItems": 1
+        },
+        "preservationStatus": {
+          "$ref": "#/definitions/PreservationStatus"
+        }
+      },
+      "required": [
+        "id",
+        "rawText",
+        "sourceAnchors"
+      ],
+      "additionalProperties": false
+    },
+    "UnknownContent": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ssir:[A-Za-z0-9._:/-]+/unknown/[A-Za-z0-9_-]+$"
+        },
+        "rawContent": {
+          "type": "string"
+        },
+        "contentTypeHint": {
+          "type": "string"
+        },
+        "sourceAnchors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SourceAnchor"
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "id",
+        "rawContent",
+        "sourceAnchors"
+      ],
+      "additionalProperties": false
+    },
+    "TextSpan": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ssir:[A-Za-z0-9._:/-]+/span/[A-Za-z0-9_-]+$"
+        },
+        "canonicalTextId": {
+          "type": "string",
+          "pattern": "^ssir:[A-Za-z0-9._:/-]+/canonical$"
+        },
+        "startChar": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "endChar": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "text": {
+          "type": "string"
+        },
+        "sourceAnchor": {
+          "$ref": "#/definitions/SourceAnchor"
+        }
+      },
+      "$comment": "Note: startChar < endChar MUST be enforced by Semantic Validator (JSON Schema cannot express cross-field comparison)",
+      "required": [
+        "id",
+        "canonicalTextId",
+        "startChar",
+        "endChar",
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "SourceAnchor": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ssir:[A-Za-z0-9._:/-]+/anchor/[A-Za-z0-9_-]+$"
+        },
+        "sourceFileId": {
+          "type": "string",
+          "pattern": "^src:[A-Fa-f0-9]{16,}$"
+        },
+        "anchorType": {
+          "$ref": "#/definitions/AnchorType"
+        },
+        "pdfPageIndex": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "documentPageLabel": {
+          "type": "string"
+        },
+        "bbox": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 4,
+          "maxItems": 4,
+          "description": "[x1, y1, x2, y2], PDF Point coordinate system, top-left origin"
+        },
+        "textSpanRef": {
+          "type": "string",
+          "pattern": "^ssir:[A-Za-z0-9._:/-]+/span/[A-Za-z0-9_-]+$"
+        },
+        "textQuote": {
+          "type": "string"
+        },
+        "sourceBlockId": {
+          "type": "string"
+        },
+        "markdownStartLine": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "markdownStartColumn": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "markdownEndLine": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "markdownEndColumn": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "markdownNodePath": {
+          "type": "string"
+        },
+        "assetRef": {
+          "type": "string"
+        },
+        "extractionRegion": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sourceFileId",
+        "anchorType"
+      ],
+      "$comment": "Conditional constraints based on anchorType MUST be enforced by Semantic Validator (not expressible in JSON Schema Draft-07)",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "anchorType": {
+                "const": "bbox"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "pdfPageIndex",
+              "bbox"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "anchorType": {
+                "const": "textSpan"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "textSpanRef"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "anchorType": {
+                "const": "block"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "sourceBlockId"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "anchorType": {
+                "const": "tableCell"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "sourceBlockId",
+              "pdfPageIndex"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "anchorType": {
+                "const": "page"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "pdfPageIndex"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "anchorType": {
+                "const": "markdown"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "markdownStartLine",
+              "markdownEndLine"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "anchorType": {
+                "const": "figureRegion"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "pdfPageIndex",
+              "bbox"
+            ]
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "AnchorType": {
+      "type": "string",
+      "enum": [
+        "page",
+        "bbox",
+        "textSpan",
+        "block",
+        "tableCell",
+        "figureRegion",
+        "markdown"
+      ]
+    },
+    "EntityMention": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ssir:[A-Za-z0-9._:/-]+/mention/[A-Za-z0-9_-]+$"
+        },
+        "surfaceForm": {
+          "type": "string"
+        },
+        "normalizedForm": {
+          "type": "string"
+        },
+        "mentionType": {
+          "$ref": "#/definitions/EntityMentionType"
+        },
+        "parentNodeId": {
+          "type": "string",
+          "pattern": "^ssir:[A-Za-z0-9._:/-]+/[A-Za-z0-9._-]+$"
+        },
+        "sourceElementId": {
+          "type": "string",
+          "pattern": "^ssir:[A-Za-z0-9._:/-]+/content/[A-Za-z0-9_-]+$"
+        },
+        "textSpan": {
+          "$ref": "#/definitions/TextSpan"
+        },
+        "context": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "candidateMappings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CandidateMapping"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "surfaceForm",
+        "mentionType",
+        "parentNodeId",
+        "textSpan"
+      ],
+      "additionalProperties": false
+    },
+    "EntityMentionType": {
+      "type": "string",
+      "enum": [
+        "documentConcept",
+        "product",
+        "material",
+        "organization",
+        "standard",
+        "regulation",
+        "process",
+        "equipment",
+        "parameter",
+        "unit",
+        "value",
+        "time",
+        "location",
+        "identifier",
+        "other"
+      ]
+    },
+    "CandidateMapping": {
+      "type": "object",
+      "properties": {
+        "ontology": {
+          "type": "string"
+        },
+        "conceptId": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "candidate",
+            "confirmed",
+            "rejected"
+          ]
+        }
+      },
+      "required": [
+        "ontology",
+        "conceptId"
+      ],
+      "additionalProperties": false
+    },
+    "RelationMention": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ssir:[A-Za-z0-9._:/-]+/relation/[A-Za-z0-9_-]+$"
+        },
+        "relationType": {
+          "$ref": "#/definitions/RelationMentionType"
+        },
+        "sourceId": {
+          "type": "string"
+        },
+        "targetId": {
+          "type": "string"
+        },
+        "targetMentionText": {
+          "type": "string"
+        },
+        "parentNodeId": {
+          "type": "string",
+          "pattern": "^ssir:[A-Za-z0-9._:/-]+/[A-Za-z0-9._-]+$"
+        },
+        "sourceElementId": {
+          "type": "string",
+          "pattern": "^ssir:[A-Za-z0-9._:/-]+/content/[A-Za-z0-9_-]+$"
+        },
+        "textSpan": {
+          "$ref": "#/definitions/TextSpan"
+        },
+        "evidence": {
+          "type": "string"
+        },
+        "resolutionStatus": {
+          "$ref": "#/definitions/ResolutionStatus"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "$comment": "At least one of targetId or targetMentionText MUST be provided (Semantic Validator)",
+      "required": [
+        "id",
+        "relationType",
+        "sourceId",
+        "parentNodeId",
+        "textSpan"
+      ],
+      "additionalProperties": false
+    },
+    "RelationMentionType": {
+      "type": "string",
+      "enum": [
+        "defines",
+        "hasProperty",
+        "appliesTo",
+        "measures",
+        "requires",
+        "constrains",
+        "equivalentTo"
+      ]
+    },
+    "ResolutionStatus": {
+      "type": "string",
+      "enum": [
+        "resolved",
+        "unresolved",
+        "partiallyResolved"
+      ]
+    },
+    "Reference": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ssir:[A-Za-z0-9._:/-]+/reference/[A-Za-z0-9_-]+$"
+        },
+        "sourceNodeId": {
+          "type": "string",
+          "pattern": "^ssir:[A-Za-z0-9._:/-]+/[A-Za-z0-9._-]+$"
+        },
+        "referenceType": {
+          "$ref": "#/definitions/ReferenceType"
+        },
+        "targetType": {
+          "$ref": "#/definitions/ReferenceTargetType"
+        },
+        "rawTarget": {
+          "type": "string"
+        },
+        "resolvedDocumentId": {
+          "type": "string"
+        },
+        "resolvedVersion": {
+          "type": "string"
+        },
+        "resolvedClause": {
+          "type": "string"
+        },
+        "citedText": {
+          "type": "string"
+        },
+        "textSpan": {
+          "$ref": "#/definitions/TextSpan"
+        },
+        "resolutionStatus": {
+          "$ref": "#/definitions/ResolutionStatus"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": [
+        "id",
+        "sourceNodeId",
+        "referenceType",
+        "targetType",
+        "rawTarget",
+        "textSpan"
+      ],
+      "additionalProperties": false
+    },
+    "ReferenceType": {
+      "type": "string",
+      "enum": [
+        "normative",
+        "informative",
+        "mandatory",
+        "conditional"
+      ]
+    },
+    "ReferenceTargetType": {
+      "type": "string",
+      "enum": [
+        "internalClause",
+        "internalAnnex",
+        "internalTable",
+        "internalFigure",
+        "externalStandard",
+        "externalRegulation",
+        "externalDocument",
+        "externalTechnicalSpecification"
+      ]
+    },
+    "DocumentRelationship": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ssir:[A-Za-z0-9._:/-]+/docrel/[A-Za-z0-9_-]+$"
+        },
+        "sourceDocumentId": {
+          "type": "string",
+          "pattern": "^ssir:[A-Za-z0-9._:/-]+$"
+        },
+        "relationType": {
+          "$ref": "#/definitions/DocumentRelationshipType"
+        },
+        "targetDocumentId": {
+          "type": "string"
+        },
+        "targetVersion": {
+          "type": "string"
+        },
+        "validity": {
+          "type": "string"
+        },
+        "sourceAnchor": {
+          "$ref": "#/definitions/SourceAnchor"
+        },
+        "evidence": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": [
+        "id",
+        "sourceDocumentId",
+        "relationType",
+        "targetDocumentId"
+      ],
+      "additionalProperties": false
+    },
+    "DocumentRelationshipType": {
+      "type": "string",
+      "enum": [
+        "replaces",
+        "replacedBy",
+        "amends",
+        "amendedBy",
+        "supplements",
+        "supplementedBy",
+        "equivalentTo",
+        "adopts",
+        "adoptedBy",
+        "references",
+        "referencedBy"
+      ]
+    },
+    "ProcessingRun": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ssir:processing/run/[0-9]{8}-[0-9]+$"
+        },
+        "sourceFileId": {
+          "type": "string",
+          "pattern": "^src:[A-Fa-f0-9]{16,}$"
+        },
+        "runType": {
+          "$ref": "#/definitions/RunType"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "toolVersion": {
+          "type": "string"
+        },
+        "ocrUsed": {
+          "type": "boolean"
+        },
+        "ocrEngine": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "modelVersion": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "configuration": {
+          "type": "object"
+        },
+        "durationSeconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "outputSummary": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "sourceFileId",
+        "runType",
+        "tool",
+        "toolVersion",
+        "timestamp"
+      ],
+      "additionalProperties": false
+    },
+    "RunType": {
+      "type": "string",
+      "enum": [
+        "extraction",
+        "classification",
+        "entityRecognition",
+        "relationExtraction",
+        "referenceResolution",
+        "humanReview",
+        "other"
+      ]
+    },
+    "QualityAssessment": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ssir:[A-Za-z0-9._:/-]+/qa/[A-Za-z0-9_-]+$"
+        },
+        "documentId": {
+          "type": "string",
+          "pattern": "^ssir:[A-Za-z0-9._:/-]+$"
+        },
+        "runId": {
+          "type": "string",
+          "pattern": "^ssir:processing/run/[0-9]{8}-[0-9]+$"
+        },
+        "renderingProfile": {
+          "$ref": "#/definitions/NormativeRenderingProfile"
+        },
+        "overallStatus": {
+          "$ref": "#/definitions/OverallStatus"
+        },
+        "structureConfidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "tableConfidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "figureConfidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "formulaConfidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "ocrConfidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "entityConfidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "relationConfidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "referenceConfidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "missingPages": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "unresolvedTables": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "unresolvedFigures": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "unresolvedFormulas": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "unresolvedReferences": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "humanReviewStatus": {
+          "$ref": "#/definitions/HumanReviewStatus"
+        },
+        "comments": {
+          "type": "string"
+        },
+        "assessedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "documentId",
+        "overallStatus",
+        "assessedAt"
+      ],
+      "additionalProperties": false
+    },
+    "OverallStatus": {
+      "type": "string",
+      "enum": [
+        "complete",
+        "partial",
+        "extractionFailed",
+        "requiresReview",
+        "approved",
+        "rejected"
+      ]
+    },
+    "HumanReviewStatus": {
+      "type": "string",
+      "enum": [
+        "unreviewed",
+        "machineReviewed",
+        "humanReviewed",
+        "approved",
+        "rejected"
+      ]
+    },
+    "PreservationLevel": {
+      "type": "string",
+      "enum": [
+        "Level0",
+        "Level1",
+        "Level2",
+        "Level3",
+        "Level4"
+      ]
+    },
+    "PreservationStatus": {
+      "type": "string",
+      "enum": [
+        "preserved",
+        "partiallyPreserved",
+        "notPreserved"
+      ]
+    }
+  }
+}
