@@ -383,6 +383,8 @@ class SSIRBuilder:
         }
         if block.directive and block.directive.attrs.get("type-hint"):
             unknown["contentTypeHint"] = block.directive.attrs["type-hint"]
+        elif block.data.get("type_hint"):
+            unknown["contentTypeHint"] = block.data["type_hint"]
         return unknown
 
     @staticmethod
@@ -394,17 +396,7 @@ class SSIRBuilder:
         return block.text
 
     def _quality_assessment(self, state: _BuilderState, run_id: str) -> dict[str, Any]:
-        notices = state.document.metadata.get("extensions", {}).get("quality-notices", [])
         comments: list[str] = list(state.document.warnings)
-        for notice in notices if isinstance(notices, list) else []:
-            if isinstance(notice, dict):
-                comments.append(
-                    "[{code}/{severity}] {message}".format(
-                        code=notice.get("code", "CSM"),
-                        severity=notice.get("severity", "warning"),
-                        message=notice.get("message", ""),
-                    )
-                )
         if state.unresolved_figures:
             comments.append("Missing figure assets: " + ", ".join(state.unresolved_figures))
         status = "partial" if comments else "complete"

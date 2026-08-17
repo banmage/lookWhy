@@ -7,7 +7,7 @@ import unittest
 
 from leleby_ssir.exporters import json_bytes, turtle_text
 from leleby_ssir.parser import CSMError, CSMParser
-from leleby_ssir.service import parse_csm
+from leleby_ssir.service import parse_csm, parse_csm_with_report
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -78,9 +78,112 @@ class CSMToSSIRTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "invalid.md"
             path.write_text(invalid, encoding="utf-8")
+            ssir, report = parse_csm_with_report(path)
             with self.assertRaises(CSMError) as raised:
-                CSMParser().read(path)
+                CSMParser(strict=True).read(path)
+        self.assertEqual(len(ssir["unknownContents"]), 1)
+        self.assertTrue(any("unsupported ssir directive" in issue.message for issue in report.issues))
         self.assertIn("unsupported ssir directive", str(raised.exception))
+
+    def test_recoverable_metadata_and_title_issues_convert_with_report(self) -> None:
+        csm = '''---
+document-type: standard
+---
+
+# 可恢复输入
+
+## 1 范围
+
+本文件规定测试产品。
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "recoverable.csm.md"
+            path.write_text(csm, encoding="utf-8", newline="\r\n")
+            ssir, report = parse_csm_with_report(path)
+            with self.assertRaises(CSMError):
+                parse_csm(path, strict=True)
+        self.assertEqual(ssir["metadata"]["common"]["title"], "可恢复输入")
+        self.assertEqual(report.overall_status, "partial")
+        codes = {issue.code for issue in report.issues}
+        self.assertIn("CSM-META-005", codes)
+        self.assertIn("CSM-ENC-002", codes)
+        self.assertIn("GB-T-1.1-FOREWORD-001", codes)
+
+    def test_short_table_row_is_padded_and_reported(self) -> None:
+        csm = '''---
+csm-version: "1.0"
+document-type: standard
+document-identifier: "Q/TEST 001—2026"
+standard-number: "Q/TEST 001—2026"
+title: "表格修复"
+language: zh-CN
+source: {mode: user-markdown, provenance: none}
+extensions: {}
+---
+
+# 表格修复
+
+## 前言
+
+本文件按照 GB/T 1.1—2020 起草。
+
+## 1 范围
+
+本文件规定测试产品。
+
+| 项目 | 条件 | 值 |
+|---|---|---|
+| 温度 | 40 |
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "short-table.csm.md"
+            path.write_text(csm, encoding="utf-8")
+            ssir, report = parse_csm_with_report(path)
+        self.assertEqual(ssir["tables"][0]["rows"][1]["cells"][2]["text"], "")
+        self.assertTrue(any(issue.code == "CSM-TABLE-001" and issue.repaired for issue in report.issues))
+
+    def test_product_optional_sections_do_not_block_conversion(self) -> None:
+        csm = '''---
+csm-version: "1.0"
+document-type: standard
+document-identifier: "Q/TEST 002—2026"
+standard-number: "Q/TEST 002—2026"
+title: "最小产品标准"
+language: zh-CN
+source: {mode: user-markdown, provenance: none}
+extensions: {standard-profile: product}
+---
+
+# 最小产品标准
+
+## 前言
+
+本文件按照 GB/T 1.1—2020 起草。
+
+## 1 范围
+
+本文件规定测试产品。
+
+## 4 技术要求
+
+产品额定电压应为 12 V。
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "minimal-product.csm.md"
+            path.write_text(csm, encoding="utf-8")
+            ssir, report = parse_csm_with_report(path)
+        self.assertEqual(ssir["documentType"], "standard")
+        self.assertFalse(any("取样" in issue.message or "检验规则" in issue.message for issue in report.issues))
+
+    def test_unclosed_formula_remains_unacceptable(self) -> None:
+        text = (ROOT / "examples/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md").read_text(encoding="utf-8")
+        invalid = text.replace("$$\nP = U I\n$$", "$$\nP = U I", 1)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "unclosed.csm.md"
+            path.write_text(invalid, encoding="utf-8")
+            with self.assertRaises(CSMError) as raised:
+                parse_csm(path)
+        self.assertIn("unterminated formula block", str(raised.exception))
 
     def test_raw_formula_and_table_merge_are_preserved(self) -> None:
         csm = '''---

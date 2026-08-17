@@ -15,7 +15,7 @@ python3 -m venv .venv
 .venv/bin/pip install -e .
 
 ssir csm validate --input examples/csm/Q_TQDZ_004-2026.csm.md
-ssir csm parse --input examples/csm/Q_TQDZ_004-2026.csm.md --output out/Q_TQDZ_004-2026.ssir.json --format json
+ssir csm parse --input examples/csm/Q_TQDZ_004-2026.csm.md --output out/Q_TQDZ_004-2026.ssir.json --format json --report out/Q_TQDZ_004-2026.conversion-report.json
 ssir csm parse --input examples/csm/Q_TQDZ_004-2026.csm.md --output out/Q_TQDZ_004-2026.ttl --format ttl
 ```
 
@@ -31,4 +31,6 @@ PYTHONPATH=src python3 -m leleby_ssir csm validate --input examples/csm/Q_PMRZ_9
 PYTHONPATH=src python3 -m unittest discover -v
 ```
 
-The parser validates CSM front matter, headings, chapter numbering, SSIR directives, tables, and duplicate IDs. It produces SSIR v0.4 JSON validated against the bundled Draft-07 schema and uses Markdown line/AST SourceAnchors. Product-standard source issues recorded in `extensions.quality-notices` are preserved in `QualityAssessment.comments`.
+The parser defaults to tolerant import: missing machine metadata, BOM/line endings, short table rows, heading/numbering issues, and unknown directives are repaired or preserved without altering normative body text. Each successful parse writes a `.conversion-report.json` file containing every repair and quality issue; `--strict` rejects warnings for CI and Golden data. Non-UTF-8 input, malformed front matter, unclosed fenced blocks, duplicate explicit IDs, unsafe table structures, and invalid generated SSIR remain hard failures.
+
+The bundled Draft-07 SSIR schema represents the standard metadata, document structure, tables/figures/formulas, Markdown source anchors, processing runs, and quality status required by the `standards/` references. GB/T 1.1 and GB/T 20001.10 optional or conditionally applicable components are not treated as import blockers.
