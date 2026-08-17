@@ -1,0 +1,29 @@
+# Python build and test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Local environments and secrets
+.venv/
+venv/
+.env
+.env.*
+
+# Node and editor artifacts
+node_modules/
+.DS_Store
+.idea/
+.vscode/
+
+# Runtime output; frozen fixtures are tracked explicitly
+out/
+artifacts/
+*.log
