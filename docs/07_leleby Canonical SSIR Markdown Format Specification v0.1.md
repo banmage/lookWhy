@@ -2,7 +2,7 @@
 
 > **状态**：Draft | **版本**：1.1 | **日期**：2026-08-17
 >
-> **适用范围**：本规范定义 `Canonical SSIR Markdown`（简称 **CSM**）。CSM 是 `PDF -> MinerU -> CSM -> SSIR` 链路的版本化中间文档，也是用户直接提交给 `CSM -> SSIR` 解析器的输入格式。
+> **适用范围**：本规范定义 `Canonical SSIR Markdown`（简称 **CSM**）。CSM 是 `PDF -> MinerU -> CSM -> SSIR` 链路的版本化中间文档，也是用户直接提交给 `CSM -> SSIR` 解析器的输入格式。用户原始 Markdown 经宽容校验和基础纠错后冻结为 `Std0` CSM；`Std0` 是后续 SSIR 回环验证的唯一输入基线。
 >
 > **规范性参考**：GB/T 1.1-2020，特别是文件要素、章/条/段/列项层次、附录、图、表、数学公式、示例和注的编排规则；产品标准还应符合 GB/T 20001.10-2014。
 
@@ -12,7 +12,7 @@ CSM 的目标是让同一个 `CSMParser` 接受两类输入：
 
 ```text
 PDF -> MinerU -> Extraction IR Normalizer -> CSM -> CSMParser -> SSIR
-用户准备的 CSM -------------------------------> CSMParser -> SSIR
+用户原始 Markdown -> CSM Validator/Normalizer -> Std0 CSM -> CSMParser -> SSIR
 ```
 
 CSM 是 SSIR 的可读、可编辑交换格式，但不是 SSIR JSON 的文本化替代。它必须保留足以构建结构、内容、文本、表格、图、公式、列表、注和引用的信息；无法表达或无法识别的内容必须显式保留，不能静默删除。
@@ -74,6 +74,8 @@ CSM 是 SSIR 的可读、可编辑交换格式，但不是 SSIR JSON 的文本�
 | `--strict` 一致性检查 | CSM 生产端、CI、Golden 数据集 | 将任何警告提升为失败，不生成输出 |
 
 自动修复仅限机器元数据和格式边界，例如移除 BOM、规范化换行、补齐缺少的元数据默认值、为短表格行补空尾单元格、为缺少 ID 的对象生成稳定 ID。导入器绝不自动改写正文、标准编号原文、技术数值、单位、比较符、公式或规范性动词。
+
+完成宽容导入后，系统以修复后的内存 AST 写出 UTF-8/LF 的 `Std0`。`Std0` 的转换报告必须保留原始输入 SHA-256 和每项修复；之后的 `Std0 -> SSIR1 -> Std1 -> SSIR2` 只比较 SSIR1 与 SSIR2，不以未校正的原始 Markdown 作为等价基线。
 
 ## 4. YAML Front Matter
 

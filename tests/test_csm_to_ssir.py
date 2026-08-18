@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 from pathlib import Path
 import tempfile
@@ -7,7 +8,8 @@ import unittest
 
 from leleby_ssir.exporters import json_bytes, turtle_text
 from leleby_ssir.parser import CSMError, CSMParser
-from leleby_ssir.service import parse_csm, parse_csm_with_report
+from leleby_ssir.roundtrip import compare_ssir
+from leleby_ssir.service import normalize_csm, parse_csm, parse_csm_with_report, round_trip_csm
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,6 +62,36 @@ class CSMToSSIRTests(unittest.TestCase):
                 self.assertEqual(report.overall_status, expected["status"])
                 self.assertEqual(ssir["qualityAssessments"][0]["overallStatus"], expected["status"])
 
+    def test_markdown_round_trip_preserves_all_csm_examples(self) -> None:
+        paths = [
+            *sorted((ROOT / "examples/csm").glob("*.csm.md")),
+            ROOT / "examples/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md",
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            for path in paths:
+                with self.subTest(path=path.name):
+                    std1 = Path(directory) / f"{path.stem}.std1.csm.md"
+                    ssir1, ssir2, report = round_trip_csm(path, std1)
+                    self.assertTrue(std1.exists())
+                    self.assertTrue(report.passed, report.to_dict())
+                    self.assertEqual(ssir1["metadata"]["common"], ssir2["metadata"]["common"])
+
+    def test_comparator_reports_critical_normative_and_table_changes(self) -> None:
+        ssir1 = parse_csm(ROOT / "examples/csm/Q_HKT_16016-2026.csm.md")
+        ssir2 = deepcopy(ssir1)
+        ssir2["tables"][0]["rows"][1]["cells"][0]["text"] = "999"
+        content = next(
+            element
+            for node in self._nodes(ssir2["structuralRoot"])
+            for element in node.get("contentElements", [])
+            if element.get("textContent") and "应符合" in element["textContent"]
+        )
+        content["textContent"] = content["textContent"].replace("应符合", "宜符合", 1)
+        report = compare_ssir(ssir1, ssir2)
+        self.assertFalse(report.passed)
+        self.assertIn("C1-normativeWording", report.critical_information_loss)
+        self.assertIn("C8-tableCellContent", report.critical_information_loss)
+
     def test_template_formula_and_turtle_export(self) -> None:
         ssir = parse_csm(ROOT / "examples/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md")
         self.assertEqual(len(ssir["formulas"]), 1)
@@ -70,6 +102,46 @@ class CSMToSSIRTests(unittest.TestCase):
         self.assertIn("a ssir:Table", turtle)
         self.assertIn("a ssir:Figure", turtle)
         self.assertIn("a ssir:Formula", turtle)
+
+    def test_round_trip_preserves_annex_kind_and_identifier(self) -> None:
+        path = ROOT / "examples/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md"
+        with tempfile.TemporaryDirectory() as directory:
+            ssir1, ssir2, report = round_trip_csm(path, Path(directory) / "std1.md")
+        annex1 = next(node for node in self._nodes(ssir1["structuralRoot"]) if node["nodeType"] == "annex")
+        annex2 = next(node for node in self._nodes(ssir2["structuralRoot"]) if node["nodeType"] == "annex")
+        self.assertTrue(report.passed, report.to_dict())
+        self.assertEqual((annex1["number"], annex1["title"]), (annex2["number"], annex2["title"]))
+
+    def test_normalize_writes_std0_without_changing_body_semantics(self) -> None:
+        raw = (
+            b'\xef\xbb\xbf---\r\n'
+            b'document-type: standard\r\n'
+            b'document-identifier: "Q/TEST 003\xe2\x80\x942026"\r\n'
+            b'standard-number: "Q/TEST 003\xe2\x80\x942026"\r\n'
+            b'title: "Std0 \xe5\x9f\xba\xe7\xba\xbf"\r\n'
+            b'language: zh-CN\r\n'
+            b'---\r\n\r\n'
+            b'# Std0 \xe5\x9f\xba\xe7\xba\xbf\r\n\r\n'
+            b'## \xe5\x89\x8d\xe8\xa8\x80\r\n\r\n'
+            b'\xe6\x9c\xac\xe6\x96\x87\xe4\xbb\xb6\xe6\x8c\x89\xe7\x85\xa7 GB/T 1.1\xe2\x80\x942020 \xe8\xb5\xb7\xe8\x8d\x89\xe3\x80\x82\r\n\r\n'
+            b'## 1 \xe8\x8c\x83\xe5\x9b\xb4\r\n\r\n'
+            b'\xe6\x9c\xac\xe6\x96\x87\xe4\xbb\xb6\xe8\xa7\x84\xe5\xae\x9a\xe6\xb5\x8b\xe8\xaf\x95\xe4\xba\xa7\xe5\x93\x81\xe3\x80\x82\r\n\r\n'
+            b'## 4 \xe6\x8a\x80\xe6\x9c\xaf\xe8\xa6\x81\xe6\xb1\x82\r\n\r\n'
+            b'\xe4\xba\xa7\xe5\x93\x81\xe9\xa2\x9d\xe5\xae\x9a\xe7\x94\xb5\xe5\x8e\x8b\xe5\xba\x94\xe4\xb8\xba 12 V\xe3\x80\x82\r\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            raw_path = Path(directory) / "raw.md"
+            std0_path = Path(directory) / "standard.std0.csm.md"
+            raw_path.write_bytes(raw)
+            ssir0, report = normalize_csm(raw_path, std0_path)
+            ssir0_reparsed = parse_csm(std0_path)
+            rendered = std0_path.read_bytes()
+        self.assertTrue(std0_path.name.endswith(".csm.md"))
+        self.assertFalse(rendered.startswith(b"\xef\xbb\xbf"))
+        self.assertNotIn(b"\r", rendered)
+        self.assertIn(b'csm-version: \'1.0\'', rendered)
+        self.assertTrue(any(issue.code == "CSM-ENC-001" for issue in report.issues))
+        self.assertTrue(compare_ssir(ssir0, ssir0_reparsed).passed)
 
     def test_same_input_produces_deterministic_json(self) -> None:
         path = ROOT / "examples/csm/Q_TQDZ_004-2026.csm.md"

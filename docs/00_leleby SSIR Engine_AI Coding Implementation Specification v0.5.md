@@ -1,6 +1,6 @@
-# leleby SSIR Engine — AI Coding Implementation Specification v0.5
+# leleby SSIR Engine — AI Coding Implementation Specification v0.6
 
-> **文档状态**：正式发布 | **版本**：0.5 | **日期**：2026-08-16
+> **文档状态**：正式发布 | **版本**：0.6 | **日期**：2026-08-17
 >
 > **前置文档**：
 > 1. leleby SSIR Data Model v0.4
@@ -14,12 +14,13 @@
 >
 > **核心指令**：本规范是 Phase 1 开发的唯一编码依据。所有代码实现必须严格遵循本规范的定义，不得偏离。
 
-> **当前迭代边界（M1：CSM → SSIR）**：本项目当前只实现第二步，即接收符合 CSM 1.0 的 Markdown 文件并生成 SSIR。PDF/DOCX 接入、MinerU、OCR 和“PDF → CSM”属于后续 M2，不得成为 M1 的运行时依赖或验收条件。
+> **当前迭代边界（M1：CSM Markdown Round-trip）**：本项目接收用户 Markdown，先进行宽容校验和无语义损失的基础纠错并冻结为 `CSM Std0`，再执行 `Std0 → SSIR1 → CSM Std1 → SSIR2` 回环验证。原始输入不是回环比较基准，修复项必须记录在转换报告。PDF/DOCX 接入、MinerU、OCR 和“PDF → CSM”属于后续 M2，不得成为 M1 的运行时依赖或验收条件。
 >
-> - M1 输入：`examples/csm/*.csm.md` 及符合 `examples/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md` 的用户 Markdown。
+> - M1 回环输入：已纠错的 `examples/csm/*.csm.md`（Std0）；用户 Markdown 必须先经过 CSM 校验/纠错阶段。`examples/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md` 定义该阶段的目标格式。
 > - M1 主输出：符合 JSON Schema v0.3 的 `.ssir.json`；Turtle（`.ttl`）仅作为从已验证 SSIR JSON 派生的可选导出，不得替代 JSON 作为权威交换格式。
 > - M1 溯源：`source.mode=user-markdown`、`mimeType=text/markdown`、SHA-256，以及 Markdown 行/列和 AST block 定位；不得伪造 PDF 页码或 bbox。
-> - M1 不实现：PDF 上传/解析、MinerU/OCR、DOCX 解析、规范性 DOCX/PDF 渲染、Round-trip 重提取、L4 语义推理。
+> - M1 回环：确定性 CSM Renderer 输出 `Std1`，使用同一 CSMParser 重提取 `SSIR2`，并比较身份、结构、内容、语义视图及关键损失；来源锚点、运行记录和质量评估不参与等价比较。
+> - M1 不实现：PDF 上传/解析、MinerU/OCR、DOCX 解析、规范性 DOCX/PDF 渲染、PDF/DOCX 视觉保真、L4 语义推理。
 > - 本框中的约束优先于本文件后文仍保留的完整 Phase 1 任务清单；后文任务作为 M2+ 路线图保留。
 
 M1 的可执行模块契约和验收标准见 `docs/08_leleby CSM-to-SSIR Implementation Specification v0.1.md`。
@@ -2196,3 +2197,4 @@ AI Coding Agent 现在可以开始编码。**第一个任务**：生成以下文
 | 0.3 | 2026-08-15 | 与 Data Model v0.4 和 JSON Schema v0.3 对齐；`ssirVersion` 支持 `"0.4"`；新增 `NormativeRenderingProfile` 枚举；`QualityAssessment` 增加 `renderingProfile`；新增 `transformation.py`；更新 Task 8；更新 Rule 7/8；更新 Acceptance Criteria |
 | 0.4 | 2026-08-15 | 恢复 v0.1 的详细 Task 实现指令；恢复 API Contract 完整 OpenAPI 定义；恢复目录结构文件用途注释；恢复枚举完整 Python 代码实现；恢复验收标准具体数值和 Dataset 分类 |
 | 0.5 | 2026-08-16 | 新增 §5 内部接口契约；增强 Task 9（Storage & API）增加完整 API 实现指令；新增 Task 10（API Integration Testing）；更新目录结构增加 API 模型文件；更新 §1.4 管线图增加 API 层；更新 Acceptance Criteria 增加 API Conformance Gate（G9）；更新前置文档列表 |
+| 0.6 | 2026-08-17 | 更新 M1 边界为 CSM Markdown Round-trip：原始 Markdown 先经基础纠错冻结为 `Std0`，再执行 `Std0 → SSIR1 → Std1 → SSIR2`、四层比较和关键损失检查；DOCX/PDF 渲染与视觉保真仍属于 M2 |

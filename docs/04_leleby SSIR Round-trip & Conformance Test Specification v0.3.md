@@ -1,6 +1,6 @@
-# leleby SSIR Round-trip & Conformance Test Specification v0.3
+# leleby SSIR Round-trip & Conformance Test Specification v0.4
 
-> **文档状态**：正式发布 | **版本**：0.3 | **日期**：2026-08-15
+> **文档状态**：正式发布 | **版本**：0.4 | **日期**：2026-08-17
 >
 > **v0.3 主要修订**（基于 Data Model v0.4 和 JSON Schema v0.3 的对齐）：
 > - **更新 §2 Normative References**：增加 JSON Schema Specification v0.3 引用
@@ -12,9 +12,9 @@
 > - **更新 §8 Golden Dataset**：增加 Normative Rendering 测试文档要求
 > - **更新 §22 Test Cases Catalog**：新增 Normative Rendering 测试用例（NR-001～NR-004、RT-009）
 
-> **当前 M1 测试范围**：只验收 `CSM Markdown → SSIR JSON`。CSM 语法/结构/内容/产品标准质量提示、JSON Schema、Markdown 溯源和确定性输出属于 M1；PDF、MinerU、OCR、DOCX、Normative Rendering 和 Round-trip 测试暂列 M2，不得阻塞 M1。
+> **当前 M1 测试范围**：先将用户原始 Markdown 宽容校验并完成无语义损失的基础纠错，冻结为 `Std0` CSM Markdown；再验收 `Std0 → SSIR1 JSON → Std1 CSM Markdown → SSIR2 JSON`。CSM 语法/结构/内容/产品标准质量提示、JSON Schema、Markdown 溯源、确定性 CSM 渲染、四层等价比较和 Critical Information Loss 属于 M1；PDF、MinerU、OCR、DOCX/PDF 渲染和 PDF 级视觉保真暂列 M2。
 >
-> M1 的权威测试输入为 `examples/csm/Q_PMRZ_9-2024.csm.md` 与 `examples/csm/Q_TQDZ_004-2026.csm.md`；模板文件只用于输入契约测试，不直接作为 Golden SSIR。
+> M1 的权威测试输入为 `examples/csm/` 下的全部 CSM 文件；模板文件可用于输入契约和回环测试，不直接作为 Golden SSIR。
 
 
 ## 1. Scope
@@ -40,19 +40,20 @@
 **Round-trip 核心定义**：
 
 ```
-Std₀ → SSIR₁ → Std₁ → SSIR₂
+原始 Markdown → 基础校验/纠错 → Std₀ → SSIR₁ → Std₁ → SSIR₂
 
 验证目标：SSIR₁ ≈ SSIR₂（SSIR Semantic Equivalence）
 而非：Std₀ ≈ Std₁（文档外观等价）
 ```
 
 其中：
-- `Std₀`：原始源文档
+- `原始 Markdown`：用户上传的未校正文件；它是导入诊断和修复记录的来源，不是回环等价比较的基准。
+- `Std₀`：已完成基础格式纠错、可被 CSMParser 接受的 CSM Markdown 基线文档；回环从该文件开始。
 - `SSIR₁`：从 Std₀ 提取的信息基准状态
-- `Std₁`：从 SSIR₁ 渲染生成的规范化文档（**Normative Rendering**，依据 GB/T 1.1-2020 等 Rendering Profile）
+- `Std₁`：从 SSIR₁ 渲染生成的规范化 CSM Markdown 文档（**Normative Markdown Rendering**，依据 GB/T 1.1-2020 等 Rendering Profile）
 - `SSIR₂`：从 Std₁ 再次提取的恢复状态
 
-**关键原则**：传统文档是可变的表现层（Document Representation），SSIR 才是需要保持稳定的信息层（Information Representation）。因此 `Std₀` 与 `Std₁` 的差异不必然表示 Round-trip 失败。
+**关键原则**：原始 Markdown 的修复必须只涉及机器元数据和无语义损失的格式边界，且逐项写入转换报告；正文、标准编号原文、数值、单位、公式、比较符和规范性动词不得自动改写。`Std₀` 与 `Std₁` 的 Markdown 表现差异不必然表示 Round-trip 失败，比较对象始终是 `SSIR₁` 与 `SSIR₂`。
 
 
 ## 2. Normative References
@@ -480,7 +481,7 @@ SSIR₁ (Golden)
 Normative Rendering Pipeline
   (with specified Rendering Profile)
   ↓
-Std₁ (DOCX/PDF)
+Std₁ (CSM Markdown)
   ↓
 Manual + Automated Inspection
   ↓
@@ -497,7 +498,7 @@ Normative Rendering Conformance Report
 | Figures | 图题位置、编号 |
 | Formulas | 公式编号位置 |
 | References | 引用格式 |
-| Page Layout | 页边距、页码 |
+| Page Layout | M1 不比较；页边距、页码属于 M2 |
 
 ### 10.4 ALLOWED_NORMALIZATIONS 验证
 
@@ -547,13 +548,13 @@ Normative Rendering Conformance Report
 
 ### 11.1 定义
 
-验证 `SSIR₁ → Std₁ → SSIR₂` 后 `SSIR₁ ≈ SSIR₂`。
+验证 `SSIR₁ → CSM Std₁ → SSIR₂` 后 `SSIR₁ ≈ SSIR₂`。M1 的 Std₁ 必须是可再次被 CSMParser 接受的 Markdown 文件。
 
 ### 11.2 测试方法
 
 ```
                     ┌───────────────┐
-                    │     Std₀      │
+                    │ Std₀（已纠错） │
                     └───────┬───────┘
                             │
                      Extraction
@@ -563,7 +564,7 @@ Normative Rendering Conformance Report
                     │    SSIR₁      │  ← Round-trip Reference State
                     └───────┬───────┘
                             │
-                  Normative Rendering
+                  Normative Markdown Rendering
                   (GB/T 1.1-2020 Profile)
                             │
                             ▼
@@ -651,6 +652,25 @@ SSIR Comparator 执行四层比较：
 | Critical Information Loss | **0** |
 | Rendering Profile | 正确填充 |
 | Overall Status | **PASS**（所有维度 PASS） |
+
+M1 的可执行入口为：
+
+```text
+ssir csm roundtrip \
+  --input examples/csm/Q_TQDZ_004-2026.csm.md \
+  --std1-output out/Q_TQDZ_004-2026.std1.csm.md \
+  --report out/Q_TQDZ_004-2026.roundtrip-report.json
+```
+
+命令返回 `0` 表示四层比较和关键损失检查通过，返回 `3` 表示 SSIR1/SSIR2 语义不等价，返回 `2` 表示输入或生成的 CSM 无法安全解析。
+
+批量执行时使用下列验证程序。`--examples-dir` 下的每一个 `.csm.md` 都被视为已经纠错的 Std0；程序输出每份 Std1、每份回环报告及 `roundtrip-summary.json`，任意失败时返回 `3`：
+
+```text
+PYTHONPATH=src python3 tools/verify_markdown_roundtrip.py \
+  --examples-dir examples/csm \
+  --output-dir out/roundtrip
+```
 
 ### 11.6 Round-trip Test 用例
 
@@ -1078,6 +1098,8 @@ Phase 1 必须通过的 8 道 Gate：
 | 0.1 | 2026-08-15 | 初始版本 |
 | 0.2 | 2026-08-15 | 确立 Round-trip 核心定义（Std₀→SSIR₁→Std₁→SSIR₂，验证 SSIR₁≈SSIR₂）；新增 Conformance Model；新增 SSIR Equivalence Model；新增 Information Preservation Contract；拆分为四柱测试体系；取消单一 Match Rate；新增 Critical Information Loss/Zero Critical Loss；新增 Schema Conformance & Negative Test；新增 Normalization Stability Test；重新设计 Conformance Gates（8 Gates） |
 | 0.3 | 2026-08-15 | 与 Data Model v0.4 和 JSON Schema v0.3 对齐；§2 增加 JSON Schema v0.3 引用；§4 Conformance Model 增加 Normative Rendering 支持声明和 FORBIDDEN_CHANGES 合规性要求；§5 增加 Critical Information Loss 检查项清单（12 项）；§6 明确 ALLOWED_NORMALIZATIONS 与 FORBIDDEN_CHANGES 边界；§10 重命名为 Normative Rendering Conformance Test，增加 Profile 验证和 Negative Test；§14 增加 v0.3 新字段验证；§8 增加 Dataset E（Normative Rendering 测试文档）；§22 新增 NR-001～NR-004、RT-009 测试用例 |
+| 0.4 | 2026-08-17 | 将 M1 Round-trip 具体化为 CSM Markdown `Std0 → SSIR1 → Std1 → SSIR2`；增加 CLI、报告返回码、M1 可比较/不可比较属性和 CSM 渲染验收要求；DOCX/PDF 视觉渲染移至 M2 |
+| 0.5 | 2026-08-17 | 明确 `Std0` 为原始 Markdown 经基础纠错后冻结的 CSM 基线；增加 `normalize` 命令、批量回环验证程序及原始输入与回环基准的职责边界 |
 
 
 ## 24. Next Steps

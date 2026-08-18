@@ -1,6 +1,6 @@
-# leleby SSIR Processing Pipeline & Architecture Specification v0.4
+# leleby SSIR Processing Pipeline & Architecture Specification v0.5
 
-> **文档状态**：正式发布 | **版本**：0.4 | **日期**：2026-08-15
+> **文档状态**：正式发布 | **版本**：0.5 | **日期**：2026-08-17
 >
 > **v0.4 主要修订**（基于 Data Model v0.4 和 JSON Schema v0.3 的对齐）：
 > - **升级 Round-trip 比较为四层**：Identity/Structural/Content/Semantic Equivalence，对齐 Data Model v0.4 §7.6
@@ -21,7 +21,7 @@
 
 **Phase 1 的核心链路**：
 
-> **当前 M1 实现链路覆盖范围**：`CSM Markdown → CSM Validator/Normalizer → Markdown AST → Extraction IR → SSIR Builder → JSON Schema/Semantic Validator → SSIR JSON →（可选）Turtle Exporter`。下文的 PDF/MinerU/OCR 链路是 M2 的预留架构，不得在 M1 启动时强制安装或调用。
+> **当前 M1 实现链路覆盖范围**：`用户原始 Markdown → CSM Validator/Normalizer → CSM Markdown Std0 → Markdown AST → Extraction IR → SSIR1 → CSM Renderer → CSM Markdown Std1 → CSMParser → SSIR2 → Four-layer Comparator → Round-trip Report`；`Std0` 是完成基础纠错后的回环起点，原始输入的修复项进入转换报告。Turtle 是从 SSIR JSON 派生的可选导出。下文的 PDF/MinerU/OCR/DOCX 链路是 M2 的预留架构，不得在 M1 启动时强制安装或调用。
 >
 > M1 必须保存 Markdown 源文件和行/列/AST 溯源；无 PDF 输入时，`pdfPageIndex`、`bbox` 等字段保持缺省，不得用虚拟值填充。
 
@@ -32,7 +32,7 @@ Source Document → Ingestion → Extraction → Extraction IR → SSIR Builder 
 **Phase 1 边界**：
 - **包含**：文档数字化、结构化表示、溯源、规范性渲染、往返验证
 - **不包含**：leleby Ontology、Compliance、Requirement Graph 推理等 Semantic Layer 功能
-- **SSIR 是 Phase 1 的终点**
+- **M1 的可执行终点是 SSIR JSON 与 Markdown Round-trip Report；DOCX/PDF 渲染仍留待 M2**
 
 
 ## 2. System Architecture Overview
@@ -1266,6 +1266,7 @@ Phase 1 必须通过的验收标准：
 | 0.2 | 2026-08-15 | 新增 Preservation Levels & Contract；Reference/Entity/Relation 从 SSIR Builder 拆分；增强 SourceAnchor/ProcessingRun/QualityAssessment；版本化 Repository |
 | 0.3 | 2026-08-15 | 调整 Round-trip 核心定义为 `SSIR₁ ≈ SSIR₂`；重构 Round-trip Verification Service 为三层比较；删除 matchRate 单一指标；新增 Critical Information Loss Check；验收指标与 v0.2 测试规范 Gate 体系对齐 |
 | 0.4 | 2026-08-15 | 与 Data Model v0.4 和 JSON Schema v0.3 对齐；Round-trip 比较升级为四层（Identity/Structural/Content/Semantic）；新增 CriticalLossChecker 子模块（12 项检查）；Rendering Service 升级为 Normative Rendering Service；明确 ALLOWED_NORMALIZATIONS / FORBIDDEN_CHANGES 边界；QualityAssessment 增加 renderingProfile 字段；更新数据流图；更新 Acceptance Criteria（增加 Critical Gate 和 Normative Rendering Gate） |
+| 0.5 | 2026-08-17 | 明确 M1 将原始 Markdown 基础纠错为 CSM `Std0` 后完成 `Std0 → SSIR1 → Std1 → SSIR2` 回环；CSM Renderer、重提取、四层比较与报告属于 M1，PDF/MinerU/OCR/DOCX 保持 M2 预留 |
 
 
 ## 11. Next Steps

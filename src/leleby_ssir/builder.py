@@ -194,11 +194,14 @@ class SSIRBuilder:
         number: str | None = None
         node_type = "documentBlock"
         level = block.level - 1 if block.level else 1
-        annex = re.match(r"^附录\s+([A-Z])（(?:规范性|资料性|未判定)）\s*(.*)$", title)
+        # Accept an optional separator before the status marker; the renderer emits
+        # the compact GB/T form, while user Markdown sometimes contains a space.
+        annex = re.match(r"^附录\s+([A-Z])\s*（(规范性|资料性|未判定)）\s*(.*)$", title)
         numbered = re.match(r"^(\d+(?:\.\d+)*)\s+(.+)$", title)
         if annex:
             number = annex.group(1)
-            title = annex.group(2)
+            # Annex status is normative information, so retain it in the schema's title field.
+            title = f"（{annex.group(2)}） {annex.group(3)}".rstrip()
             node_type = "annex"
         elif numbered:
             number = numbered.group(1)
