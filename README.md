@@ -88,7 +88,7 @@ ssir pdf extract \
   --backend auto
 ```
 
-**完整抽取与验证工具**：`tools/mineru_full_standard.py` 对任意国家标准 PDF 执行"可恢复的分块 MinerU 全量抽取 → 合并 CSM → 规范化为 Std0 → 解析为 SSIR → 回旋验证 →（可选）渲染 PDF 并比较"。所有输出文件名、标准号和标题均从输入 PDF 自动派生，可用 `--standard-number`/`--title` 覆盖：
+**完整抽取与验证工具**：`tools/mineru_full_standard.py` 对任意国家标准 PDF 执行"可恢复的分块 MinerU 全量抽取 → 合并 CSM → 规范化为 Std0 → 解析为 SSIR → 回旋验证 →（可选）渲染 PDF 并比较"。所有输出文件名、标准号和标题均从输入 PDF 自动派生，可用 `--standard-number`/`--title` 覆盖；`--output-stem` 可固定输出文件名前缀，`--front-matter-json` 可补充已知元数据（如 `ics`/`ccs`/`replaces`/`issuer`）：
 
 ```bash
 .venv/bin/python tools/mineru_full_standard.py \

@@ -308,7 +308,7 @@ def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
         raise RuntimeError(f"Cannot merge: MinerU output is missing for pages starting at {missing}")
 
     _log(f"Merging {len(expected)} completed MinerU page ranges into one CSM Markdown document")
-    stem = args.input.stem
+    stem = args.output_stem or args.input.stem
     destination = args.output_dir / f"{stem}.mineru.csm.md"
     parts_raw: list[str] = []
     sources: list[dict[str, Any]] = []
@@ -339,6 +339,16 @@ def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
     number = args.standard_number or _standard_number("\n".join(parts_raw)[:3000], stem)
     first_heading = next((line.lstrip("#").strip() for part in parts_raw for line in part.splitlines() if re.match(r"^#\s", line)), "")
     title = args.title or _usable_title(first_heading, number)
+    extra_front_matter: list[str] = []
+    if args.front_matter_json:
+        try:
+            extra = json.loads(args.front_matter_json.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"invalid --front-matter-json file {args.front_matter_json}: {exc}") from exc
+        if not isinstance(extra, dict):
+            raise RuntimeError("--front-matter-json must contain a JSON object")
+        for key, value in extra.items():
+            extra_front_matter.append(f"{key}: {json.dumps(str(value), ensure_ascii=False)}")
     lines = [
         "---",
         'csm-version: "1.0"',
@@ -346,6 +356,7 @@ def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
         f"document-identifier: {json.dumps(number, ensure_ascii=False)}",
         f"standard-number: {json.dumps(number, ensure_ascii=False)}",
         f"title: {json.dumps(title, ensure_ascii=False)}",
+        *extra_front_matter,
         "language: zh-CN",
         "source:",
         "  mode: mineru-pdf",
@@ -375,7 +386,7 @@ def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
 
 def finalize(args: argparse.Namespace, merged: Path) -> Path | None:
     """Use the existing CSM normalizer/parser, retaining partial status if parsing needs review."""
-    stem = args.input.stem
+    stem = args.output_stem or args.input.stem
     std0 = args.output_dir / f"{stem}.mineru.std0.csm.md"
     ssir = args.output_dir / f"{stem}.mineru.ssir.json"
     normalize = [str(Path(sys.prefix) / "bin" / "ssir"), "csm", "normalize", "--input", str(merged), "--std0-output", str(std0)]
@@ -411,6 +422,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run a resumable full MinerU extraction, SSIR parsing, round-trip verification and optional PDF rendering for a national-standard PDF.")
     parser.add_argument("--input", type=Path, help="PDF input of the national standard to extract (required)")
     parser.add_argument("--output-dir", type=Path, help="output directory (default: out/mineru/<input-stem>)")
+    parser.add_argument("--output-stem", type=str, help="output filename stem for merged CSM/SSIR/PDF artifacts (default: input file name without the .pdf extension)")
+    parser.add_argument("--front-matter-json", type=Path, help="optional JSON object with additional CSM front matter keys merged into the merged document (e.g. {\"ics\": \"01.120\", \"issuer\": \"...\"})")
     parser.add_argument("--standard-number", type=str, help="standard number written into the CSM front matter (default: inferred from the extraction, e.g. GB/T 10401-2023)")
     parser.add_argument("--title", type=str, help="standard title written into the CSM front matter (default: first H1 from the extraction)")
     parser.add_argument("--chunk-size", type=int, default=18, help="Pages per restartable MinerU invocation (default: 18).")
@@ -444,7 +457,7 @@ def main() -> int:
         if args.stage == "merge":
             return 0
         ssir = finalize(args, merged)
-        stem = args.input.stem
+        stem = args.output_stem or args.input.stem
         if args.roundtrip and ssir:
             std0 = args.output_dir / f"{stem}.mineru.std0.csm.md"
             std1 = args.output_dir / f"{stem}.mineru.std1.csm.md"
