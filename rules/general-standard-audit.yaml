@@ -1,0 +1,142 @@
+schema-version: "1.0"
+kind: audit-rule-set
+id: general-standard-audit
+version: "0.1.0"
+status: draft
+title: 通用标准文件基础审核准则
+description: >-
+  适用于标准文件的最低限度结构、编号、引用和内容保留检查。
+  这些规则只产生审核发现，不阻断原始文档到 SSIR 的转换。
+source:
+  type: maintained-rule-set
+  authority: leleby
+  effective-date: "2026-08-18"
+applicability:
+  document-types: [standard]
+execution-policy:
+  conversion: never-block
+  unknown-rule-result: unresolved
+  default-severity: warning
+  result-states: [pass, fail, warning, not-applicable, unresolved]
+rules:
+  - id: GEN-STRUCT-001
+    title: 文件应具有唯一名称
+    category: structure
+    requirement:
+      obligation: required
+      applicability: always
+      statement: SSIR 文档应存在且只能存在一个文件名称。
+    target: {scope: metadata, path: $.metadata.common.title}
+    check: {operator: non_empty}
+    severity: warning
+    evidence: {required: true, kind: [value, source-anchor]}
+  - id: GEN-STRUCT-002
+    title: 标准文件应声明标准类型
+    category: metadata
+    requirement:
+      obligation: required
+      applicability: document.documentType == standard
+      statement: 标准文件应将 documentType 声明为 standard。
+    target: {scope: metadata, path: $.documentType}
+    check: {operator: equals, expected: standard}
+    severity: warning
+    evidence: {required: true, kind: [value]}
+  - id: GEN-STRUCT-003
+    title: 正文应具有范围要素
+    category: structure
+    requirement:
+      obligation: required
+      applicability: document.documentType == standard
+      statement: 标准文件正文应包含可定位的范围章或范围要素。
+    target: {scope: structural-tree, path: $.structuralRoot}
+    check: {operator: contains_node_title, expected: 范围}
+    severity: warning
+    evidence: {required: true, kind: [node, source-anchor]}
+  - id: GEN-STRUCT-004
+    title: 正文章编号应从第一章开始
+    category: numbering
+    requirement:
+      obligation: required
+      applicability: document.documentType == standard
+      statement: 正文数字章节的第一个章节号应为 1。
+    target: {scope: structural-tree, path: $.structuralRoot.children}
+    check: {operator: first_numbered_node_equals, expected: "1"}
+    severity: warning
+    evidence: {required: true, kind: [node, value, source-anchor]}
+  - id: GEN-STRUCT-005
+    title: 同级章节编号应连续
+    category: numbering
+    requirement:
+      obligation: required
+      applicability: has_numbered_sections
+      statement: 同一父节点下的数字章节和条款不应跳号、重复或倒序。
+    target: {scope: structural-tree, path: $.structuralRoot}
+    check: {operator: sibling_numbers_contiguous}
+    severity: warning
+    evidence: {required: true, kind: [node, value, source-anchor]}
+  - id: GEN-STRUCT-006
+    title: 条款层级应具有父条款
+    category: structure
+    requirement:
+      obligation: required
+      applicability: has_numbered_clauses
+      statement: 每一个 n.n 或更深层级的条款都应能在结构树中找到直接父条款。
+    target: {scope: structural-tree, path: $.structuralRoot}
+    check: {operator: clause_parent_exists}
+    severity: warning
+    evidence: {required: true, kind: [node, source-anchor]}
+  - id: GEN-STRUCT-007
+    title: 附录应声明性质
+    category: structure
+    requirement:
+      obligation: required
+      applicability: has_annexes
+      statement: 每个附录应标明规范性、资料性或未判定性质。
+    target: {scope: structural-tree, path: $.structuralRoot}
+    check: {operator: annex_kind_declared}
+    severity: warning
+    evidence: {required: true, kind: [node, value, source-anchor]}
+  - id: GEN-REF-001
+    title: 条款内部引用目标应存在
+    category: reference
+    requirement:
+      obligation: required
+      applicability: has_internal_references
+      statement: 文中可识别的条款引用应指向现存条款。
+    target: {scope: document, path: $.structuralRoot}
+    check: {operator: internal_clause_references_resolve}
+    severity: warning
+    evidence: {required: true, kind: [text, source-anchor, referenced-node]}
+  - id: GEN-REF-002
+    title: 表引用目标应存在
+    category: reference
+    requirement:
+      obligation: required
+      applicability: has_table_references
+      statement: 文中可识别的表引用应指向现存表。
+    target: {scope: document, path: $.structuralRoot}
+    check: {operator: table_references_resolve}
+    severity: warning
+    evidence: {required: true, kind: [text, source-anchor, referenced-object]}
+  - id: GEN-REF-003
+    title: 图引用目标应存在
+    category: reference
+    requirement:
+      obligation: required
+      applicability: has_figure_references
+      statement: 文中可识别的图引用应指向现存图。
+    target: {scope: document, path: $.structuralRoot}
+    check: {operator: figure_references_resolve}
+    severity: warning
+    evidence: {required: true, kind: [text, source-anchor, referenced-object]}
+  - id: GEN-PRES-001
+    title: 未识别内容应显式保留并待复核
+    category: preservation
+    requirement:
+      obligation: required
+      applicability: has_unknown_content
+      statement: 无法分类的源内容不得丢弃，应作为待人工复核的未解析内容保留。
+    target: {scope: document, path: $.unknownContents}
+    check: {operator: each_has_source_anchor}
+    severity: warning
+    evidence: {required: true, kind: [value, source-anchor]}

@@ -2,7 +2,7 @@
 
 本项目实现标准化文件的结构化信息表示（SSIR）M1：将用户提供的 Markdown 标准文件转换为可校验的 SSIR JSON（可选 Turtle），并通过 Markdown 回旋转换验证信息是否被保留。
 
-当前版本不解析 PDF、扫描件、MinerU 输出或 DOCX，也不生成传统 PDF 标准和知识图谱。这些能力是后续开发阶段的工作，详见 [M1 开发报告](docs/09_leleby%20M1%20开发报告.md)。
+当前版本已提供 PDF -> CSM Markdown 的初始适配器；MinerU 是首选后端，PyMuPDF 仅用于无 MinerU 时的文本层回退。扫描件、表格/图像精确识别和人工质量复核仍属于后续工作。
 
 ## 当前功能
 
@@ -76,6 +76,31 @@ ssir csm roundtrip \
 ```
 
 命令返回值：`0` 表示通过，`2` 表示输入或生成文档存在不可恢复错误，`3` 表示 SSIR1 与 SSIR2 不等价或发生关键损失。
+
+### 5. 生成传统 PDF 标准文稿
+
+PDF 渲染读取已通过 SSIR 校验的 JSON，不重新解析 Markdown。项目提供 GB/T 1.1-2020 初始渲染配置，使用嵌入式中文字体生成可复制文本的 A4 PDF：
+
+### 4. 从 PDF 提取 CSM Markdown
+
+优先调用本机的 `magic-pdf` 或 `mineru` 命令，并额外生成 provenance sidecar。未安装 MinerU 时可显式使用 PyMuPDF 回退；回退结果必须人工复核。
+
+```bash
+ssir pdf extract \
+  --input examples/GBT\ 1.1-2020.pdf \
+  --output out/GBT-1.1-2020.extracted.csm.md \
+  --backend auto
+```
+
+```bash
+.venv/bin/pip install -e .
+PYTHONPATH=src .venv/bin/python -m leleby_ssir pdf render \
+  --input out/user-standard.ssir.json \
+  --output out/user-standard.pdf \
+  --report out/user-standard.render-report.json
+```
+
+也可以通过 `--profile` 指定自定义渲染配置。当前实现覆盖封面标题、前置要素、章节/条款、正文、列表、表格、公式原文、图像资产或图像缺失占位、附录、页眉标准号和页脚页码。字号字体、版心和分页属于可版本化的渲染配置；PDF 输出是传统标准草稿，尚未宣称通过完整的印刷版式验收。
 
 ### 4. 批量验证样例
 

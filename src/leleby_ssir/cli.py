@@ -12,6 +12,18 @@ from .service import normalize_csm, round_trip_csm, validate_csm, write_output
 from .validation import SSIRValidationError
 
 
+def _toc_depth(value: str) -> int | None:
+    if value.lower() == "all":
+        return None
+    try:
+        depth = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer or 'all'") from exc
+    if depth < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer or 'all'")
+    return depth
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ssir", description="Parse Canonical SSIR Markdown into SSIR")
     command = parser.add_subparsers(dest="command", required=True)
@@ -36,12 +48,38 @@ def _parser() -> argparse.ArgumentParser:
     roundtrip.add_argument("--std1-output", required=True, type=Path, help="rendered CSM(std1) output path")
     roundtrip.add_argument("--report", type=Path, help="round-trip report path; defaults beside --std1-output")
     roundtrip.add_argument("--strict", action="store_true", help="reject recoverable input issues in either CSM document")
+    pdf = command.add_parser("pdf", help="extract PDFs or render validated SSIR JSON")
+    pdf_command = pdf.add_subparsers(dest="pdf_command", required=True)
+    extract = pdf_command.add_parser("extract", help="extract a PDF into CSM Markdown")
+    extract.add_argument("--input", required=True, type=Path, help="PDF input")
+    extract.add_argument("--output", required=True, type=Path, help="CSM Markdown output")
+    extract.add_argument("--backend", choices=("auto", "mineru", "pymupdf"), default="auto")
+    extract.add_argument("--report", type=Path)
+    extract.add_argument("--sidecar", type=Path)
+    render = pdf_command.add_parser("render", help="render SSIR JSON to PDF")
+    render.add_argument("--input", required=True, type=Path, help="validated SSIR JSON input")
+    render.add_argument("--output", required=True, type=Path, help="PDF output path")
+    render.add_argument("--profile", type=Path, help="rendering profile YAML")
+    render.add_argument("--report", type=Path, help="rendering report path")
+    render.add_argument("--toc-depth", type=_toc_depth, default=2, metavar="LEVEL|all", help="maximum numbered TOC level (default: 2; use all to expand every level)")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        if getattr(args, "command", None) == "pdf" and args.pdf_command == "extract":
+            from .pdf_extractor import extract_pdf_to_csm
+            report = extract_pdf_to_csm(args.input, args.output, backend=args.backend, report=args.report, sidecar=args.sidecar)
+            print(json.dumps({"output": str(args.output), "backend": report.backend, "pages": report.page_count, "status": report.status, "warnings": len(report.warnings), "sidecar": report.sidecar_file}, ensure_ascii=False))
+            return 0
+        if getattr(args, "command", None) == "pdf" and args.pdf_command == "render":
+            from .pdf_renderer import render_pdf_file
+            report = render_pdf_file(args.input, args.output, profile_path=args.profile, toc_depth=args.toc_depth)
+            report_path = args.report or Path(f"{args.output}.render-report.json")
+            report.write_json(report_path)
+            print(json.dumps({"output": str(args.output), "report": str(report_path), "pageCount": report.page_count, "warnings": len(report.warnings)}, ensure_ascii=False))
+            return 0
         if args.csm_command == "validate":
             document = validate_csm(args.input, strict=args.strict)
             for warning in document.warnings:
@@ -64,7 +102,7 @@ def main(argv: list[str] | None = None) -> int:
         report_path = args.report or Path(f"{args.output}.conversion-report.json")
         print(json.dumps({"output": str(args.output), "documentId": ssir["id"], "format": args.format, "report": str(report_path), "status": report.overall_status}, ensure_ascii=False))
         return 0
-    except (CSMError, SSIRValidationError, OSError, ValueError) as exc:
+    except (CSMError, SSIRValidationError, OSError, RuntimeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 

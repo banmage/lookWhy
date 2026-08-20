@@ -84,6 +84,11 @@ SUPPORTED_DIRECTIVES = {
     "unknown",
 }
 
+# These markers are emitted by the MinerU adapter solely to retain page-range
+# provenance while its chunks are merged.  They are not SSIR content and must
+# never be preserved as visible/unknown document text.
+MINERU_PAGE_MARKER_RE = re.compile(r"^<!--\s*/?ssir:mineru-pages\b.*-->\s*$")
+
 
 def _unescape_attribute(value: str) -> str:
     return value.replace(r'\"', '"').replace(r"\\", "\\")
@@ -253,6 +258,10 @@ class CSMParser:
         while i < len(lines):
             line = lines[i]
             if not line.strip():
+                i += 1
+                continue
+
+            if MINERU_PAGE_MARKER_RE.match(line):
                 i += 1
                 continue
 

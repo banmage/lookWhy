@@ -1,0 +1,47 @@
+schema-version: "1.0"
+kind: audit-profile
+id: product-standard-initial-audit
+version: "0.1.0"
+status: draft
+title: 产品标准初步审核配置
+document-types: [standard]
+applicability:
+  all:
+    - document.documentType == standard
+    - document.metadata.extensions.standard-profile == product
+description: >-
+  产品标准的第一版组合审核配置。产品标准继承标准文件通用准则和
+  GB/T 1.1-2020 的要求，并在适用时叠加 GB/T 20001.10-2014 的产品标准专用要求。
+rule-sets:
+  - id: general-standard-audit
+    version: "0.1.0"
+    mode: base
+    required: true
+    source: rules/general-standard-audit.yaml
+  - id: gb-t-1-1-2020
+    version: "source-ssir"
+    mode: inherited
+    required: true
+    source: rules/sources/GBT 1.1-2020.ssir.json
+    extraction-status: pending-requirement-catalog
+  - id: gb-t-20001-10-2014
+    version: "source-ssir"
+    mode: additive
+    required: true
+    applicable-when:
+      all:
+        - document.documentType == standard
+        - document.metadata.extensions.standard-profile == product
+    source: rules/sources/GBT 20001.10-2014.ssir.json
+    extraction-status: pending-requirement-catalog
+combination:
+  inheritance-order:
+    - general-standard-audit
+    - gb-t-1-1-2020
+    - gb-t-20001-10-2014
+  conflict-policy: retain-both-and-report
+  duplicate-policy: deduplicate-by-rule-id
+execution-policy:
+  conversion: never-block
+  unresolved-requirements: report
+  rule-snapshot: required

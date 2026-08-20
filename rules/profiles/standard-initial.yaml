@@ -1,0 +1,26 @@
+schema-version: "1.0"
+kind: audit-profile
+id: standard-initial-audit
+version: "0.1.0"
+status: draft
+title: 标准文件初步审核配置
+document-types: [standard]
+description: >-
+  标准文件的第一版组合审核配置。通用准则负责基础逻辑检查；GB/T 1.1
+  SSIR 作为规范性依据和后续逐条规则编译的来源文档。
+rule-sets:
+  - id: general-standard-audit
+    version: "0.1.0"
+    mode: base
+    required: true
+    source: rules/general-standard-audit.yaml
+  - id: gb-t-1-1-2020
+    version: "source-ssir"
+    mode: normative-reference
+    required: true
+    source: rules/sources/GBT 1.1-2020.ssir.json
+    extraction-status: pending-requirement-catalog
+execution-policy:
+  conversion: never-block
+  unresolved-requirements: report
+  rule-snapshot: required

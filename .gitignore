@@ -27,3 +27,10 @@ node_modules/
 out/
 artifacts/
 *.log
+
+# Binary PDF inputs are not frozen fixtures; examples/ keeps Markdown only
+examples/*.pdf
+
+# Session/editor junk and Windows download markers
+:memory:.ses
+*:Zone.Identifier

@@ -18,10 +18,14 @@ def _slug(value: str) -> str:
 
 def _caption_parts(text: str) -> tuple[str | None, str | None]:
     clean = text.strip().strip("[]")
-    match = re.match(r"^图([^\s]+)\s+(.+?)(?:（图片占位）)?$", clean)
+    match = re.match(r"^图\s*([^\s]+)\s+(.+?)(?:（图片占位）)?$", clean)
     if match:
         return match.group(1), match.group(2)
     return None, clean or None
+
+
+def _is_annex_heading(text: str) -> bool:
+    return bool(re.match(r"^附\s*录\s*[A-Z](?:\s*（(?:规范性|资料性|未判定)）.*)?$", text.strip()))
 
 
 def _marker_type(marker: str) -> str:
@@ -110,12 +114,14 @@ class SSIRBuilder:
 
         for block in document.blocks:
             if block.kind == "heading":
-                if block.level == 1:
+                # The document title is the sole H1 that is not a structural
+                # node.  MinerU commonly emits annex starts as later H1s.
+                if block.level == 1 and not _is_annex_heading(block.text):
                     state.canonical_parts.append(block.text)
                     continue
                 node = self._make_node(state, block, node_sort)
                 node_sort += 1
-                depth = block.level - 1
+                depth = max((block.level or 2) - 1, 1)
                 while stack and stack[-1][0] >= depth:
                     stack.pop()
                 parent = stack[-1][1] if stack else root
@@ -137,10 +143,16 @@ class SSIRBuilder:
             "title": str(metadata["title"]),
             "language": str(metadata.get("language", "zh-CN")),
         }
+        for source_key, target_key in (("title-en", "titleEn"), ("conformity-statement", "conformityStatement"), ("publication-date", "publicationDate"), ("effective-date", "effectiveDate"), ("issuer", "issuer")):
+            if metadata.get(source_key):
+                common[target_key] = str(metadata[source_key])
         standard: dict[str, Any] = {
             "standardNumber": str(metadata["standard-number"]),
             "chineseTitle": str(metadata["title"]),
         }
+        for source_key, target_key in (("ics", "ics"), ("ccs", "ccs"), ("replaces", "replaces")):
+            if metadata.get(source_key):
+                standard[target_key] = str(metadata[source_key])
         document_type = "standard" if metadata.get("document-type") == "standard" else "other"
         run_id = "ssir:processing/run/19700101-001"
         quality = self._quality_assessment(state, run_id)
@@ -196,16 +208,22 @@ class SSIRBuilder:
         level = block.level - 1 if block.level else 1
         # Accept an optional separator before the status marker; the renderer emits
         # the compact GB/T form, while user Markdown sometimes contains a space.
-        annex = re.match(r"^附录\s+([A-Z])\s*（(规范性|资料性|未判定)）\s*(.*)$", title)
-        numbered = re.match(r"^(\d+(?:\.\d+)*)\s+(.+)$", title)
+        annex = re.match(r"^附\s*录\s*([A-Z])\s*(?:（(规范性|资料性|未判定)）)?\s*(.*)$", title)
+        pure_numbered = re.match(r"^(\d+(?:\.\d+)*)$", title)
+        numbered = re.match(r"^(\d+(?:\.\d+)*)(?:\s+|(?=[\u4e00-\u9fffA-Za-z（]))(.+)$", title)
         if annex:
             number = annex.group(1)
             # Annex status is normative information, so retain it in the schema's title field.
-            title = f"（{annex.group(2)}） {annex.group(3)}".rstrip()
+            status = annex.group(2)
+            title = f"（{status}） {annex.group(3)}".rstrip() if status else annex.group(3).strip()
             node_type = "annex"
         elif numbered:
             number = numbered.group(1)
             title = numbered.group(2)
+            node_type = {2: "section", 3: "clause", 4: "subClause", 5: "item", 6: "subItem"}.get(block.level or 2, "clause")
+        elif pure_numbered:
+            number = pure_numbered.group(1)
+            title = ""
             node_type = {2: "section", 3: "clause", 4: "subClause", 5: "item", 6: "subItem"}.get(block.level or 2, "clause")
         elif block.level and block.level >= 3:
             node_type = {3: "clause", 4: "subClause", 5: "item", 6: "subItem"}.get(block.level, "clause")
@@ -372,6 +390,8 @@ class SSIRBuilder:
         }
         if block.data.get("format") != "raw":
             formula["latex"] = block.text
+        if block.directive and block.directive.attrs.get("asset-ref"):
+            formula["assetRef"] = block.directive.attrs["asset-ref"]
         if block.data.get("number"):
             formula["number"] = block.data["number"]
         return formula

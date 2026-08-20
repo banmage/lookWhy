@@ -1,0 +1,33 @@
+schema-version: "1.0"
+kind: rendering-profile
+id: gb-t-1-1-2020
+version: "0.1.0"
+status: draft
+title: GB/T 1.1-2020 标准文件 PDF 渲染配置
+description: >-
+  SSIR 到传统 A4 PDF 的初始渲染配置。用于稳定生成适合审阅的标准文稿；
+  字体、版心和标题层次遵循 GB/T 1.1 的常用编排原则。
+page:
+  size: A4
+  margin-mm: {top: 25, bottom: 25, left: 28, right: 22}
+fonts:
+  primary: WenQuanYiZenHei
+  primary-file: /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc
+styles:
+  body: {size-pt: 10.5, leading-pt: 18, first-line-indent-em: 2, alignment: justify}
+  section: {size-pt: 14, leading-pt: 22, alignment: center}
+  clause: {size-pt: 12, leading-pt: 20, alignment: left}
+  front-matter: {size-pt: 10.5, leading-pt: 18, alignment: justify}
+  table: {size-pt: 9, leading-pt: 13}
+header-footer:
+  footer-page-number: true
+  footer-format: "第 {page} 页"
+  header-standard-number: true
+tables:
+  repeat-header-rows: true
+  grid-width-pt: 0.5
+  header-background: "#F2F2F2"
+figures:
+  missing-asset: placeholder
+formulas:
+  fallback: raw-text
