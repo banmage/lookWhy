@@ -58,6 +58,27 @@ def _page_count(pdf: Path) -> int:
         return len(document)
 
 
+# Generic helpers shared with the PDF extractor: these recognise common Chinese
+# national/industry standard-number prefixes (GB, GB/T, DB, QB, JB, DL, NY, ISO)
+# and are deliberately not specific to GB/T 1.1-2020.
+def _standard_number(text: str, fallback: str) -> str:
+    match = re.search(r"\b(?:GB|GB/T|DB|QB|JB|DL|NY|ISO)[ /A-Z0-9.\-—]+", text, re.I)
+    return (match.group(0).strip() if match else fallback).replace("—", "-")
+
+
+def _usable_title(text: str, fallback: str) -> str:
+    compact = " ".join(text.split())
+    # Broken embedded CJK fonts often decode as repeated mathematical letters.
+    if not compact or sum(1 for char in compact if "犀" <= char <= "犿") > 4:
+        return fallback
+    return compact[:180]
+
+
+def _is_gbt_1_1_2020(source: Path) -> bool:
+    """True for the GB/T 1.1-2020 input that the standard-specific quirk fixes target."""
+    return "1.1-2020" in source.stem or "1.1—2020" in source.stem
+
+
 def _range_dir(output_dir: Path, start: int, end: int) -> Path:
     return output_dir / "parts" / f"pages-{start + 1:03d}-{end + 1:03d}"
 
@@ -118,7 +139,7 @@ def _formula_assets(source: Path) -> dict[str, list[str]]:
     return result
 
 
-def _convert_mineru_markup(raw: str, part_prefix: str, formula_assets: dict[str, list[str]] | None = None) -> str:
+def _convert_mineru_markup(raw: str, part_prefix: str, formula_assets: dict[str, list[str]] | None = None, gbt_1_1_quirks: bool = False) -> str:
     """Adapt MinerU HTML tables and relative image paths without altering prose."""
     table_index = 0
     output: list[str] = []
@@ -165,16 +186,17 @@ def _convert_mineru_markup(raw: str, part_prefix: str, formula_assets: dict[str,
         else:
             cleaned.append(lines[index])
             index += 1
-    # MinerU omitted the E.11 raster and misidentified its index-layout image
-    # as a table directly after 图 E.10. Do not render that unrelated table
-    # under the E.10 caption; retain a review marker instead.
     converted = "\n".join(cleaned)
-    converted = re.sub(
-        r"\n<!-- ssir:table id=\"mineru-table-p055-001\".*?\n图\s*E\.11\s+索引格式\n\n单位为毫米\n",
-        "\n> [待复核：MinerU 将图 E.11 索引格式误识别为表格，未提取可渲染的图像资产]\n",
-        converted,
-        flags=re.DOTALL,
-    )
+    if gbt_1_1_quirks:
+        # GB/T 1.1-2020 appendix E only: MinerU omitted the E.11 raster and
+        # misidentified its index-layout image as a table directly after 图 E.10.
+        # Do not render that unrelated table under the E.10 caption.
+        converted = re.sub(
+            r"\n<!-- ssir:table id=\"mineru-table-p055-001\".*?\n图\s*E\.11\s+索引格式\n\n单位为毫米\n",
+            "\n> [待复核：MinerU 将图 E.11 索引格式误识别为表格，未提取可渲染的图像资产]\n",
+            converted,
+            flags=re.DOTALL,
+        )
     formula_assets = formula_assets or {}
     formula_index = 0
 
@@ -286,33 +308,9 @@ def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
         raise RuntimeError(f"Cannot merge: MinerU output is missing for pages starting at {missing}")
 
     _log(f"Merging {len(expected)} completed MinerU page ranges into one CSM Markdown document")
-    destination = args.output_dir / "GBT-1.1-2020.mineru.csm.md"
-    lines = [
-        "---",
-        'csm-version: "1.0"',
-        "document-type: standard",
-        'document-identifier: "GB/T 1.1-2020"',
-        'standard-number: "GB/T 1.1-2020"',
-        'title: "标准化工作导则 第1部分：标准化文件的结构和起草规则"',
-        'title-en: "Directives for standardization - Part 1: Rules for the structure and drafting of standardizing documents"',
-        'conformity-statement: "(ISO/IEC Directives，Part 2，2018，Principles and rules for the structure and drafting of ISO and IEC documents，NEQ)"',
-        'ics: "01.120"',
-        'ccs: "A 00"',
-        'replaces: "GB/T 1.1—2009"',
-        'publication-date: "2020-03-31"',
-        'effective-date: "2020-10-01"',
-        'issuer: "国家市场监督管理总局、国家标准化管理委员会"',
-        "language: zh-CN",
-        "source:",
-        "  mode: mineru-pdf",
-        f'  original-file-name: {json.dumps(args.input.name, ensure_ascii=False)}',
-        "  provenance: mineru-full-standard-state.json",
-        'extraction-backend: "mineru-3.4.5-pipeline"',
-        "---",
-        "",
-        "# 标准化工作导则 第1部分：标准化文件的结构和起草规则",
-        "",
-    ]
+    stem = args.input.stem
+    destination = args.output_dir / f"{stem}.mineru.csm.md"
+    parts_raw: list[str] = []
     sources: list[dict[str, Any]] = []
     for start in expected:
         part = completed[start]
@@ -321,6 +319,7 @@ def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
             source.read_text(encoding="utf-8", errors="replace").strip(),
             f"p{part['start'] + 1:03d}",
             _formula_assets(source),
+            gbt_1_1_quirks=_is_gbt_1_1_2020(args.input),
         )
         image_source = source.parent / "images"
         if image_source.is_dir():
@@ -329,24 +328,56 @@ def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
             for image in image_source.iterdir():
                 if image.is_file():
                     shutil.copy2(image, image_target / image.name)
-        if part["start"] == 0:
+        if part["start"] == 0 and _is_gbt_1_1_2020(args.input):
+            # GB/T 1.1-2020 only: restore the two page-18 7.4 layout diagrams.
             raw = _recover_gbt_7_4_diagrams(raw, args.input, args.output_dir / "assets" / "images")
-        lines.extend([f"<!-- ssir:mineru-pages start=\"{part['start'] + 1}\" end=\"{part['end'] + 1}\" -->", raw, "", "<!-- /ssir:mineru-pages -->", ""])
+        parts_raw.append(raw)
         sources.append({"pages": [part["start"] + 1, part["end"] + 1], "markdown": part["markdown"], "sha256": hashlib.sha256(raw.encode()).hexdigest()})
+
+    # Derive the standard number and title from the extraction when the caller
+    # did not supply them explicitly, matching the generic PDF extractor logic.
+    number = args.standard_number or _standard_number("\n".join(parts_raw)[:3000], stem)
+    first_heading = next((line.lstrip("#").strip() for part in parts_raw for line in part.splitlines() if re.match(r"^#\s", line)), "")
+    title = args.title or _usable_title(first_heading, number)
+    lines = [
+        "---",
+        'csm-version: "1.0"',
+        "document-type: standard",
+        f"document-identifier: {json.dumps(number, ensure_ascii=False)}",
+        f"standard-number: {json.dumps(number, ensure_ascii=False)}",
+        f"title: {json.dumps(title, ensure_ascii=False)}",
+        "language: zh-CN",
+        "source:",
+        "  mode: mineru-pdf",
+        f"  original-file-name: {json.dumps(args.input.name, ensure_ascii=False)}",
+        "  provenance: mineru-full-standard-state.json",
+        'extraction-backend: "mineru pipeline"',
+        "---",
+        "",
+    ]
+    body = "\n\n".join(
+        f"<!-- ssir:mineru-pages start=\"{completed[start]['start'] + 1}\" end=\"{completed[start]['end'] + 1}\" -->\n{raw}\n<!-- /ssir:mineru-pages -->"
+        for start, raw in zip(expected, parts_raw)
+    )
+    if not re.search(r"(?m)^#\s", body):
+        body = f"# {title}\n\n{body}"
+    lines.extend([body, ""])
     destination.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
-    _write_json(args.output_dir / "GBT-1.1-2020.mineru.provenance.json", {
+    provenance = args.output_dir / f"{stem}.mineru.provenance.json"
+    _write_json(provenance, {
         "sourcePdf": str(args.input.resolve()), "sourceSha256": state["sourceSha256"], "pageCount": state["pageCount"],
         "backend": state["backend"], "parameters": state["parameters"], "parts": sources,
     })
     _log(f"Merged Markdown written: {destination}")
-    _log(f"Provenance written: {args.output_dir / 'GBT-1.1-2020.mineru.provenance.json'}")
+    _log(f"Provenance written: {provenance}")
     return destination
 
 
 def finalize(args: argparse.Namespace, merged: Path) -> Path | None:
     """Use the existing CSM normalizer/parser, retaining partial status if parsing needs review."""
-    std0 = args.output_dir / "GBT-1.1-2020.mineru.std0.csm.md"
-    ssir = args.output_dir / "GBT-1.1-2020.mineru.ssir.json"
+    stem = args.input.stem
+    std0 = args.output_dir / f"{stem}.mineru.std0.csm.md"
+    ssir = args.output_dir / f"{stem}.mineru.ssir.json"
     normalize = [str(Path(sys.prefix) / "bin" / "ssir"), "csm", "normalize", "--input", str(merged), "--std0-output", str(std0)]
     parsed = [str(Path(sys.prefix) / "bin" / "ssir"), "csm", "parse", "--input", str(std0), "--output", str(ssir)]
     _log("Normalizing merged MinerU Markdown into CSM Std0")
@@ -377,24 +408,30 @@ def compare(original: Path, generated: Path, output: Path) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run a resumable full MinerU extraction for a standards PDF.")
-    parser.add_argument("--input", type=Path, default=ROOT / "examples" / "GBT 1.1-2020.pdf")
-    parser.add_argument("--output-dir", type=Path, default=ROOT / "out" / "mineru" / "gbt-1.1-2020")
+    parser = argparse.ArgumentParser(description="Run a resumable full MinerU extraction, SSIR parsing, round-trip verification and optional PDF rendering for a national-standard PDF.")
+    parser.add_argument("--input", type=Path, help="PDF input of the national standard to extract (required)")
+    parser.add_argument("--output-dir", type=Path, help="output directory (default: out/mineru/<input-stem>)")
+    parser.add_argument("--standard-number", type=str, help="standard number written into the CSM front matter (default: inferred from the extraction, e.g. GB/T 10401-2023)")
+    parser.add_argument("--title", type=str, help="standard title written into the CSM front matter (default: first H1 from the extraction)")
     parser.add_argument("--chunk-size", type=int, default=18, help="Pages per restartable MinerU invocation (default: 18).")
     parser.add_argument("--stage", choices=("extract", "merge", "finalize", "all"), default="all")
+    parser.add_argument("--roundtrip", action="store_true", help="Run CSM Std0 -> SSIR -> CSM Std1 -> SSIR round-trip verification after parsing.")
     parser.add_argument("--render", action="store_true", help="Render parsed SSIR to PDF and write a comparison report.")
     parser.add_argument("--toc-depth", default="2", help="Maximum numbered TOC level for --render (positive integer or all; default: 2).")
     args = parser.parse_args()
+    if not args.input:
+        parser.error("--input is required (a PDF of the national standard to extract)")
     if not args.input.is_file() or args.input.suffix.lower() != ".pdf":
         parser.error(f"input must be an existing PDF: {args.input}")
     if args.chunk_size < 1:
         parser.error("--chunk-size must be positive")
+    args.output_dir = args.output_dir or ROOT / "out" / "mineru" / re.sub(r"\W+", "-", args.input.stem).strip("-")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     args.state_file = args.output_dir / "mineru-full-standard-state.json"
     state = _load_json(args.state_file, {})
     _log(f"Input PDF: {args.input.resolve()}")
     _log(f"Output directory: {args.output_dir.resolve()}")
-    _log(f"Stage: {args.stage}; render after parsing: {args.render}")
+    _log(f"Stage: {args.stage}; round-trip: {args.roundtrip}; render after parsing: {args.render}")
 
     try:
         if args.stage in {"extract", "all"}:
@@ -407,14 +444,25 @@ def main() -> int:
         if args.stage == "merge":
             return 0
         ssir = finalize(args, merged)
+        stem = args.input.stem
+        if args.roundtrip and ssir:
+            std0 = args.output_dir / f"{stem}.mineru.std0.csm.md"
+            std1 = args.output_dir / f"{stem}.mineru.std1.csm.md"
+            roundtrip = [str(Path(sys.prefix) / "bin" / "ssir"), "csm", "roundtrip", "--input", str(std0), "--std1-output", str(std1)]
+            _log("Running SSIR round-trip verification (Std0 -> SSIR1 -> Std1 -> SSIR2)")
+            result = subprocess.run(roundtrip, cwd=ROOT)
+            if result.returncode not in (0, 3):
+                raise RuntimeError("SSIR round-trip verification failed")
+            _log(f"Round-trip result: {result.returncode} (0 = SSIR1/SSIR2 equivalent; 3 = critical information loss)")
         if args.render and ssir:
-            pdf = args.output_dir / "GBT-1.1-2020.mineru.pdf"
+            pdf = args.output_dir / f"{stem}.mineru.pdf"
             render = [str(Path(sys.prefix) / "bin" / "ssir"), "pdf", "render", "--input", str(ssir), "--output", str(pdf), "--toc-depth", args.toc_depth]
-            _log("Rendering SSIR JSON as a GB/T 1.1-2020-style PDF")
+            _log("Rendering SSIR JSON as a traditional standard-style PDF")
             if subprocess.run(render, cwd=ROOT).returncode:
                 raise RuntimeError("SSIR PDF renderer failed")
-            compare(args.input, pdf, args.output_dir / "GBT-1.1-2020.mineru.pdf-comparison.json")
-            _log(f"Generated PDF comparison: {args.output_dir / 'GBT-1.1-2020.mineru.pdf-comparison.json'}")
+            comparison = args.output_dir / f"{stem}.mineru.pdf-comparison.json"
+            compare(args.input, pdf, comparison)
+            _log(f"Generated PDF comparison: {comparison}")
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
