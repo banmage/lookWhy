@@ -15,7 +15,7 @@ import yaml
 from .validation import validate_ssir
 
 
-DEFAULT_PROFILE = Path(__file__).resolve().parents[2] / "rules" / "rendering" / "gb-t-1-1-2020.yaml"
+DEFAULT_PROFILE = Path(__file__).resolve().parents[2] / "config" / "rendering" / "gb-t-1-1-2020.yaml"
 
 
 @dataclass(slots=True)
@@ -29,6 +29,9 @@ class PDFRenderReport:
     warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
+        # 规则对应: GEN-076（渲染报告）——有目次时预检与最终构建各跑一次封面故事，
+        # 占位 warning 去重后再写报告。
+        warnings = list(dict.fromkeys(self.warnings))
         return {
             "inputFile": self.input_file,
             "outputFile": self.output_file,
@@ -36,7 +39,7 @@ class PDFRenderReport:
             "profileId": self.profile_id,
             "fontFile": self.font_file,
             "pageCount": self.page_count,
-            "warnings": self.warnings,
+            "warnings": warnings,
         }
 
     def write_json(self, path: str | Path) -> None:
@@ -51,7 +54,11 @@ def render_pdf(
     input_file: str = "",
     toc_depth: int | None = 2,
 ) -> PDFRenderReport:
-    """Render SSIR JSON to a text-searchable PDF using an embedded CJK font."""
+    """Render SSIR JSON to a text-searchable PDF using an embedded CJK font.
+
+    规则对应: GEN-071（排版参数一律来自渲染 profile）、GEN-070（仅注册 TrueType 轮廓字体）、
+    GEN-072（页底锚定元素由页回调绘制）、GEN-076（渲染完成自动生成报告）。
+    """
     try:
         from reportlab.lib import colors
         from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT
@@ -88,11 +95,24 @@ def render_pdf(
     font_name = str(profile["fonts"].get("primary", "WenQuanYiZenHei"))
     if font_name not in pdfmetrics.getRegisteredFontNames():
         pdfmetrics.registerFont(TTFont(font_name, str(font_file), subfontIndex=0))
+    # GB/T 1.1 Appendix F distinguishes heading typefaces (Hei, the primary
+    # font) from body typefaces (Song); fall back to the primary when the
+    # profile does not declare a separate body font.
+    body_font_file = Path(profile["fonts"].get("body-file") or font_file)
+    if not body_font_file.is_file():
+        raise FileNotFoundError(f"CJK body font not found: {body_font_file}")
+    body_font_name = str(profile["fonts"].get("body") or font_name)
+    if body_font_name not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(TTFont(body_font_name, str(body_font_file), subfontIndex=0))
 
     page = profile["page"]
     margins = page["margin-mm"]
     target = Path(output)
     target.parent.mkdir(parents=True, exist_ok=True)
+    # Relative assetRef paths are resolved against the SSIR input file's
+    # directory first (MinerU writes assets/ next to the SSIR JSON), falling
+    # back to the output directory for generated formula images.
+    asset_dir = Path(input_file).resolve().parent if input_file and Path(input_file).is_file() else target.parent
     report = PDFRenderReport(input_file, str(target), str(profile_file), profile["id"], str(font_file))
     standard_no = document.get("metadata", {}).get("standard", {}).get("standardNumber", "")
     title = document["metadata"]["common"].get("title", "")
@@ -102,17 +122,48 @@ def render_pdf(
             return available_width, 0
 
     def footer(canvas: Any, doc: Any) -> None:
+        # 规则对应: GBT-P03（书眉：正文页编排文件编号）、GBT-P04（页码：正文起阿拉伯数字）、
+        # GEN-072（页底锚定元素由页回调绘制）、GEN-018/GBT-L01（封面徽标与分类号区块）。
         canvas.saveState()
         canvas.setFont(font_name, 8)
-        if standard_no:
-            canvas.drawCentredString(A4[0] / 2, A4[1] - 14 * mm, standard_no)
-        canvas.drawRightString(A4[0] - float(margins["right"]) * mm, 12 * mm, str(doc.page))
+        if standard_no and doc.page > 1:
+            # GB/T covers carry no running header; body pages put the
+            # standard number flush right.
+            canvas.drawRightString(A4[0] - float(margins["right"]) * mm, A4[1] - 14 * mm, standard_no)
+        if doc.page > 1 or not has_cover:
+            canvas.drawRightString(A4[0] - float(margins["right"]) * mm, 12 * mm, str(doc.page))
+        # The cover publication block (dates, solid rule, issuing bodies,
+        # 批准发布) is anchored near the bottom of the first page only,
+        # matching the GB/T 1.1 cover layout.
+        if has_cover and doc.page == 1:
+            _draw_cover_publication(
+                canvas,
+                float(margins["left"]) * mm,
+                A4[0] - float(margins["right"]) * mm,
+                common.get("publicationDate", ""),
+                common.get("effectiveDate", ""),
+                common.get("issuer", ""),
+                28 * mm,
+                font_name,
+            )
+            badge = standard.get("coverBadge")
+            if badge:
+                badge_path = (asset_dir / badge).resolve()
+                if badge_path.is_file():
+                    # Emblem sits at the top-right of the cover, above the
+                    # standard-number block and clear of the banner text.
+                    canvas.saveState()
+                    canvas.drawImage(str(badge_path), A4[0] - float(margins["right"]) * mm - 100, A4[1] - 42 * mm, width=100, height=42, preserveAspectRatio=True, mask="auto")
+                    canvas.restoreState()
         canvas.restoreState()
 
-    styles = _styles(getSampleStyleSheet(), profile, font_name, TA_CENTER, TA_JUSTIFY, TA_LEFT)
+    styles = _styles(getSampleStyleSheet(), profile, font_name, body_font_name, TA_CENTER, TA_JUSTIFY, TA_LEFT)
     registries = {kind: {item["id"]: item for item in document.get(kind, [])} for kind in ("tables", "figures", "formulas", "unknownContents")}
     common = document.get("metadata", {}).get("common", {})
     standard = document.get("metadata", {}).get("standard", {})
+    # 规则对应: GBT-C01（封面必备信息）——标准类文档一律渲染封面；ICS/CCS/日期缺失时
+    # 由 _cover_story 以 "××" 占位并记录 warning，而不是跳过整个封面。
+    has_cover = document.get("documentType") == "standard" or bool(standard.get("standardNumber"))
     root_nodes = sorted(document["structuralRoot"].get("children", []), key=_order)
     has_toc = any(_is_toc_node(node) for node in root_nodes)
 
@@ -140,9 +191,14 @@ def render_pdf(
             return available_width, len(self.rows) * self.leading
 
         def split(self, available_width: float, available_height: float) -> list[Any]:
-            count = max(int(available_height // self.leading), 1)
+            # If even one row cannot fit, move the whole flowable to the
+            # next page — returning a piece that itself does not fit makes
+            # reportlab raise a splitting error.
+            count = int(available_height // self.leading)
             if count >= len(self.rows):
                 return [self]
+            if count < 1:
+                return []
             return [_TOCFlowable(self.rows[:count], self.width), _TOCFlowable(self.rows[count:], self.width)]
 
         def draw(self) -> None:
@@ -221,7 +277,8 @@ def render_pdf(
 
         def draw(self) -> None:
             text = "中华人民共和国国家标准"
-            size = 24
+            # GB/T 1.1 Appendix F: cover banner is 一号黑体 (26pt).
+            size = 26
             canvas = self.canv
             text_width = canvas.stringWidth(text, font_name, size)
             char_space = max((self.width - text_width) / max(len(text) - 1, 1), 0)
@@ -232,7 +289,12 @@ def render_pdf(
                 x += canvas.stringWidth(character, font_name, size) + char_space
 
     class _CoverPublicationBlock(Flowable):
-        """Fixed cover footer: dates, rule, issuing bodies, and 发布."""
+        """Fixed cover footer: dates, solid rule, issuing bodies, and 发布.
+
+        Follows the GB/T 1.1 cover layout: a single solid rule near the page
+        bottom with the two issuing bodies stacked vertically to its left and
+        批准发布 (one character per line) at its right end.
+        """
         def __init__(self, issued: str, effective: str, issuer: str) -> None:
             super().__init__()
             self.issued = issued
@@ -241,25 +303,30 @@ def render_pdf(
 
         def wrap(self, available_width: float, available_height: float) -> tuple[float, float]:
             self.width = available_width
-            return available_width, 83
+            return available_width, 90
 
         def draw(self) -> None:
             canvas = self.canv
+            # Dates row sits above the rule.
             canvas.setFont(font_name, 11)
             if self.issued:
-                canvas.drawString(0, 68, f"{self.issued} 发布")
+                canvas.drawString(0, 75, f"{self.issued} 发布")
             if self.effective:
-                canvas.drawRightString(self.width, 68, f"{self.effective} 实施")
+                canvas.drawRightString(self.width, 75, f"{self.effective} 实施")
+            # Single solid rule; the bodies and 批准发布 hang below it.
             canvas.setLineWidth(1.8)
-            canvas.line(0, 56, self.width, 56)
+            canvas.line(0, 62, self.width, 62)
             bodies = [part.strip() for part in re.split(r"[、，,]", self.issuer) if part.strip()]
             canvas.setFont(font_name, 10.5)
             for index, body in enumerate(bodies[:2]):
-                canvas.drawCentredString(self.width * 0.46, 35 - index * 18, body)
+                # Stacked vertically under the rule's left half.
+                canvas.drawCentredString(self.width * 0.40, 42 - index * 18, body)
             if self.issuer:
                 canvas.setFont(font_name, 11)
-                canvas.drawCentredString(self.width - 12, 37, "发")
-                canvas.drawCentredString(self.width - 12, 20, "布")
+                canvas.drawCentredString(self.width - 12, 46, "批")
+                canvas.drawCentredString(self.width - 12, 30, "准")
+                canvas.drawCentredString(self.width - 12, 14, "发")
+                canvas.drawCentredString(self.width - 12, -2, "布")
 
     def toc_story(toc_nodes: list[dict[str, Any]], toc_pages: dict[str, int]) -> list[Any]:
         rows = []
@@ -273,7 +340,10 @@ def render_pdf(
         # protocol cannot safely split a flowable that calculates dot leaders
         # directly on the canvas.
         result: list[Any] = [Paragraph("目 次", styles["toc-title"])]
-        rows_per_page = 18
+        # Fill the frame: usable height (A4 minus margins minus the title)
+        # divided by the TOC row leading, with a safety margin.
+        usable_pt = A4[1] - (float(margins["top"]) + float(margins["bottom"])) * mm - 30 * mm
+        rows_per_page = max(int(usable_pt // 18), 18)
         for offset in range(0, len(rows), rows_per_page):
             result.append(_TOCFlowable(rows[offset:offset + rows_per_page], float(doc_width)))
             if offset + rows_per_page < len(rows):
@@ -294,8 +364,8 @@ def render_pdf(
 
     def make_story(toc_pages: dict[str, int], record_pages: dict[str, int] | None = None) -> list[Any]:
         story: list[Any] = []
-        if standard.get("ics") or standard.get("ccs"):
-            story.extend(_cover_story(common, standard, styles, Paragraph, Spacer, PageBreak, HRFlowable, _CoverBanner, _CoverPublicationBlock, include_front_title=not has_toc))
+        if has_cover:
+            story.extend(_cover_story(common, standard, styles, Paragraph, Spacer, PageBreak, HRFlowable, _CoverBanner, _CoverPublicationBlock, include_front_title=not has_toc, report=report))
         else:
             story.extend([Paragraph(_markup(title), styles["title"]), Spacer(1, 14 * mm)])
         body_title_inserted = False
@@ -312,7 +382,7 @@ def render_pdf(
                 story.extend([PageBreak(), Paragraph(_markup(title), styles["title"]), Spacer(1, 14 * mm)])
                 body_title_inserted = True
             marker_factory = (lambda item: _TOCMarker(item["id"])) if record_pages is not None else None
-            _append_node(story, node, registries, styles, font_name, report, target.parent, colors, Table, TableStyle, Paragraph, Spacer, Image, marker_factory, PageBreak)
+            _append_node(story, node, registries, styles, font_name, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, marker_factory, PageBreak)
         return story
 
     doc_width = A4[0] - (float(margins["left"]) + float(margins["right"])) * mm
@@ -344,38 +414,67 @@ def render_pdf_file(
     return render_pdf(document, output, profile_path=profile_path, input_file=str(source), toc_depth=toc_depth)
 
 
-def _styles(base: Any, profile: dict[str, Any], font: str, center: int, justify: int, left: int) -> dict[str, Any]:
+def _styles(base: Any, profile: dict[str, Any], font: str, body_font: str, center: int, justify: int, left: int) -> dict[str, Any]:
+    # 规则对应: GBT-P02（字号字体符合附录F）、GBT-FM2（前言/引言标题三号黑体居中）、
+    # GBT-B02/B03（章条标题五号黑体、正文五号宋体）、GBT-B05（附录标题居中）、
+    # GBT-B10（注小五号）、GEN-071（排版参数来自 profile）。
     from reportlab.lib.styles import ParagraphStyle
 
     rules = profile["styles"]
     body = rules["body"]
+    # GB/T 1.1-2020 Appendix F (Table F.1): headings, captions and the table
+    # number line use Hei (黑体); body text, notes and examples use Song
+    # (宋体).  Heading sizes follow the same appendix: front-matter/TOC titles
+    # 三号 (16pt), chapter headings 五号-equivalent scale per profile.
     return {
-        "title": ParagraphStyle("gbt-title", parent=base["Title"], fontName=font, fontSize=18, leading=26, alignment=center, spaceAfter=8),
-        "front": ParagraphStyle("gbt-front", parent=base["BodyText"], fontName=font, fontSize=rules["front-matter"]["size-pt"], leading=rules["front-matter"]["leading-pt"], alignment=justify, firstLineIndent=2 * body["size-pt"], spaceAfter=4),
+        "title": ParagraphStyle("gbt-title", parent=base["Title"], fontName=font, fontSize=26, leading=34, alignment=center, spaceAfter=8),
+        "front": ParagraphStyle("gbt-front", parent=base["BodyText"], fontName=body_font, fontSize=rules["front-matter"]["size-pt"], leading=rules["front-matter"]["leading-pt"], alignment=justify, firstLineIndent=2 * body["size-pt"], spaceAfter=4),
         # GB/T 1.1 keeps chapter and clause headings flush left.  The chapter
         # line is one size larger; all clause levels share a size and leading.
         "section": ParagraphStyle("gbt-section", parent=base["Heading2"], fontName=font, fontSize=12, leading=22, alignment=left, leftIndent=0, firstLineIndent=0, spaceBefore=16, spaceAfter=10),
         "clause": ParagraphStyle("gbt-clause", parent=base["Heading3"], fontName=font, fontSize=10.5, leading=18, alignment=left, leftIndent=0, firstLineIndent=0, spaceBefore=8, spaceAfter=4),
         "subclause": ParagraphStyle("gbt-subclause", parent=base["Heading4"], fontName=font, fontSize=10.5, leading=18, alignment=left, leftIndent=0, firstLineIndent=0, spaceBefore=8, spaceAfter=4),
-        "body": ParagraphStyle("gbt-body", parent=base["BodyText"], fontName=font, fontSize=body["size-pt"], leading=body["leading-pt"], alignment=justify, firstLineIndent=2 * body["size-pt"], spaceAfter=4),
-        "note": ParagraphStyle("gbt-note", parent=base["BodyText"], fontName=font, fontSize=9, leading=15, alignment=justify, leftIndent=2 * body["size-pt"], spaceAfter=4),
-        "list": ParagraphStyle("gbt-list", parent=base["BodyText"], fontName=font, fontSize=body["size-pt"], leading=body["leading-pt"], alignment=justify, leftIndent=2 * body["size-pt"], firstLineIndent=-2 * body["size-pt"], spaceAfter=2),
-        "list-sub": ParagraphStyle("gbt-list-sub", parent=base["BodyText"], fontName=font, fontSize=body["size-pt"], leading=body["leading-pt"], alignment=justify, leftIndent=4 * body["size-pt"], firstLineIndent=-2 * body["size-pt"], spaceAfter=2),
-        "caption": ParagraphStyle("gbt-caption", parent=base["BodyText"], fontName=font, fontSize=9, leading=14, alignment=center, spaceBefore=4, spaceAfter=4),
-        "formula": ParagraphStyle("gbt-formula", parent=base["Code"], fontName=font, fontSize=10, leading=16, alignment=center, spaceAfter=4),
-        "table": ParagraphStyle("gbt-table", parent=base["BodyText"], fontName=font, fontSize=rules["table"]["size-pt"], leading=rules["table"]["leading-pt"], alignment=left),
-        "toc-title": ParagraphStyle("gbt-toc-title", parent=base["Title"], fontName=font, fontSize=14, leading=22, alignment=center, spaceAfter=14),
+        "body": ParagraphStyle("gbt-body", parent=base["BodyText"], fontName=body_font, fontSize=body["size-pt"], leading=body["leading-pt"], alignment=justify, firstLineIndent=2 * body["size-pt"], spaceAfter=4),
+        "note": ParagraphStyle("gbt-note", parent=base["BodyText"], fontName=body_font, fontSize=9, leading=15, alignment=justify, leftIndent=2 * body["size-pt"], spaceAfter=4),
+        "list": ParagraphStyle("gbt-list", parent=base["BodyText"], fontName=body_font, fontSize=body["size-pt"], leading=body["leading-pt"], alignment=justify, leftIndent=2 * body["size-pt"], firstLineIndent=-2 * body["size-pt"], spaceAfter=2),
+        "list-sub": ParagraphStyle("gbt-list-sub", parent=base["BodyText"], fontName=body_font, fontSize=body["size-pt"], leading=body["leading-pt"], alignment=justify, leftIndent=4 * body["size-pt"], firstLineIndent=-2 * body["size-pt"], spaceAfter=2),
+        "caption": ParagraphStyle("gbt-caption", parent=base["BodyText"], fontName=font, fontSize=10.5, leading=14, alignment=center, spaceBefore=4, spaceAfter=4),
+        "formula": ParagraphStyle("gbt-formula", parent=base["Code"], fontName=body_font, fontSize=10, leading=16, alignment=center, spaceAfter=4),
+        "table": ParagraphStyle("gbt-table", parent=base["BodyText"], fontName=body_font, fontSize=rules["table"]["size-pt"], leading=rules["table"]["leading-pt"], alignment=left),
+        "toc-title": ParagraphStyle("gbt-toc-title", parent=base["Title"], fontName=font, fontSize=16, leading=22, alignment=center, spaceAfter=14),
+        # GB/T 1.1 annex heading block: 附录 letter, status and title are
+        # centred, in that order, with the title in the largest size.
+        "annex-letter": ParagraphStyle("gbt-annex-letter", parent=base["Heading2"], fontName=font, fontSize=12, leading=20, alignment=center, spaceBefore=6, spaceAfter=4),
+        "annex-status": ParagraphStyle("gbt-annex-status", parent=base["Heading3"], fontName=font, fontSize=10.5, leading=16, alignment=center, spaceAfter=4),
+        "annex-title": ParagraphStyle("gbt-annex-title", parent=base["Heading2"], fontName=font, fontSize=14, leading=22, alignment=center, spaceAfter=14),
+        "table-unit": ParagraphStyle("gbt-table-unit", parent=base["BodyText"], fontName=body_font, fontSize=9, leading=12, alignment=2, firstLineIndent=0, spaceBefore=2, spaceAfter=0),
     }
 
 
 def _append_node(story: list[Any], node: dict[str, Any], registries: dict[str, dict[str, dict[str, Any]]], styles: dict[str, Any], font: str, report: PDFRenderReport, asset_dir: Path, colors: Any, Table: Any, TableStyle: Any, Paragraph: Any, Spacer: Any, Image: Any, marker_factory: Any = None, PageBreak: Any = None) -> None:
+    # 规则对应: GBT-B02（章条编号顶格、空一字接排标题）、GBT-B05（附录另起一面、编号/
+    # 性质/标题各占一行居中）、GBT-B06/B07（图题表题五号黑体居中）、GEN-073（整体性保护）。
     node_type = node.get("nodeType")
     number, title, is_annex = _heading_parts(node)
     if PageBreak is not None and _starts_new_page(node, title, is_annex):
         story.append(PageBreak())
     heading = _heading_text(number, title, is_annex)
     depth = _heading_depth(number)
-    heading_style = styles["section"] if is_annex or depth == 1 else styles["subclause"] if depth >= 3 else styles["clause"] if depth else styles["front"]
+    if is_annex:
+        # GB/T 1.1: annex headings are centred; the annex letter, the
+        # (规范性/资料性) marker and the title render as centred lines.
+        story.append(marker_factory(node) if marker_factory else Spacer(1, 0))
+        story.append(Paragraph(_markup(f"附　录　{number}"), styles["annex-letter"]))
+        status = _heading_annex_status(node)
+        if status:
+            story.append(Paragraph(_markup(status), styles["annex-status"]))
+        story.append(Paragraph(_markup(title), styles["annex-title"]))
+        for content in sorted(node.get("contentElements", []), key=_order):
+            _append_content(story, content, registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image)
+        for child in sorted(node.get("children", []), key=_order):
+            _append_node(story, child, registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, marker_factory, PageBreak)
+        return
+    heading_style = styles["section"] if depth == 1 else styles["subclause"] if depth >= 3 else styles["clause"] if depth else styles["front"]
     if marker_factory:
         story.append(marker_factory(node))
     story.append(Paragraph(_markup(heading), heading_style))
@@ -385,8 +484,63 @@ def _append_node(story: list[Any], node: dict[str, Any], registries: dict[str, d
         _append_node(story, child, registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, marker_factory, PageBreak)
 
 
-def _cover_story(common: dict[str, Any], standard: dict[str, Any], styles: dict[str, Any], Paragraph: Any, Spacer: Any, PageBreak: Any, HRFlowable: Any, CoverBanner: Any, CoverPublicationBlock: Any, *, include_front_title: bool = True) -> list[Any]:
-    """Render mandatory GB/T cover fields when the SSIR metadata provides them."""
+def _draw_cover_publication(canvas: Any, left: float, right: float, issued: str, effective: str, issuer: str, bottom: float, font: str) -> None:
+    """Draw the GB/T cover publication block anchored near the page bottom.
+
+    规则对应: GBT-L07（发布/实施日期倒数第二行左右分置）、GBT-L08（发布机构倒数第一行）、
+    GBT-L09（"发布"整体一词编排，字距实现）、GEN-072（页回调绘制）。
+
+    Layout per GB/T 1.1: the 发布/实施 dates sit above a single solid rule;
+    below the rule the two issuing bodies stack vertically on the left while
+    批准发布 runs vertically at the right end.
+    """
+    canvas.saveState()
+    canvas.setFont(font, 11)
+    # GBT-C01：发布/实施日期为封面必备信息，缺失时以 "××" 占位并保持版式。
+    canvas.drawString(left, bottom + 52, f"{issued if issued else '××'} 发布")
+    canvas.drawRightString(right, bottom + 52, f"{effective if effective else '××'} 实施")
+    canvas.setLineWidth(1.8)
+    canvas.line(left, bottom + 40, right, bottom + 40)
+    bodies = [part.strip() for part in re.split(r"[、，,]|[\s　]+", issuer) if part.strip()]
+    center = left + (right - left) * 0.40
+    canvas.setFont(font, 10.5)
+    if len(bodies) > 1:
+        # Two issuing bodies stack vertically below the rule, the group
+        # centred between the rule and the bottom margin.
+        line_height = 18
+        top = bottom + 26
+        for index, body in enumerate(bodies[:2]):
+            canvas.drawCentredString(center, top - index * line_height, body)
+    elif bodies:
+        canvas.drawCentredString(center, bottom + 20, bodies[0])
+    if issuer:
+        # Joint publication: a single horizontal 发布 (kept as one word with
+        # modest letter-spacing) placed about one character-width to the
+        # right of the issuing-body block.
+        canvas.setFont(font, 12)
+        pub = "发布"
+        gap = canvas.stringWidth("国", font, 12)
+        offset = 0
+        for body in bodies[:2]:
+            offset = max(offset, canvas.stringWidth(body, font, 10.5) / 2)
+        x = center + offset + gap
+        text_obj = canvas.beginText(x, bottom + 20)
+        text_obj.setFont(font, 12)
+        text_obj.setCharSpace(gap * 0.5)
+        text_obj.textOut(pub)
+        canvas.drawText(text_obj)
+    canvas.restoreState()
+
+
+def _cover_story(common: dict[str, Any], standard: dict[str, Any], styles: dict[str, Any], Paragraph: Any, Spacer: Any, PageBreak: Any, HRFlowable: Any, CoverBanner: Any, CoverPublicationBlock: Any, *, include_front_title: bool = True, report: Any = None) -> list[Any]:
+    """Render mandatory GB/T cover fields when the SSIR metadata provides them.
+
+    规则对应: GBT-L01（ICS/CCS 左上两行左端对齐）、GBT-L02（文件编号四号黑体）、
+    GBT-L03（横幅"中华人民共和国国家标准"）、GBT-L04（文件名称一号黑体）、
+    GBT-L05（英文译名四号黑体）、GBT-L06（一致性程度标识加圆括号）；
+    GBT-C01（必备信息齐全性，缺失以 ×× 占位并记录 warning）。
+    """
+    from reportlab.lib import colors
     from reportlab.lib.styles import ParagraphStyle
 
     cover_left = ParagraphStyle("gbt-cover-left", parent=styles["front"], alignment=0, fontSize=10, leading=15, spaceAfter=0)
@@ -400,21 +554,41 @@ def _cover_story(common: dict[str, Any], standard: dict[str, Any], styles: dict[
     effective = common.get("effectiveDate", "")
     issuer = common.get("issuer", "")
     conformity = common.get("conformityStatement", "")
+
+    # GBT-C01 / GEN-090：封面必备信息（文件编号、ICS、CCS、发布/实施日期、
+    # 发布机构、名称）任一缺失时，渲染以 "××" 占位并在渲染报告 warning
+    # 中记录对应规则 ID —— 让占位在成品上可见、在报告中可追溯。
+    def _required(value: str, field: str, rule: str) -> str:
+        if str(value).strip():
+            return str(value)
+        if report is not None:
+            report.warnings.append(f"[{rule}] 封面必备信息缺失，已用占位符渲染：{field}")
+        return "××"
+
+    standard_number = _required(standard.get("standardNumber", ""), "文件编号", "GBT-C01")
+    ics = _required(standard.get("ics", ""), "ICS 号", "GBT-C01")
+    ccs = _required(standard.get("ccs", ""), "CCS 号", "GBT-C01")
+    title = _required(title, "文件名称", "GBT-C01")
+    issued = _required(issued, "发布日期", "GBT-C01")
+    effective = _required(effective, "实施日期", "GBT-C01")
+    issuer = _required(issuer, "发布机构", "GBT-C01")
+
     result: list[Any] = []
-    if standard.get("ics"):
-        result.append(Paragraph(_markup(f"ICS {standard['ics']}"), cover_left))
-    if standard.get("ccs"):
-        result.append(Paragraph(_markup(f"CCS {standard['ccs']}"), cover_left))
-    result.extend([Spacer(1, 34), CoverBanner(), Spacer(1, 30), Paragraph(_markup(standard.get("standardNumber", "")), cover_number)])
+    result.append(Paragraph(_markup(f"ICS {ics}"), cover_left))
+    result.append(Paragraph(_markup(f"CCS {ccs}"), cover_left))
+    result.extend([Spacer(1, 34), CoverBanner(), Spacer(1, 30), Paragraph(_markup(standard_number), cover_number)])
     if standard.get("replaces"):
         result.append(Paragraph(_markup(f"代替： {standard['replaces']}"), cover_replaces))
-    result.extend([Spacer(1, 7), HRFlowable(width="100%", thickness=1.8, spaceBefore=0, spaceAfter=0)])
-    result.extend([Spacer(1, 30), Paragraph(_markup(title), styles["title"])])
+    result.extend([Spacer(1, 7), HRFlowable(width="100%", thickness=1.8, spaceBefore=0, spaceAfter=0, color=colors.black)])
+    # GB/T 1.1 cover: the standard name sits clearly below the rule.
+    result.extend([Spacer(1, 48), Paragraph(_markup(title), styles["title"])])
     if english:
         result.append(Paragraph(_markup(english), cover_en))
     if conformity:
         result.append(Paragraph(_markup(conformity), cover_conformity))
-    result.extend([Spacer(1, 54), CoverPublicationBlock(issued, effective, issuer)])
+    result.extend([Spacer(1, 54)])
+    # The publication block (dates/rule/bodies/批准发布) is drawn by the
+    # first-page footer callback so it stays anchored near the page bottom.
     result.append(PageBreak())
     if include_front_title:
         result.extend([Paragraph(_markup(title), styles["title"]), Spacer(1, 14)])
@@ -422,11 +596,32 @@ def _cover_story(common: dict[str, Any], standard: dict[str, Any], styles: dict[
 
 
 def _append_content(story: list[Any], content: dict[str, Any], registries: dict[str, dict[str, dict[str, Any]]], styles: dict[str, Any], font: str, report: PDFRenderReport, asset_dir: Path, colors: Any, Table: Any, TableStyle: Any, Paragraph: Any, Spacer: Any, Image: Any) -> None:
+    # 规则对应: GEN-032（表格题注拆分：居中题注 + 右对齐单位行）、GBT-B04（列项缩进）、
+    # GBT-B10（注小五号宋体）、GBT-X06（公式另行居中、编号右对齐）、GBT-X01/B06（图与图题）。
     from reportlab.platypus import KeepTogether
 
     kind = content.get("presentationType")
     if kind in {"paragraph", "quote", "warning", "example"}:
-        story.append(Paragraph(_markup(content.get("textContent", "")), styles["body"]))
+        text = str(content.get("textContent", ""))
+        # GB/T 1.1 table caption block: "表 X.Y 题名\n单位为毫米" — the unit
+        # line renders small and flush right, directly above the table frame.
+        caption_match = re.match(r"^(表\s*[A-Z]?\d*\.?\d*[^\n]*)\n(单位为[^\s]{1,4})\s*$", text.strip())
+        unit_only = re.fullmatch(r"单位为[^\s]{1,4}", text.strip())
+        if caption_match:
+            story.append(Paragraph(_markup(caption_match.group(1).strip()), styles["caption"]))
+            from reportlab.lib.styles import ParagraphStyle
+            unit_style = styles.get("table-unit") or ParagraphStyle(
+                "gbt-table-unit", parent=styles["body"], alignment=2, fontSize=9, leading=12, spaceAfter=0, firstLineIndent=0,
+            )
+            story.append(Paragraph(_markup(caption_match.group(2)), unit_style))
+        elif unit_only:
+            from reportlab.lib.styles import ParagraphStyle
+            unit_style = styles.get("table-unit") or ParagraphStyle(
+                "gbt-table-unit", parent=styles["body"], alignment=2, fontSize=9, leading=12, spaceAfter=0, firstLineIndent=0,
+            )
+            story.append(Paragraph(_markup(text.strip()), unit_style))
+        else:
+            story.append(Paragraph(_markup(text), styles["body"]))
     elif kind == "note":
         story.append(Paragraph(_markup(content.get("textContent", "")), styles["note"]))
     elif kind == "list":
@@ -485,11 +680,16 @@ def _append_content(story: list[Any], content: dict[str, Any], registries: dict[
 
 
 def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any], colors: Any, Table: Any, TableStyle: Any, Paragraph: Any) -> None:
+    # 规则对应: GBT-B07（表编号表题居中置于表上、表头框线、数字小五号宋体）、
+    # GBT-X02（不准许分表/表中套表；转页重复表头 repeatRows）、GEN-033（无编号无题名不输出题注）。
     from reportlab.platypus import Spacer
 
-    label = f"表{table.get('number', '')} {table.get('caption', '')}".strip()
-    if label:
-        story.append(Paragraph(_markup(label), styles["caption"]))
+    number = str(table.get("number") or "").strip()
+    caption = str(table.get("caption") or "").strip()
+    # A table with neither number nor caption gets no caption line at all
+    # (otherwise a lone "表" character would appear above the table).
+    if number or caption:
+        story.append(Paragraph(_markup(f"表{number} {caption}".strip()), styles["caption"]))
     rows = sorted(table.get("rows", []), key=lambda row: row["rowIndex"])
     data = [[Paragraph(_markup(cell.get("text", "")), styles["table"]) for cell in sorted(row.get("cells", []), key=lambda cell: cell["colIndex"])] for row in rows]
     if not data:
@@ -515,7 +715,10 @@ def _markup(text: str) -> str:
 
 
 def _formula_image(latex: str, asset_dir: Path) -> Path | None:
-    """Render a display formula through Matplotlib's bundled MathText engine."""
+    """Render a display formula through Matplotlib's bundled MathText engine.
+
+    规则对应: GBT-X06（数学公式另行居中编排的资产支撑）。
+    """
     expression = latex.strip()
     if not expression:
         return None
@@ -546,14 +749,23 @@ def _is_toc_node(node: dict[str, Any]) -> bool:
 
 
 def _heading_parts(node: dict[str, Any]) -> tuple[str, str, bool]:
-    """Normalize headings where extraction kept the number in title text."""
+    """Normalize headings where extraction kept the number in title text.
+
+    规则对应: GEN-031（层次编号规范化：点分阿拉伯数字 / 附录大写字母点分链）。
+    """
     raw_number = str(node.get("number") or "").strip()
     title = str(node.get("title") or "").strip()
     annex = node.get("nodeType") == "annex"
+    status = ""
+    if annex:
+        status_match = re.match(r"^（(规范性|资料性|未判定)）\s*(.*)$", title)
+        if status_match:
+            status, title = status_match.group(1), status_match.group(2).strip()
     annex_match = re.match(r"^附\s*录\s*([A-Z])(?:\s*(.*))?$", title)
     if annex_match:
         return annex_match.group(1), (annex_match.group(2) or "").strip(), True
     if annex:
+        node = {**node, "annexStatus": status}  # type: ignore[assignment]
         return raw_number, title, True
     if not raw_number:
         pure_numbered = re.match(r"^([A-Z](?:\.\d+)+|\d+(?:\.\d+)*)$", title)
@@ -565,6 +777,13 @@ def _heading_parts(node: dict[str, Any]) -> tuple[str, str, bool]:
     return raw_number, title, False
 
 
+def _heading_annex_status(node: dict[str, Any]) -> str:
+    """Return the (规范性/资料性) marker stored in an annex title, if any."""
+    title = str(node.get("title") or "").strip()
+    match = re.match(r"^（(规范性|资料性|未判定)）", title)
+    return f"（{match.group(1)}）" if match else ""
+
+
 def _heading_text(number: str, title: str, is_annex: bool) -> str:
     if is_annex:
         return f"附录 {number}\u3000{title}".strip()
@@ -574,6 +793,7 @@ def _heading_text(number: str, title: str, is_annex: bool) -> str:
 
 
 def _heading_depth(number: str) -> int:
+    # 规则对应: GEN-031/GBT-H02-H03（章条层次：点分编号决定字号层级）。
     if re.fullmatch(r"\d+", number):
         return 1
     if re.fullmatch(r"\d+(?:\.\d)+", number):
@@ -584,11 +804,13 @@ def _heading_depth(number: str) -> int:
 
 
 def _starts_new_page(node: dict[str, Any], title: str, is_annex: bool) -> bool:
+    # 规则对应: GBT-B05（附录另起一面）、GBT-FM2（前言、引言另起一面）、GBT-FM5（参考文献/索引另起一面）。
     normalized = title.replace(" ", "")
     return is_annex or (not node.get("number") and normalized in {"引言", "参考文献"})
 
 
 def _toc_nodes(root_nodes: list[dict[str, Any]], depth: int | None = 2) -> list[dict[str, Any]]:
+    # 规则对应: GBT-C02/GBT-FM1（目次：前言、引言、章、条(需要时)、附录、参考文献、索引）。
     result: list[dict[str, Any]] = []
 
     def visit(node: dict[str, Any]) -> None:
@@ -614,6 +836,7 @@ def _toc_label(node: dict[str, Any]) -> str:
 
 
 def _toc_indent_level(node: dict[str, Any]) -> int:
+    # 规则对应: GBT-FM1（目次第一层次条空一个汉字起排、第二层次空两个，依此类推）。
     number, _, is_annex = _heading_parts(node)
     if is_annex:
         return 0
@@ -629,6 +852,7 @@ def _is_rendered_index_node(node: dict[str, Any]) -> bool:
 
 
 def _index_story(root_nodes: list[dict[str, Any]], styles: dict[str, Any], IndexFlowable: Any, PageBreak: Any, Paragraph: Any, marker: Any = None) -> list[Any]:
+    # 规则对应: GBT-FM5（索引另起一面、标题居中、关键词与编号间"……"连接）。
     start = next((index for index, node in enumerate(root_nodes) if _is_rendered_index_node(node)), None)
     if start is None:
         return []
@@ -695,5 +919,6 @@ def _wrap_index_locator(text: str, width: float, font: str, size: float, pdfmetr
 
 
 def _pdf_page_count(path: Path) -> int:
+    # 规则对应: GEN-076（渲染报告页数统计）。
     # A page object marker is deterministic enough for a render report and needs no PDF parser.
     return len(re.findall(rb"/Type\s*/Page\b", path.read_bytes()))

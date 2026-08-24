@@ -62,11 +62,13 @@ def _page_count(pdf: Path) -> int:
 # national/industry standard-number prefixes (GB, GB/T, DB, QB, JB, DL, NY, ISO)
 # and are deliberately not specific to GB/T 1.1-2020.
 def _standard_number(text: str, fallback: str) -> str:
+    # 规则对应: GEN-012（文件编号识别与一字线规范化）。
     match = re.search(r"\b(?:GB|GB/T|DB|QB|JB|DL|NY|ISO)[ /A-Z0-9.\-—]+", text, re.I)
     return (match.group(0).strip() if match else fallback).replace("—", "-")
 
 
 def _usable_title(text: str, fallback: str) -> str:
+    # 规则对应: GBT-C01（封面必备信息——文件名称）；损坏字体解码兜底。
     compact = " ".join(text.split())
     # Broken embedded CJK fonts often decode as repeated mathematical letters.
     if not compact or sum(1 for char in compact if "犀" <= char <= "犿") > 4:
@@ -75,7 +77,10 @@ def _usable_title(text: str, fallback: str) -> str:
 
 
 def _is_gbt_1_1_2020(source: Path) -> bool:
-    """True for the GB/T 1.1-2020 input that the standard-specific quirk fixes target."""
+    """True for the GB/T 1.1-2020 input that the standard-specific quirk fixes target.
+
+    规则对应: GBT-* 专属修复开关（仅对 GB/T 1.1-2020 输入启用 7.4 版式图恢复等 quirks）。
+    """
     return "1.1-2020" in source.stem or "1.1—2020" in source.stem
 
 
@@ -89,7 +94,10 @@ def _mineru_markdown(part_dir: Path) -> Path | None:
 
 
 def _html_table_to_csm(html: str, table_id: str, caption: str | None) -> str:
-    """Turn MinerU HTML tables into the constrained CSM table representation."""
+    """Turn MinerU HTML tables into the constrained CSM table representation.
+
+    规则对应: GBT-B08（题注形如"表X 题名"，编号必备）+ GEN-033（无编号且无题名不输出题注）。
+    """
     soup = BeautifulSoup(html, "html.parser")
     rows: list[list[str]] = []
     for tr in soup.find_all("tr"):
@@ -118,8 +126,338 @@ def _html_table_to_csm(html: str, table_id: str, caption: str | None) -> str:
     return "\n".join(lines)
 
 
+def _extract_cover_badge(source_pdf: Path, output_dir: Path) -> str | None:
+    """Extract the cover "GB" emblem image from page 1 into an asset.
+
+    规则对应: GEN-018（封面徽标图片恢复，should）。
+
+    MinerU only recognises the emblem as an oversized header text block; the
+    emblem itself is a raster image embedded in the source PDF.  The largest
+    top-of-page image is recovered so rendering can place it back.
+    Returns the asset path relative to the output directory, or None.
+    """
+    try:
+        import fitz  # type: ignore
+
+        with fitz.open(source_pdf) as document:
+            page = document[0]
+            blocks = [
+                block for block in page.get_text("dict")["blocks"]
+                if block.get("type") == 1 and block.get("bbox")
+            ]
+            if not blocks:
+                return None
+            # The GB emblem is the widest image block in the upper half of
+            # the cover (classification codes and body images sit lower).
+            upper = [b for b in blocks if b["bbox"][1] < page.rect.height / 2]
+            best = max(upper or blocks, key=lambda b: (b["bbox"][2] - b["bbox"][0]) * (b["bbox"][3] - b["bbox"][1]))
+            rect = fitz.Rect(best["bbox"])
+            pix = page.get_pixmap(clip=rect, matrix=fitz.Matrix(200 / 72, 200 / 72))
+        target = output_dir / "assets" / "images" / "cover-gb-badge.png"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        pix.save(str(target))
+        return "assets/images/cover-gb-badge.png"
+    except Exception as exc:  # pragma: no cover - best-effort recovery
+        _log(f"Warning: unable to recover cover GB badge: {exc}")
+        return None
+
+
+def _classification_codes(part_dir: Path) -> dict[str, str]:
+    """Recover ICS/CCS codes from MinerU's content list for a part.
+
+    规则对应: GEN-011（分类号行识别，gbt11-ref 10.3.1.5/8.1）+ GEN-010
+    （页眉页脚内容回收）。
+
+    MinerU classifies the cover-top ``ICS ... CCS ...`` line as a page header
+    and drops it from the Markdown output (headers land in discarded_blocks).
+    The content_list.json keeps those blocks, so the cover classification
+    codes are recovered from there instead of being lost.
+    """
+    candidates = sorted(part_dir.rglob("*_content_list.json"))
+    if not candidates:
+        return {}
+    try:
+        entries = json.loads(candidates[0].read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    codes: dict[str, str] = {}
+    for item in entries:
+        if item.get("type") not in {"header", "footer", "page-header", "page_footer", "text"}:
+            continue
+        text = str(item.get("text") or item.get("content") or "")
+        # Normalise whitespace so OCR variants like "ICS01.\n120" or
+        # "ICS01120 A00" still match the classification-code shape.
+        compact = re.sub(r"\s+", " ", text)
+        ics = re.search(r"ICS\s*([0-9]+(?:\.[0-9]+){0,3})", compact, re.I)
+        ccs = re.search(r"(?:CCS)?\s*([A-Z])\s?(\d{1,2})\s*$", compact, re.I)
+        if not ccs:
+            # "A00" style with no separator between letter and digits.
+            ccs = re.search(r"\b([A-Z])(\d{2})\b", compact)
+        if ics:
+            codes.setdefault("ics", _normalize_ics(ics.group(1)))
+        if ccs and not compact.lower().startswith("ics"):
+            codes.setdefault("ccs", f"{ccs.group(1).upper()} {ccs.group(2)}")
+    return codes
+
+
+def _normalize_ics(raw: str) -> str:
+    """Normalise an ICS number, restoring dots lost to OCR line breaks.
+
+    规则对应: GEN-011（分类号行识别与 ICS 编号恢复，OCR 丢失小数点时重排）。
+
+    ``01.120`` may arrive as ``01120`` (dot swallowed) or split across lines.
+    Split the digit run into the ICS field pattern: first field 1-2 digits,
+    following fields 3 digits each (e.g. ``01120`` -> ``01.120``).
+    """
+    if "." in raw:
+        return raw
+    if len(raw) > 2 and len(raw) % 3 == 2:  # 2 + n*3 digits
+        return ".".join([raw[:2], *[raw[i:i + 3] for i in range(2, len(raw), 3)]])
+    return raw
+
+
+def _looks_like_document_number(text: str) -> bool:
+    """True for cover code lines ("GB/T 1.1—2020", "ICS01.120 CCS A 00") that
+    must never be mistaken for English-title text.
+
+    规则对应: GEN-016（英文标题识别的前置过滤）+ GEN-011/GEN-012（分类号、文件编号行）。
+    """
+    compact = re.sub(r"\s+", "", text)
+    return bool(
+        (
+            re.match(r"^[A-Z]{1,4}", compact)
+            and re.search(r"\d{2,4}$", compact)
+            and re.search(r"[—\-.]\d", compact)
+        )
+        or bool(re.match(r"ICS", compact, re.I))
+        or bool(re.search(r"CCS", compact, re.I))
+    )
+
+
+def _cover_metadata(part_dir: Path, markdown_text: str) -> dict[str, str]:
+    """Recover cover-only fields (English title, dates, issuer) for the front matter.
+
+    规则对应: GEN-013（发布/实施日期识别）、GEN-014（发布机构识别）、
+    GEN-015（代替文件编号）、GEN-016（英文标题识别）、GEN-017（一致性
+    程度标识）、GEN-019（显式 front-matter 优先）；缺失项由 GBT-C01 在
+    合规验证中记 finding、渲染时以 "××" 占位。
+
+    MinerU's Markdown keeps the Chinese title but the cover publication block
+    (发布/实施 dates and the issuing body) is either scattered as bare text or
+    dropped with page footers, so it is recovered from the content list and
+    the first-page Markdown.  Only page-0 entries are considered so that
+    later occurrences in the body (e.g. 前言) do not shadow the cover values.
+    """
+    result: dict[str, str] = {}
+    # Replaced standard ("代替 GB/T ...—....") from the cover text.
+    for line in markdown_text.splitlines():
+        match = re.match(r"^代替\s+(.+)$", line.strip())
+        if match:
+            result.setdefault("replaces", match.group(1).strip())
+            break
+    # English title: the consecutive English-only lines following the Chinese
+    # title on the cover (handled below from the content list, which keeps
+    # every English line regardless of Markdown heading treatment).
+    # English title and adoption statement are recovered from the content
+    # list below (see the consecutive-English-line rule).
+    # Publication block from the page-0 content list entries.
+    # English title and adoption statement: taken from the page-0 content
+    # list entries (ordered by vertical position).  All consecutive
+    # English-only lines that follow the Chinese title form the English
+    # title (a standard may carry a name plus a part subtitle); a
+    # parenthesized line naming the adopted international document is the
+    # conformity statement.  Both rules are generic — no per-standard text.
+    candidates = sorted(part_dir.rglob("*_content_list.json"))
+    if not candidates:
+        return result
+    try:
+        entries = json.loads(candidates[0].read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return result
+
+    def _is_english_line(text: str) -> bool:
+        # 规则对应: GEN-016（英文标题识别：连续仅拉丁字符行）。
+        # The em dash (—) is a legitimate title separator ("Rules for drafting
+        # standards — Part 10: ...") but OCR often strips the spaces around it.
+        return bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9 ,.:;()'’/\\—\-]+", text.strip())) and len(text.strip()) > 3
+
+    english_parts: list[str] = []
+    seen_title = False
+    for item in sorted(
+        (item for item in entries if item.get("page_idx") in (0, None)),
+        key=lambda item: float((item.get("bbox") or [0, 0, 0, 0])[1]),
+    ):
+        text = str(item.get("text") or item.get("content") or "").strip()
+        if not text or re.match(r"^\d{4}-\d{2}-\d{2}", text):
+            continue
+        if re.search(r"[\u3400-\u9fff]", text):
+            # The cover banner ("<……>标准", e.g. 国家/行业/地方/团体/企业标准)
+            # marks where English lines may begin; a later Chinese line ends
+            # the English-title run.  The issuing-body footer (发布机构 + 发布)
+            # also contains Han characters and must not be treated as the
+            # Chinese title.
+            compact = re.sub(r"\s+", "", text)
+            if "发布" in compact or "实施" in compact:
+                continue
+            if english_parts:
+                break
+            if not seen_title and re.search(r"标准$", compact) and len(compact) >= 6:
+                seen_title = True
+            continue
+        adoption = re.fullmatch(r"\((.+)\)", text)
+        if adoption and re.search(r"ISO|IEC|EN|ASTM|IEEE", adoption.group(1), re.I):
+            result.setdefault("conformity-statement", text)
+            continue
+        if _is_english_line(text) and not _looks_like_document_number(text) and (seen_title or english_parts):
+            english_parts.append(text)
+    if not english_parts:
+        # Fallback: read the cover English title straight from the PDF text
+        # layer (MinerU may mangle spacing/case but the raw layer keeps it).
+        english_parts = _cover_english_from_pdf(part_dir)
+    if english_parts:
+        result.setdefault("title-en", _tidy_english_title(" ".join(english_parts)))
+
+    for item in entries:
+        if item.get("page_idx") not in (0, None):
+            continue
+        text = str(item.get("text") or item.get("content") or "").strip()
+        # OCR may split the word ("发 布") and fuse both bodies into one footer
+        # line, so compare on whitespace-stripped text.
+        compact_line = re.sub(r"\s+", "", text)
+        issued = re.match(r"^(\d{4}-\d{2}-\d{2})\s*发布", compact_line)
+        effective = re.match(r"^(\d{4}-\d{2}-\d{2})\s*实施", compact_line)
+        if issued:
+            result.setdefault("publication-date", issued.group(1))
+        if effective:
+            result.setdefault("effective-date", effective.group(1))
+        if "发布" in compact_line and not issued and not effective:
+            issuer = _canonical_issuer(compact_line)
+            if issuer:
+                result.setdefault("issuer", issuer)
+    return result
+
+
+def _cover_english_from_pdf(part_dir: Path) -> list[str]:
+    """Read consecutive cover English-title lines from the PDF raw text layer.
+
+    规则对应: GEN-016（英文标题识别，PDF 文本层兜底）。
+
+    MinerU's OCR sometimes mangles the English title (dropped spaces, lost
+    separators); the PDF text layer keeps the original characters.  Returns
+    the run of Latin-only lines between the Chinese banner block and the
+    publication dates.
+    """
+    markdown_candidates = sorted(part_dir.rglob("*.md"), key=lambda p: p.stat().st_size, reverse=True)
+    pdf_candidates = sorted(part_dir.rglob("*.pdf"))
+    if not markdown_candidates or not pdf_candidates:
+        return []
+    try:
+        import pymupdf
+
+        with pymupdf.open(pdf_candidates[0]) as doc:
+            page0_text = doc[0].get_text()
+    except Exception:
+        return []
+    lines = [line.strip() for line in page0_text.splitlines() if line.strip()]
+    english: list[str] = []
+    seen_banner = False
+    for line in lines:
+        compact = re.sub(r"\s+", "", line)
+        if re.search(r"[\u3400-\u9fff]", compact):
+            if english:
+                break
+            if re.search(r"标准$", compact) and len(compact) >= 6:
+                seen_banner = True
+            continue
+        if re.match(r"^\d{4}-\d{2}-\d{2}", compact):
+            break
+        if (
+            seen_banner
+            and not _looks_like_document_number(line)
+            and re.fullmatch(r"[A-Za-z][A-Za-z0-9 ,.:;()'’/\\—\-]+", line)
+        ):
+            english.append(line)
+    return english
+
+
+def _tidy_english_title(text: str) -> str:
+    """Restore word spacing lost by OCR/font-embedding in an English title.
+
+    规则对应: GEN-016（英文标题识别/去粘连修复，字典分割兜底）。
+
+    Some PDFs store the title with no space glyphs ("Rulesfordrafting…").
+    Two generic, order-dependent repairs:
+    1. camel-case joins: a space between a lowercase letter and the following
+       uppercase letter never hurts well-spaced text;
+    2. dictionary segmentation: greedily split glued all-lowercase runs using
+       the system word list (/usr/share/dict/words).  Applied only to tokens
+       that the dictionary cannot find as-is, so correct text is untouched;
+       if segmentation fails the original token is kept.
+    """
+    spaced = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", text)
+    lexicon = _system_word_list()
+    if not lexicon:
+        return re.sub(r"\s+", " ", spaced).strip()
+
+    def repair(match: re.Match[str]) -> str:
+        run = match.group(0)
+        if len(run) < 10 or run.lower() in lexicon:
+            return run
+        return _segment_word(run.lower(), lexicon) or run
+
+    # Segment each glued alphabetic run (>=10 letters, unknown to the
+    # dictionary); digits and punctuation act as natural separators.
+    repaired = re.sub(r"[A-Za-z]{10,}", repair, spaced)
+    return re.sub(r"\s+", " ", repaired).strip()
+
+
+def _system_word_list() -> set[str]:
+    for candidate in ("/usr/share/dict/words", "/usr/share/dict/american-english"):
+        try:
+            return {line.strip().lower() for line in open(candidate, encoding="utf-8") if line.strip().isalpha()}
+        except OSError:
+            continue
+    return set()
+
+
+def _segment_word(word: str, lexicon: set[str]) -> str | None:
+    """Greedy dynamic-programming split of a glued lowercase word."""
+    n = len(word)
+    best: list[list[str] | None] = [None] * (n + 1)
+    best[0] = []
+    max_len = min(24, n)
+    for i in range(1, n + 1):
+        for j in range(max(0, i - max_len), i - 2):
+            previous = best[j]
+            if previous is not None and word[j:i] in lexicon:
+                candidate: list[str] = [*previous, word[j:i]]
+                current = best[i]
+                if current is None or len(candidate) < len(current):
+                    best[i] = candidate
+    result = best[n]
+    return " ".join(result) if result else None
+
+
+def _canonical_issuer(text: str) -> str:
+    # 规则对应: GEN-014（发布机构识别与规范名称映射——通用机构名录）。
+    compact = re.sub(r"\s+", "", text)
+    # Distinctive fragments decide the era; check the quality-supervision
+    # administration first because its name embeds "标准化管理" via the
+    # co-published standardization committee line.
+    if "质量监督" in compact or "质检" in compact:
+        return "中华人民共和国国家质量监督检验检疫总局 中国国家标准化管理委员会"
+    if "市场监督" in compact or "标督管" in compact:
+        return "国家市场监督管理总局 国家标准化管理委员会"
+    if "标准化管理" in compact:
+        return "国家市场监督管理总局 国家标准化管理委员会"
+    return ""
+
+
 def _formula_assets(source: Path) -> dict[str, list[str]]:
-    """Index MinerU equation crops by their normalized display-LaTex text."""
+    """Index MinerU equation crops by their normalized display-LaTex text.
+
+    规则对应: GEN-004（公式资产相对路径引用）+ GBT-X06（数学公式另行居中编排）。
+    """
     candidates = sorted(source.parent.glob("*_content_list.json"))
     if not candidates:
         return {}
@@ -139,8 +477,34 @@ def _formula_assets(source: Path) -> dict[str, list[str]]:
     return result
 
 
+def _recover_annex_headings(markdown: str) -> str:
+    """Rebuild annex headings that MinerU split into bare paragraphs.
+
+    规则对应: GEN-030（附录标题重组：编号行 + 性质行 + 标题行合并）。
+
+    MinerU emits the annex header as three consecutive paragraphs
+    ("附录A" / "(规范性)" / "外形及安装尺寸"), which the CSM parser treats as
+    plain body text, so no annex chapter is created and A.1-style clauses
+    become orphans.  The three lines are joined into one proper
+    "## 附录 X（规范性） 标题" heading.
+    """
+    pattern = re.compile(
+        r"^附录\s*([A-Z])\s*\n+\n*[(（](规范性|资料性|规范性附录|推荐性)[)）]\s*\n+\n*(.+?)\n+(?=##?\s|[^\n])",
+        re.M,
+    )
+
+    def repl(match: re.Match[str]) -> str:
+        return f"## 附录 {match.group(1)}（{match.group(2)}） {match.group(3).strip()}\n\n"
+
+    return pattern.sub(repl, markdown)
+
+
 def _convert_mineru_markup(raw: str, part_prefix: str, formula_assets: dict[str, list[str]] | None = None, gbt_1_1_quirks: bool = False) -> str:
-    """Adapt MinerU HTML tables and relative image paths without altering prose."""
+    """Adapt MinerU HTML tables and relative image paths without altering prose.
+
+    规则对应: GEN-004（资产相对路径重写）、GEN-032/033（表格题注拆分与孤立题注抑制）、
+    GBT-X06（公式资产绑定）。
+    """
     table_index = 0
     output: list[str] = []
     position = 0
@@ -217,6 +581,8 @@ def _convert_mineru_markup(raw: str, part_prefix: str, formula_assets: dict[str,
 def _recover_gbt_7_4_diagrams(markdown: str, source_pdf: Path, asset_dir: Path) -> str:
     """Restore the two page-18 7.4 layout diagrams MinerU split into text runs.
 
+    规则对应: GBT-B06（图编排：图编号图题居中置于图下）；专属修复，仅 GB/T 1.1-2020 输入启用。
+
     The source extraction supplies neither a figure asset nor a coherent table.
     Both crops are taken verbatim from the original PDF and retain their labels,
     borders and typography.  The narrow match protects unrelated occurrences of
@@ -247,6 +613,7 @@ def _recover_gbt_7_4_diagrams(markdown: str, source_pdf: Path, asset_dir: Path) 
 
 
 def extract(args: argparse.Namespace, state: dict[str, Any]) -> None:
+    # 规则对应: GEN-002（分块抽取，每块可重试/断点续跑）、GEN-003（中间产物保留）。
     command = _mineru_command()
     total_pages = _page_count(args.input)
     _log(f"Extraction plan: {total_pages} pages, {args.chunk_size} pages per MinerU invocation")
@@ -301,6 +668,8 @@ def extract(args: argparse.Namespace, state: dict[str, Any]) -> None:
 
 
 def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
+    # 规则对应: GEN-005（按原始页序合并、带页码范围标记）、GEN-010（页眉页脚回收）、
+    # GEN-030（附录标题重组）、GEN-019（显式 front-matter 优先）。
     expected = list(range(0, state.get("pageCount", 0), args.chunk_size))
     completed = {item["start"]: item for item in state.get("parts", []) if item.get("status") == "complete"}
     missing = [start + 1 for start in expected if start not in completed]
@@ -321,6 +690,7 @@ def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
             _formula_assets(source),
             gbt_1_1_quirks=_is_gbt_1_1_2020(args.input),
         )
+        raw = _recover_annex_headings(raw)
         image_source = source.parent / "images"
         if image_source.is_dir():
             image_target = args.output_dir / "assets" / "images"
@@ -337,9 +707,45 @@ def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
     # Derive the standard number and title from the extraction when the caller
     # did not supply them explicitly, matching the generic PDF extractor logic.
     number = args.standard_number or _standard_number("\n".join(parts_raw)[:3000], stem)
-    first_heading = next((line.lstrip("#").strip() for part in parts_raw for line in part.splitlines() if re.match(r"^#\s", line)), "")
-    title = args.title or _usable_title(first_heading, number)
+    number = re.sub(r"\.(?=\d)", "", number) if number.count(".") > 1 else number
+    # The first H1 is often the cover banner ("中华人民共和国国家标准"),
+    # not the standard name.  Pick the first H1 that is neither the banner
+    # (compared with whitespace stripped — OCR may space out the banner),
+    # the English title, nor front-matter headings.
+    banner_titles = {"中华人民共和国国家标准", "中华人民共和国国家标淮"}
+    heading_candidates = [
+        line.lstrip("#").strip()
+        for part in parts_raw
+        for line in part.splitlines()
+        if re.match(r"^#\s", line)
+    ]
+    real_heading = next(
+        (
+            heading
+            for heading in heading_candidates
+            if re.sub(r"\s+", "", heading) not in {re.sub(r"\s+", "", b) for b in banner_titles}
+            and not re.fullmatch(r"[A-Za-z][A-Za-z0-9 ,.:;()\-']+", heading)
+        ),
+        "",
+    )
+    title = args.title or _usable_title(real_heading, number)
     extra_front_matter: list[str] = []
+    # Recover the cover ICS/CCS codes that MinerU drops as page headers.  An
+    # explicitly supplied --front-matter-json value always wins.
+    recovered_codes: dict[str, str] = {}
+    for start in expected:
+        part = completed[start]
+        source = args.output_dir / part["markdown"]
+        part_dir = source.parent
+        recovered_codes.update(_classification_codes(part_dir))
+        if start == expected[0]:
+            # Cover fields (English title, dates, issuer) come from page 1.
+            cover_meta = _cover_metadata(part_dir, parts_raw[0])
+            for key, value in cover_meta.items():
+                extra_front_matter.append(f"{key}: {json.dumps(value, ensure_ascii=False)}")
+    for key in ("ics", "ccs"):
+        if key in recovered_codes:
+            extra_front_matter.append(f"{key}: {json.dumps(recovered_codes[key], ensure_ascii=False)}")
     if args.front_matter_json:
         try:
             extra = json.loads(args.front_matter_json.read_text(encoding="utf-8"))
@@ -348,7 +754,13 @@ def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
         if not isinstance(extra, dict):
             raise RuntimeError("--front-matter-json must contain a JSON object")
         for key, value in extra.items():
+            # Explicit caller values replace any auto-recovered ones.
+            extra_front_matter = [line for line in extra_front_matter if not line.startswith(f"{key}:")]
             extra_front_matter.append(f"{key}: {json.dumps(str(value), ensure_ascii=False)}")
+    # Recover the cover "GB" emblem as a croppable image asset.
+    badge_asset = _extract_cover_badge(args.input, args.output_dir)
+    if badge_asset:
+        extra_front_matter.append("cover-badge: " + json.dumps(badge_asset))
     lines = [
         "---",
         'csm-version: "1.0"',
@@ -385,7 +797,11 @@ def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
 
 
 def finalize(args: argparse.Namespace, merged: Path) -> Path | None:
-    """Use the existing CSM normalizer/parser, retaining partial status if parsing needs review."""
+    """Use the existing CSM normalizer/parser, retaining partial status if parsing needs review.
+
+    规则对应: GEN-031（层次编号规范化）、GEN-050（元数据 schema 登记）；合规验证由
+    service 层 verify_compliance 按 GEN-* → GBT-* → P10-* 三层执行并写入转换报告。
+    """
     stem = args.output_stem or args.input.stem
     std0 = args.output_dir / f"{stem}.mineru.std0.csm.md"
     ssir = args.output_dir / f"{stem}.mineru.ssir.json"
@@ -404,6 +820,8 @@ def finalize(args: argparse.Namespace, merged: Path) -> Path | None:
 
 
 def compare(original: Path, generated: Path, output: Path) -> None:
+    # 规则对应: GEN-051（元数据往返一致）、GEN-090（机器验证：关键封面字段齐全、
+    # 页数合理）、GEN-091（基于 PDF 内部对象验证）。
     import fitz  # type: ignore
     def details(path: Path) -> dict[str, Any]:
         with fitz.open(path) as document:
@@ -419,6 +837,9 @@ def compare(original: Path, generated: Path, output: Path) -> None:
 
 
 def main() -> int:
+    # 规则对应（流水线阶段 → 规则层）: extract=GEN-002/003；merge=GEN-005/010—019/030；
+    # normalize=GEN-031—034；build=GEN-050/052；verify=GEN-051/090/091 + 三层合规
+    # （GEN→GBT→P10，见 compliance.py）；render=GEN-070—076。
     parser = argparse.ArgumentParser(description="Run a resumable full MinerU extraction, SSIR parsing, round-trip verification and optional PDF rendering for a national-standard PDF.")
     parser.add_argument("--input", type=Path, help="PDF input of the national standard to extract (required)")
     parser.add_argument("--output-dir", type=Path, help="output directory (default: out/mineru/<input-stem>)")

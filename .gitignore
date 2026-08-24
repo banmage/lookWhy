@@ -34,3 +34,6 @@ examples/*.pdf
 # Session/editor junk and Windows download markers
 :memory:.ses
 *:Zone.Identifier
+
+# Multi-tenant runtime storage (user uploads / work / outputs)
+storage/

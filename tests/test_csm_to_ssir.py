@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class CSMToSSIRTests(unittest.TestCase):
     def test_pmrz_preserves_figures_table_list_and_quality_notices(self) -> None:
-        ssir = parse_csm(ROOT / "examples/csm/Q_PMRZ_9-2024.csm.md")
+        ssir = parse_csm(ROOT / "corpus/golden/csm/Q_PMRZ_9-2024.csm.md")
         self.assertEqual(ssir["documentType"], "standard")
         self.assertEqual(ssir["sourceFiles"][0]["mimeType"], "text/markdown")
         self.assertEqual(len(ssir["tables"]), 1)
@@ -27,7 +27,7 @@ class CSMToSSIRTests(unittest.TestCase):
         self.assertIn("GB20001-10-6.3", ssir["qualityAssessments"][0]["comments"])
 
     def test_tqdz_preserves_table_and_marked_lists(self) -> None:
-        ssir = parse_csm(ROOT / "examples/csm/Q_TQDZ_004-2026.csm.md")
+        ssir = parse_csm(ROOT / "corpus/golden/csm/Q_TQDZ_004-2026.csm.md")
         table = ssir["tables"][0]
         self.assertEqual(table["caption"], "基本参数")
         self.assertEqual(table["number"], "1")
@@ -54,7 +54,7 @@ class CSMToSSIRTests(unittest.TestCase):
         }
         for file_name, expected in examples.items():
             with self.subTest(file_name=file_name):
-                ssir, report = parse_csm_with_report(ROOT / "examples/csm" / file_name)
+                ssir, report = parse_csm_with_report(ROOT / "corpus/golden/csm" / file_name)
                 self.assertEqual(ssir["documentType"], "standard")
                 self.assertEqual(len(ssir["tables"]), expected["tables"])
                 self.assertEqual(len(ssir["figures"]), expected["figures"])
@@ -64,8 +64,8 @@ class CSMToSSIRTests(unittest.TestCase):
 
     def test_markdown_round_trip_preserves_all_csm_examples(self) -> None:
         paths = [
-            *sorted((ROOT / "examples/csm").glob("*.csm.md")),
-            ROOT / "examples/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md",
+            *sorted((ROOT / "corpus/golden/csm").glob("*.csm.md")),
+            ROOT / "corpus/golden/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md",
         ]
         with tempfile.TemporaryDirectory() as directory:
             for path in paths:
@@ -77,7 +77,7 @@ class CSMToSSIRTests(unittest.TestCase):
                     self.assertEqual(ssir1["metadata"]["common"], ssir2["metadata"]["common"])
 
     def test_comparator_reports_critical_normative_and_table_changes(self) -> None:
-        ssir1 = parse_csm(ROOT / "examples/csm/Q_HKT_16016-2026.csm.md")
+        ssir1 = parse_csm(ROOT / "corpus/golden/csm/Q_HKT_16016-2026.csm.md")
         ssir2 = deepcopy(ssir1)
         ssir2["tables"][0]["rows"][1]["cells"][0]["text"] = "999"
         content = next(
@@ -93,7 +93,7 @@ class CSMToSSIRTests(unittest.TestCase):
         self.assertIn("C8-tableCellContent", report.critical_information_loss)
 
     def test_template_formula_and_turtle_export(self) -> None:
-        ssir = parse_csm(ROOT / "examples/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md")
+        ssir = parse_csm(ROOT / "corpus/golden/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md")
         self.assertEqual(len(ssir["formulas"]), 1)
         self.assertEqual(ssir["formulas"][0]["number"], "式（1）")
         turtle = turtle_text(ssir)
@@ -104,7 +104,7 @@ class CSMToSSIRTests(unittest.TestCase):
         self.assertIn("a ssir:Formula", turtle)
 
     def test_round_trip_preserves_annex_kind_and_identifier(self) -> None:
-        path = ROOT / "examples/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md"
+        path = ROOT / "corpus/golden/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md"
         with tempfile.TemporaryDirectory() as directory:
             ssir1, ssir2, report = round_trip_csm(path, Path(directory) / "std1.md")
         annex1 = next(node for node in self._nodes(ssir1["structuralRoot"]) if node["nodeType"] == "annex")
@@ -144,11 +144,11 @@ class CSMToSSIRTests(unittest.TestCase):
         self.assertTrue(compare_ssir(ssir0, ssir0_reparsed).passed)
 
     def test_same_input_produces_deterministic_json(self) -> None:
-        path = ROOT / "examples/csm/Q_TQDZ_004-2026.csm.md"
+        path = ROOT / "corpus/golden/csm/Q_TQDZ_004-2026.csm.md"
         self.assertEqual(json_bytes(parse_csm(path)), json_bytes(parse_csm(path)))
 
     def test_duplicate_ssir_id_is_rejected(self) -> None:
-        text = (ROOT / "examples/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md").read_text(encoding="utf-8")
+        text = (ROOT / "corpus/golden/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md").read_text(encoding="utf-8")
         duplicate = text.replace(
             '<!-- ssir:figure id="fig-001" asset-status="missing" -->',
             '<!-- ssir:table id="tbl-001" header-rows="1" -->',
@@ -161,7 +161,7 @@ class CSMToSSIRTests(unittest.TestCase):
         self.assertIn("duplicate ssir id", str(raised.exception))
 
     def test_unknown_directive_is_rejected(self) -> None:
-        text = (ROOT / "examples/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md").read_text(encoding="utf-8")
+        text = (ROOT / "corpus/golden/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md").read_text(encoding="utf-8")
         invalid = text.replace("<!-- ssir:formula", "<!-- ssir:unsupported", 1)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "invalid.md"
@@ -264,7 +264,7 @@ extensions: {standard-profile: product}
         self.assertFalse(any("取样" in issue.message or "检验规则" in issue.message for issue in report.issues))
 
     def test_unclosed_formula_remains_unacceptable(self) -> None:
-        text = (ROOT / "examples/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md").read_text(encoding="utf-8")
+        text = (ROOT / "corpus/golden/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md").read_text(encoding="utf-8")
         invalid = text.replace("$$\nP = U I\n$$", "$$\nP = U I", 1)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "unclosed.csm.md"

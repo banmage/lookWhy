@@ -25,7 +25,7 @@ def _caption_parts(text: str) -> tuple[str | None, str | None]:
 
 
 def _is_annex_heading(text: str) -> bool:
-    return bool(re.match(r"^附\s*录\s*[A-Z](?:\s*（(?:规范性|资料性|未判定)）.*)?$", text.strip()))
+    return bool(re.match(r"^附\s*录\s*[A-Z]", text.strip()))
 
 
 def _marker_type(marker: str) -> str:
@@ -150,7 +150,7 @@ class SSIRBuilder:
             "standardNumber": str(metadata["standard-number"]),
             "chineseTitle": str(metadata["title"]),
         }
-        for source_key, target_key in (("ics", "ics"), ("ccs", "ccs"), ("replaces", "replaces")):
+        for source_key, target_key in (("ics", "ics"), ("ccs", "ccs"), ("replaces", "replaces"), ("cover-badge", "coverBadge")):
             if metadata.get(source_key):
                 standard[target_key] = str(metadata[source_key])
         document_type = "standard" if metadata.get("document-type") == "standard" else "other"
@@ -205,10 +205,13 @@ class SSIRBuilder:
         title = block.text
         number: str | None = None
         node_type = "documentBlock"
-        level = block.level - 1 if block.level else 1
+        # Clamp to >= 1: the CSM renderer maps levels back to Markdown
+        # headings via max(level + 1, 2), so a level of 0 would render as an
+        # H2 and re-parse as level 1 — breaking SSIR round-trip equivalence.
+        level = max(block.level - 1, 1) if block.level else 1
         # Accept an optional separator before the status marker; the renderer emits
         # the compact GB/T form, while user Markdown sometimes contains a space.
-        annex = re.match(r"^附\s*录\s*([A-Z])\s*(?:（(规范性|资料性|未判定)）)?\s*(.*)$", title)
+        annex = re.match(r"^附\s*录\s*([A-Z])\s*(?:[(（](规范性|资料性|未判定|推荐性)[)）])?\s*(.*)$", title)
         pure_numbered = re.match(r"^(\d+(?:\.\d+)*)$", title)
         numbered = re.match(r"^(\d+(?:\.\d+)*)(?:\s+|(?=[\u4e00-\u9fffA-Za-z（]))(.+)$", title)
         if annex:

@@ -257,6 +257,10 @@
           "type": "string",
           "description": "被代替文件编号"
         },
+        "coverBadge": {
+          "type": "string",
+          "description": "封面 GB 徽记图片资产路径（相对 assets 目录）"
+        },
         "drafters": {
           "type": "array",
           "items": {

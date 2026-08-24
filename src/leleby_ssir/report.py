@@ -20,6 +20,8 @@ class ConversionReport:
     issues: list[CSMIssue]
     output_document_id: str | None = None
     block_ids_generated: bool = False
+    # GEN-090：逐条规则验证结果（GEN/GBT/P10 规则包的 findings 汇总）。
+    compliance: dict[str, Any] | None = None
 
     @classmethod
     def completed(cls, document: CSMDocument, document_id: str) -> "ConversionReport":
@@ -45,7 +47,7 @@ class ConversionReport:
                 "repairAction": issue.repair_action,
             }
 
-        return {
+        payload = {
             "inputFile": self.input_file,
             "inputSha256": self.input_sha256,
             "parserVersion": self.parser_version,
@@ -55,6 +57,9 @@ class ConversionReport:
             "blockIdsGenerated": self.block_ids_generated,
             "issues": [issue_dict(issue) for issue in self.issues],
         }
+        # GEN-090：逐条规则验证结果（appliedRuleSets / findings）。
+        payload["compliance"] = self.compliance
+        return payload
 
     def write_json(self, path: str | Path) -> None:
         target = Path(path)

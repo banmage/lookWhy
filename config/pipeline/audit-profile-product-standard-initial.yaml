@@ -17,12 +17,12 @@ rule-sets:
     version: "0.1.0"
     mode: base
     required: true
-    source: rules/general-standard-audit.yaml
+    source: rules/base/gbt-1-1-2020/audit.yaml
   - id: gb-t-1-1-2020
     version: "source-ssir"
     mode: inherited
     required: true
-    source: rules/sources/GBT 1.1-2020.ssir.json
+    source: rules/base/gbt-1-1-2020/source.ssir.json
     extraction-status: pending-requirement-catalog
   - id: gb-t-20001-10-2014
     version: "source-ssir"
@@ -32,7 +32,7 @@ rule-sets:
       all:
         - document.documentType == standard
         - document.metadata.extensions.standard-profile == product
-    source: rules/sources/GBT 20001.10-2014.ssir.json
+    source: rules/base/gbt-20001.10-2014/source.ssir.json
     extraction-status: pending-requirement-catalog
 combination:
   inheritance-order:

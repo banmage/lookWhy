@@ -22,7 +22,7 @@
 
 这里的核心定义是：原始 Markdown 只是导入来源；`Std0` 是纠错后冻结的回环基线；回环验收只比较 `SSIR1` 和 `SSIR2`，不要求 Std0 和 Std1 的字符级或视觉级一致。
 
-M1 已通过仓库内全部测试。对 `examples/csm/` 的 5 份产品标准 Std0 样例进行批量回环，结果为 5/5 通过；CSM 模板的“原始 Markdown -> Std0 -> SSIR1 -> Std1 -> SSIR2”完整链路也已通过。
+M1 已通过仓库内全部测试。对 `corpus/golden/csm/` 的 5 份产品标准 Std0 样例进行批量回环，结果为 5/5 通过；CSM 模板的“原始 Markdown -> Std0 -> SSIR1 -> Std1 -> SSIR2”完整链路也已通过。
 
 与此并行，项目已补齐 PDF/MinerU 抽取能力：`ssir pdf extract` 能从任意国家标准 PDF 生成 CSM Markdown，优先调用本地 `mineru`/`magic-pdf` 命令，失败时自动回退到 PyMuPDF 文本层；`tools/mineru_full_standard.py` 执行可恢复的全量抽取、CSM 合并、Std0 规范化、SSIR 解析和回旋验证。一致性地说，当前仓库中 PDF 适配器已经不是未实现的规划，而是可运行的实际功能。
 
@@ -64,12 +64,12 @@ M1 已通过仓库内全部测试。对 `examples/csm/` 的 5 份产品标准 St
 
 ### 3.1 规范与数据准备
 
-已阅读并参考 `standards/` 中的 GB/T 1.1-2020、GB/T 20001.10-2014 以及标准元数据、结构化、机器语言表达和数字标准信息模型相关标准。完成的文档工作包括：
+已阅读并参考 `corpus/reference-standards/` 中的 GB/T 1.1-2020、GB/T 20001.10-2014 以及标准元数据、结构化、机器语言表达和数字标准信息模型相关标准。完成的文档工作包括：
 
 - 建立 [CSM 格式规范](07_leleby%20Canonical%20SSIR%20Markdown%20Format%20Specification%20v0.1.md)，定义 YAML front matter、标题与条款层级、附录、表格、图、公式、列表、机器注释、宽容导入和产品标准配置；
 - 建立并补充 [CSM 到 SSIR 实现规范](08_leleby%20CSM-to-SSIR%20Implementation%20Specification%20v0.1.md)，定义输入输出、映射、CLI、报告、验收与非目标；
 - 更新处理流水线、回环测试和总开发规范，使其以 Markdown Std0/Std1 作为 M1 回环对象；
-- 提供 CSM 模板及 5 份 `examples/csm/` 产品标准样例，覆盖企业标准、团体标准、技术参数表、图占位、公式、不同列表标记、试验方法、检验规则、包装和规范性/资料性附录。
+- 提供 CSM 模板及 5 份 `corpus/golden/csm/` 产品标准样例，覆盖企业标准、团体标准、技术参数表、图占位、公式、不同列表标记、试验方法、检验规则、包装和规范性/资料性附录。
 
 GB/T 1.1 和 GB/T 20001.10 中的可选或条件适用组成部分（例如术语、引用文件、取样、试验方法、检验规则、附录等）不会被实现为输入的绝对前置条件。缺失时进入质量提示，而不会丢弃正文或中断默认转换。
 
@@ -125,6 +125,20 @@ PYTHONPATH=src python3 tools/verify_markdown_roundtrip.py
 
 CLI 分发位于 `src/leleby_ssir/cli.py`，服务边界位于 `service.py`，`python -m leleby_ssir` 由 `__main__.py` 进入同一 CLI。
 
+### 3.6 规则库与逐条合规验证
+
+规则是系统的“程序”，与语料数据（`corpus/`）和租户运行时数据（`storage/`）严格分离。`rules/base/` 下按标准组织规则包，当前含两套：
+
+- `gbt-1-1-2020/`：`requirements.yaml`（GBT-xxx 内容/结构/排版要求，逐条带 `source` 章节追溯）、`extraction-rules.yaml`（GEN-xxx 通用抽取与合成规则）、`audit.yaml`、以及规则源标准 CSM/SSIR/转换报告三件套；
+- `gbt-20001.10-2014/`：产品标准专项规则包（P10-xxx），仅对产品标准类文件叠加。
+
+实现文件：`src/leleby_ssir/compliance.py`、`rules/base/*`。
+
+- `verify_compliance()` 按 GEN-* → GBT-* → P10-* 三层对解析后的 SSIR 逐条验证；`is_product_standard()` 依据 document-type 或标题/章节文本判定是否加载产品标准层；
+- 每条发现携带规则 ID、规则集、优先级（must→error / should→warning）、检查名和人类可读消息，经 `compliance_issues()` 合并进转换报告（service.py 的 `parse_csm_with_report` 接线）；
+- 封面必备信息（GBT-C01）缺失除记 finding 外，还驱动 PDF 渲染以 “××” 占位（“ICS ××”/“×× 发布”等）并在渲染报告记录对应规则 ID；
+- 抽取与渲染程序的关键函数均带“规则对应”注释，把处理逻辑逐条映射到规则 ID（如 `_cover_metadata` → GEN-013~017/019、`_cover_story` → GBT-L01~L09/GBT-C01），便于后续逐条核对与追责。
+
 ## 4. 验证记录
 
 ### 4.1 自动化测试
@@ -135,7 +149,7 @@ CLI 分发位于 `src/leleby_ssir/cli.py`，服务边界位于 `service.py`，`p
 PYTHONPATH=src python3 -m unittest discover -v
 ```
 
-本阶段最后一次执行结果为 16 项测试全部通过。覆盖内容包括：
+本阶段最后一次执行结果为 26 项测试全部通过。覆盖内容包括：
 
 - 5 份产品标准样例的 CSM -> SSIR；
 - 全部 CSM 样例和模板的 Markdown 回环；
@@ -145,7 +159,8 @@ PYTHONPATH=src python3 -m unittest discover -v
 - 可恢复问题的报告与不可恢复问题的拒绝；
 - 确定性 JSON；
 - TTL 输出；
-- 规范性动词和表格数值的负向变异检出。
+- 规范性动词和表格数值的负向变异检出；
+- 规则库三层合规验证（tests/test_compliance.py 6 项）：封面必备字段（GBT-C01）、要素顺序（GBT-E03/E05/C05）、附录性质标识（GBT-C09）、图表编号（GBT-X01/X02）、产品标准定量要求带单位（P10-R02），以及驼峰/连字符元数据键的归一化。
 
 ### 4.2 批量回环
 
@@ -153,7 +168,7 @@ PYTHONPATH=src python3 -m unittest discover -v
 
 ```bash
 PYTHONPATH=src python3 tools/verify_markdown_roundtrip.py \
-  --examples-dir examples/csm \
+  --examples-dir corpus/golden/csm \
   --output-dir out/roundtrip
 ```
 
@@ -263,7 +278,7 @@ PYTHONPATH=src python3 tools/verify_markdown_roundtrip.py \
 
 1. `PYTHONPATH=src python3 -m unittest discover -v` 仍全部通过。
 2. 对准备修改的 CSM/SSIR 字段，明确它是源语义、表现信息、来源信息还是派生信息，并同步更新 Schema、builder、renderer、比较器和测试。
-3. 不修改或删除现有 `examples/csm/` 样例的正文语义；如需变更，应新增样例并说明原因。
+3. 不修改或删除现有 `corpus/golden/csm/` 样例的正文语义；如需变更，应新增样例并说明原因。
 4. 任何自动“修复”均必须可逆或可报告，且不得改写规范性文本的语义。
 5. PDF、OCR、PDF 渲染和本体推断的中间产物必须有版本、哈希和来源映射。
 6. 新增功能先写最小 Golden 测试和负向测试，再扩大样例范围。

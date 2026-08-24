@@ -1,21 +1,27 @@
 schema-version: "1.0"
 kind: rendering-profile
 id: gb-t-1-1-2020
-version: "0.1.0"
+version: "0.2.0"
 status: draft
 title: GB/T 1.1-2020 标准文件 PDF 渲染配置
 description: >-
   SSIR 到传统 A4 PDF 的初始渲染配置。用于稳定生成适合审阅的标准文稿；
-  字体、版心和标题层次遵循 GB/T 1.1 的常用编排原则。
+  字体与字号遵循 GB/T 1.1-2020 附录F（规范性）的规定：
+  标题、目次/前言标题、章条编号及标题、图/表编号和表题用黑体；
+  正文、注、脚注、示例用宋体。字号按附录F：封面文件编号四号（14pt）、
+  封面文件名称一号（26pt）、三号标题（16pt）、五号正文（10.5pt）、
+  小五号注与脚注（9pt）、图中文字六号（7.5pt，表格内近似执行）。
 page:
   size: A4
   margin-mm: {top: 25, bottom: 25, left: 28, right: 22}
 fonts:
   primary: WenQuanYiZenHei
   primary-file: /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc
+  body: ARPLUMing
+  body-file: /usr/share/fonts/truetype/arphic/uming.ttc
 styles:
   body: {size-pt: 10.5, leading-pt: 18, first-line-indent-em: 2, alignment: justify}
-  section: {size-pt: 14, leading-pt: 22, alignment: center}
+  section: {size-pt: 16, leading-pt: 22, alignment: center}
   clause: {size-pt: 12, leading-pt: 20, alignment: left}
   front-matter: {size-pt: 10.5, leading-pt: 18, alignment: justify}
   table: {size-pt: 9, leading-pt: 13}

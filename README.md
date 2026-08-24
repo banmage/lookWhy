@@ -20,6 +20,8 @@
 - 支持 `json` 和 `ttl` 输出；JSON 是权威交换格式，TTL 是从 JSON 派生的 RDF 投影。
 - 默认采用宽容导入：可安全修复 BOM、换行、缺失机器元数据、短表格行等问题；不改写正文、标准号原文、数值、单位、比较符、公式或规范性动词。
 - 对 GB/T 1.1-2020 和 GB/T 20001.10-2014 的章节结构和产品标准要素给出质量提示；可选或条件适用的组成部分缺失不会阻断转换。
+- 规则库三层合规验证（GEN-* → GBT-* → P10-*）：`compliance.py` 按规则包对 SSIR 逐条验证，把发现（must 违规记 error、should 记 warning）写入转换报告；产品标准自动叠加 GB/T 20001.10-2014 专项规则。抽取与渲染程序以“规则对应”注释逐条映射规则 ID，便于后续逐条核对。
+- 封面必备信息缺失时渲染占位符：文件编号、ICS、CCS、发布/实施日期、发布机构、名称任一缺失，封面以 “ICS ××”/“×× 发布” 等占位并保留版式，同时在渲染报告记录对应规则 ID（GBT-C01）。
 - 保留章条层级、表格、图/图占位、公式、列表、注/示例/警示、未知内容和 Markdown 行号溯源。
 - 验证 `Std0 -> SSIR1 -> Std1 -> SSIR2`：比较身份、结构、内容和语义，并检查规范性用语、禁止性表述、数值、单位、表格、公式、引用、范围等关键信息。
 
@@ -85,7 +87,7 @@ ssir csm roundtrip \
 
 ```bash
 ssir pdf extract \
-  --input "examples/GBT 10401-2023.pdf" \
+  --input "corpus/golden/GBT 10401-2023.pdf" \
   --output out/GBT-10401-2023.extracted.csm.md \
   --backend auto
 ```
@@ -94,7 +96,7 @@ ssir pdf extract \
 
 ```bash
 .venv/bin/python tools/mineru_full_standard.py \
-  --input "examples/GBT 10401-2023.pdf" \
+  --input "corpus/golden/GBT 10401-2023.pdf" \
   --roundtrip --render
 ```
 
@@ -102,7 +104,7 @@ ssir pdf extract \
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m leleby_ssir pdf extract \
-  --input "examples/GBT 10401-2023.pdf" \
+  --input "corpus/golden/GBT 10401-2023.pdf" \
   --output out/gbt-10401-2023/gbt-10401-2023.csm.md --backend auto
 PYTHONPATH=src .venv/bin/python -m leleby_ssir csm normalize \
   --input out/gbt-10401-2023/gbt-10401-2023.csm.md \
@@ -126,13 +128,13 @@ PYTHONPATH=src .venv/bin/python -m leleby_ssir pdf render \
   --report out/user-standard.render-report.json
 ```
 
-也可以通过 `--profile` 指定自定义渲染配置。当前实现覆盖封面标题、前置要素、章节/条款、正文、列表、表格、公式原文、图像资产或图像缺失占位、附录、页眉标准号和页脚页码。字号字体、版心和分页属于可版本化的渲染配置；PDF 输出是传统标准草稿，尚未宣称通过完整的印刷版式验收。
+也可以通过 `--profile` 指定自定义渲染配置。当前实现覆盖 GB/T 1.1 封面（左上 ICS/CCS、文件编号、横幅、文件名称、英文译名、一致性程度标识、底部发布/实施日期与发布机构，见 `rules/base/gbt-1-1-2020/requirements.yaml` 的 GBT-L01~L09）、前置要素、章节/条款、正文、列表、表格、公式原文、图像资产或图像缺失占位、附录、页眉标准号和页脚页码。封面必备信息（GBT-C01）缺失时以 “××” 占位并在渲染报告记录对应规则 ID；标准类文档一律渲染封面，不再因 ICS/CCS 缺失而跳过整个封面。字号字体、版心和分页属于可版本化的渲染配置；PDF 输出是传统标准草稿，尚未宣称通过完整的印刷版式验收。
 
 ### 6. 批量验证样例
 
 ```bash
 PYTHONPATH=src python3 tools/verify_markdown_roundtrip.py \
-  --examples-dir examples/csm \
+  --examples-dir corpus/golden/csm \
   --output-dir out/roundtrip
 ```
 
@@ -155,7 +157,7 @@ PYTHONPATH=src python3 -m unittest discover -v
 | 转换报告 | `<输出>.conversion-report.json`，记录导入诊断、修复和质量提示。 |
 | 回环报告 | `<Std1>.roundtrip-report.json`，记录四层状态、关键损失和差异。 |
 
-CSM 的完整格式、YAML front matter、表格/图/公式/列表写法见 [CSM 格式规范](docs/07_leleby%20Canonical%20SSIR%20Markdown%20Format%20Specification%20v0.1.md)。可以从 [CSM 模板](examples/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md) 或 `examples/csm/` 中的产品标准样例开始准备数据。
+CSM 的完整格式、YAML front matter、表格/图/公式/列表写法见 [CSM 格式规范](docs/07_leleby%20Canonical%20SSIR%20Markdown%20Format%20Specification%20v0.1.md)。可以从 [CSM 模板](corpus/golden/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md) 或 `corpus/golden/csm/` 中的产品标准样例开始准备数据。
 
 ## 目录说明
 
@@ -163,9 +165,11 @@ CSM 的完整格式、YAML front matter、表格/图/公式/列表写法见 [CSM
 |---|---|
 | `src/leleby_ssir/` | Python 实现包，包含解析、构建、校验、导出、规范化和回环比较逻辑。 |
 | `tests/` | 单元与集成测试；覆盖容错导入、质量提示、表/图/公式、回环和关键损失变异。 |
-| `examples/` | CSM 模板、普通标准示例和早期参考数据。 |
-| `examples/csm/` | 已完成基础纠错的 Std0 产品标准样例，是当前批量回环的主要输入集。 |
-| `standards/` | GB/T 1.1、GB/T 20001.10 及其他参考标准的 Markdown 文本，用于设计和人工核对。 |
+| `config/` | 引擎配置：`rendering/` 渲染 profile，`pipeline/` 审核组合配置。 |
+| `rules/` | 规则库（可被系统加载的业务规则）：`base/{standard-id}/` 通用规则包（requirements/extraction-rules/audit + source SSIR），`schemas/` 规则文件 Schema。规划中还有 `industries/{code}/{pending,approved,rejected}/` 行业规则与 `ontology/` 本体文件。 |
+| `corpus/golden/csm/` | 已完成基础纠错的 Std0 产品标准样例（原 examples/csm），是当前批量回环的主要输入集；`corpus/golden/` 根目录为模板与普通标准样例。 |
+| `corpus/reference-standards/` | GB/T 1.1、GB/T 20001.10 及其他参考标准的 Markdown 文本（原 standards/），用于设计和人工核对。 |
+| `storage/tenants/{tenant_id}/` | 多租户运行时存储（gitignore）：uploads 原始上传、work 中间产物、outputs 转换结果、profile 企业编排规则。 |
 | `docs/` | 数据模型、Schema、格式、实现、测试和开发报告等项目文档。 |
 | `tools/` | 辅助脚本，包括 Schema 抽取和批量回环验证。 |
 | `pyproject.toml` | Python 项目元数据、依赖和 `ssir` 命令行入口定义。 |
@@ -177,7 +181,7 @@ CSM 的完整格式、YAML front matter、表格/图/公式/列表写法见 [CSM
 | `ssir` | 安装项目后可用的命令行入口，定义在 `pyproject.toml`。 |
 | `src/leleby_ssir/__main__.py` | `python3 -m leleby_ssir` 的模块入口。 |
 | `src/leleby_ssir/cli.py` | CLI 参数解析和命令分发：`validate`、`normalize`、`parse`、`roundtrip`、`pdf extract`、`pdf render`。 |
-| `src/leleby_ssir/service.py` | 面向 CLI 和未来 HTTP API 的转换服务：Std0 生成、CSM 转 SSIR、导出和回环。 |
+| `src/leleby_ssir/service.py` | 面向 CLI 和未来 HTTP API 的转换服务：Std0 生成、CSM 转 SSIR、导出、回环；解析时执行逐条合规验证并把发现写入转换报告。 |
 | `tools/verify_markdown_roundtrip.py` | 对一个或多个 Std0 文件批量执行回环验证。 |
 | `tools/mineru_full_standard.py` | 对任意国家标准 PDF 执行可恢复的分块 MinerU 全量抽取、CSM 合并、SSIR 解析、回旋验证和可选 PDF 渲染比较。 |
 
@@ -191,6 +195,7 @@ CSM 的完整格式、YAML front matter、表格/图/公式/列表写法见 [CSM
 | `validation.py` | 执行 JSON Schema 和 SSIR 引用完整性校验。 |
 | `exporters.py` | 确定性 JSON 与可选 Turtle 输出。 |
 | `csm_renderer.py` | 将 M1 可表达的 SSIR 子集渲染为 Std1。 |
+| `compliance.py` | 规则库三层（GEN/GBT/P10）逐条合规验证，发现（含规则 ID、优先级、检查名）写入转换报告。 |
 | `roundtrip.py` | SSIR1/SSIR2 四层比较与关键损失检查。 |
 | `report.py` | 转换报告数据结构和 JSON 序列化。 |
 

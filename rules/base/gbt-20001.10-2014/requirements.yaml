@@ -1,0 +1,57 @@
+# =====================================================================
+# GB/T 20001.10-2014 结构化规则文档 — 产品标准的编写规则（在 GB/T 1.1 基础上的产品标准专属要求）
+# =====================================================================
+# 来源：《标准编写规则 第10部分：产品标准》（GB/T 20001.10-2014）
+# 用途：产品标准类文件在通用规则（extraction-rules.yaml GEN-xxx）与
+#       GB/T 1.1-2020 要求（gbt-1-1-2020/requirements.yaml GBT-xxx）之上
+#       叠加的专项要求。规则 ID 前缀 P10-；源码中以 "P10-xxx" 注释引用。
+# 适用判定：文档为产品标准时（封面/范围含"产品标准"表述，或 front-matter
+#       document-type/product-scope 标注）加载本规则包逐条验证。
+# priority 措辞分级与 GB/T 一致：must=应、should=宜、may=可。
+# =====================================================================
+
+meta:
+  standard: "GB/T 20001.10-2014"
+  title: "标准编写规则 第10部分：产品标准"
+  version: "1.0.0"
+  applies-to: product-standard
+  note: >-
+    本规则包不重复 GB/T 1.1-2020 的通用要求，只记录产品标准特有的
+    差异条款。验证顺序：GEN-* → GBT-* → P10-*。
+
+content-and-structure:
+
+  elements:
+    - {id: P10-E01, element: 术语和定义, required: 必备/可选, kind: 规范性,
+       note: 产品标准应给出所用关键术语；仅给出理解必需的术语, source: "5.2"}
+    - {id: P10-E02, element: 分类与标记/编码, required: 推荐, kind: 规范性,
+       note: 产品按其特性分类时应有"分类与标记"一章，含分类方法、类别与标记规则, source: "5.3"}
+    - {id: P10-E03, element: 要求, required: 必备, kind: 规范性,
+       note: 核心技术要素；要求应可验证（能通过检验/试验证实），使用要求型措辞, source: "5.4"}
+    - {id: P10-E04, element: 抽样, required: 可选, kind: 规范性,
+       note: 需要抽样时规定抽样方法与样本保存运输条件, source: "5.5"}
+    - {id: P10-E05, element: 试验方法, required: 必备(与要求对应), kind: 规范性,
+       note: 每一条可量化/可验证要求都应有对应的试验方法条目, source: "5.6"}
+    - {id: P10-E06, element: 检验规则, required: 推荐, kind: 规范性,
+       note: 检验分类（出厂/型式检验）、检验项目与判定规则, source: "5.7"}
+    - {id: P10-E07, element: 标志、标签、包装、运输、贮存, required: 可选, kind: 规范性,
+       note: 涉及时规定，常以附录形式给出, source: "5.8"}
+
+  requirements-authoring:
+    - id: P10-R01
+      rule: 要求应可验证——凡声明"应符合…规定"的定量指标，必须能在本文件的试验方法章或引用的方法中找到对应验证手段。
+      check: quantitative-requirement-has-test-method
+      source: "5.4.3"
+    - id: P10-R02
+      rule: 定量要求必须同时给出数值与单位（含极限值 ≤/≥），不允许只有数值没有单位。
+      check: numeric-requirements-carry-units
+      source: "5.4.4"
+    - id: P10-R03
+      rule: 试验方法与要求的编号应一一呼应（如 6.3 对 7.3），便于交叉核对。
+      check: test-method-numbering-mirrors-requirements
+      source: "5.6.2"
+
+layout:
+  - id: P10-L01
+    rule: 封面与排版遵循 GB/T 1.1-2020 附录 E/F（见 gbt-1-1-2020/requirements.yaml 的 layout 部分），本部分无额外差异。
+    source: "第1章"

@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .builder import SSIRBuilder
+from .compliance import compliance_issues, verify_compliance
 from .csm_normalizer import write_std0
 from .csm_renderer import write_csm
 from .exporters import json_bytes, turtle_text
@@ -22,7 +23,13 @@ def parse_csm_with_report(path: str | Path, strict: bool = False) -> tuple[dict,
     document = CSMParser(strict=strict).read(path)
     ssir = SSIRBuilder().build(document)
     validate_ssir(ssir)
-    return ssir, ConversionReport.completed(document, ssir["id"])
+    report = ConversionReport.completed(document, ssir["id"])
+    # GEN-090 / 逐条规则验证：把规则包（GEN → GBT → P10）的违规发现
+    # 合并进转换报告，must 违规记 error、should 记 warning。
+    compliance = verify_compliance(ssir, metadata=document.metadata)
+    report.compliance = compliance.to_dict()
+    report.issues.extend(compliance_issues(compliance))
+    return ssir, report
 
 
 def parse_csm(path: str | Path, strict: bool = False) -> dict:

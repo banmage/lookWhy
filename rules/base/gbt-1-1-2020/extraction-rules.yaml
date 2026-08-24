@@ -1,0 +1,165 @@
+# =====================================================================
+# 通用规则文件 — 标准文档 PDF 抽取与合成（extraction & synthesis）
+# =====================================================================
+# 适用范围：任何国家标准类 PDF → Markdown(CSM) → SSIR → PDF 的转换流程。
+# 本文件只包含"通用逻辑判断和规则"，不含具体标准的专有内容。
+# GB/T 1.1-2020 的标准专属要求见 rules/gbt-1-1-2020-requirements.yaml。
+# 每条规则的 gbt11-ref 字段给出对应的 GB/T 1.1-2020 章节编号以便追溯。
+# =====================================================================
+
+meta:
+  id: lookwhy.generic-extraction
+  version: 1.0.0
+  scope: 所有进入本流水线的标准化文件
+  conventions: 规则 ID 在处理程序源码中以注释引用；priority must/should/may 对应 GB/T 措辞 应/宜/可；验证时 must 违规即失败，should 记警告；gbt11-ref
+    为对应 GB/T 1.1-2020 的章节编号，便于追溯，标注"—"者为工程实践规则、无标准原文对应。
+rules:
+- id: GEN-001
+  stage: extract
+  priority: must
+  rule: 输入必须是存在的 PDF 文件；不合法时立即报错终止，不得猜测文件名。
+- id: GEN-002
+  stage: extract
+  priority: must
+  params:
+    default-chunk-pages: 18
+  rule: 长文档按固定页数分块（chunk）抽取；每块独立、可重试、可断点续跑。
+- id: GEN-003
+  stage: extract
+  priority: must
+  rule: OCR/版面分析的中间产物（content_list.json 等）必须保留在输出目录，后续修复阶段允许回读它们补回被丢弃的信息（如页眉页脚类内容）。
+- id: GEN-004
+  stage: extract
+  priority: must
+  rule: 图片、公式等资产以相对路径写入 assets/ 目录；资产引用（assetRef）相对于其所属的中间文档目录解析，最终合并文档中的路径保持可解析。
+- id: GEN-005
+  stage: merge
+  priority: must
+  rule: 各块按原始页序合并为单一文档；合并产物携带每块的页码范围标记，以便追溯任意正文片段来自源 PDF 的哪一页。
+- id: GEN-010
+  stage: merge
+  priority: must
+  rule: 版面引擎丢弃的页眉/页脚类内容（封面顶部分类号、徽标、底部发布信息）必须从 content_list 回收；回收只依据版面位置与字符类型判别，不依赖任何具体标准的文本内容。
+- id: GEN-011
+  stage: merge
+  priority: must
+  gbt11-ref: 10.3.1.5（封面 ICS 号、CCS 号编排）；8.1
+  pattern: (?P<k1>[A-Z]{2,4})\s*(?P<v1>\d+(?:\.\d+){0,3})\s+(?P<k2>[A-Z]{2,4})\s*(?P<v2>[A-Z]\s?\d{1,2})
+  rule: 分类号行识别：页面顶部区域形如 <字母缩写><编号> 与 <字母缩写><字母+数字> 的单行（分隔空格可有可无），分别提取为两个分类号字段。
+- id: GEN-012
+  stage: merge
+  priority: must
+  gbt11-ref: 10.3.1.4（文件编号：代号与顺序号之间空半个汉字，顺序号与年份之间为一字线连接号）
+  rule: 文件编号识别：封面顶部形如 <代号>(T|Z)?<连接符><顺序号>—<年份> 的行；代号与顺序号之间、顺序号与年份之间的连接符统一规范化为一字线“—”。
+- id: GEN-013
+  stage: merge
+  priority: must
+  gbt11-ref: 8.1（封面必备信息含发布日期、实施日期）；附录F 表F.1 序号13（倒数第二行，四号黑体）
+  pattern: ^(?P<date>\d{4}-\d{2}-\d{2})\s*(?P<verb>\S{2})$
+  rule: 发布/实施日期识别：页 0 上形如 YYYY-MM-DD + 两字动词短语 的行，按动词分别归入发布日期和实施日期。
+- id: GEN-014
+  stage: merge
+  priority: should
+  gbt11-ref: 8.1（封面必备信息含发布机构）；附录F 表F.1 序号14（倒数第一行 发布机构）
+  rule: 发布机构识别：页 0 上含“发布”字样且非日期的短行；OCR 有损时按已知机构名片段映射回规范名称（映射表是通用机构名录，非针对某份文件的特设文本）。
+- id: GEN-015
+  stage: merge
+  priority: must
+  gbt11-ref: 8.1（被代替文件编号应标明）；10.3.1.4（被代替编号另行编排右端对齐，“代替”二字在前）
+  pattern: ^代替\s+(.+)$
+  rule: 被代替文件编号：页 0 上以“代替”开头的行提取为 replaces 字段。
+- id: GEN-016
+  stage: merge
+  priority: must
+  gbt11-ref: 8.1 与 10.3.1.2（国家标准封面应标明文件名称的英文译名）；附录F 表F.1 序号08（英文译名 四号黑体）
+  rule: 英文标题识别：按纵坐标排序的页 0 内容中，中文标准名称之后所有连续的仅含拉丁字符的行合并为完整英文标题（名称可能折行或带副题，禁止只取一行）。
+- id: GEN-017
+  stage: merge
+  priority: must
+  gbt11-ref: 10.3.1.3（一致性程度标识置于英文译名之下并加圆括号）；附录F 表F.1 序号10（一致性程度标识 四号黑体）
+  rule: 一致性程度标识识别：页 0 上圆括号包裹且内含国际组织代号（ISO/IEC/EN/ASTM/IEEE…）的行提取为一致性程度声明字段，保留圆括号原文。
+- id: GEN-018
+  stage: merge
+  priority: should
+  rule: 徽标图片恢复：封面上被版面引擎当作超大字形丢弃的嵌入光栅图，用 PDF 对象级 API 定位并裁剪导出为封面徽标资产。
+- id: GEN-019
+  stage: merge
+  priority: must
+  rule: 显式提供的 front-matter 值永远优先于自动回收值。
+- id: GEN-030
+  stage: merge
+  priority: must
+  gbt11-ref: 9.6.2（附录编号、(规范性)/(资料性)、附录标题各占一行居中）；图E.12
+  rule: 附录标题重组：版面引擎常把附录头拆成三个相邻段落（编号行 / (性质) 行 / 标题行）。按“编号行 + 可选括号性质行 + 下一非空行”的形态合并为单一标题；括号全角/半角均接受；性质词枚举：规范性
+    / 资料性 / 推荐性。
+- id: GEN-031
+  stage: normalize
+  priority: must
+  gbt11-ref: 7.3.2（条编号点分形式）；7.3.1（最多第五层次）；9.6.3.1（附录编号 A.1 形式）；附录A
+  pattern: ^\d+(\.\d+){0,4}$ | ^[A-Z]\.\d+(\.\d+)*$
+  rule: 层次编号规范化：章条编号必须是阿拉伯数字点分链且最深不超过五层；附录条编号为大写字母点分数字链。不合规编号计入报告 issue。
+- id: GEN-032
+  stage: normalize
+  priority: should
+  gbt11-ref: 9.7.4.1 与 9.8.4（单位相同时在图/表右上方用“关于单位的陈述”）；附录F 表F.1 序号40（小五号宋体）
+  rule: 表格题注拆分：若题注段落内嵌换行的“单位为…”陈述，拆分为居中题注 + 右对齐单位行两个元素。
+- id: GEN-033
+  stage: normalize
+  priority: must
+  gbt11-ref: 9.7.2.1 / 9.8.2.1（每幅图、每个表均应有编号——无编号者非规范要素，不得输出孤立题注）
+  rule: 无编号且无题名的表格或图不生成题注行（避免出现孤立的单字题注）。
+- id: GEN-034
+  stage: normalize
+  priority: should
+  rule: H1 收敛：正文中除文档主标题外不应再有一级标题；多余的降级处理并在报告记录。
+- id: GEN-050
+  stage: build
+  priority: must
+  rule: 所有元数据键必须先登记进 schema（schema 声明 additionalProperties 为 false）；新增键未登记时构建必须失败而非静默丢弃。
+- id: GEN-051
+  stage: verify
+  priority: must
+  rule: 元数据往返一致：CSM→SSIR→CSM 的身份层字段（标题、英文名、日期、机构、分类号、代替关系、徽标、一致性声明）必须逐字段相等。
+- id: GEN-052
+  stage: build
+  priority: must
+  rule: 内容对象（图/表/公式/未知内容）注册表化：正文通过 ref 引用，对象本身带 id 与来源页码；每个 ref 必须能在注册表中命中。
+- id: GEN-070
+  stage: render
+  priority: must
+  rule: 字体选择受限于渲染引擎能力：只能注册 TrueType 轮廓的中文字体；OpenType/CFF 字体必须在配置校验阶段报错并给出替代建议。
+- id: GEN-071
+  stage: render
+  priority: must
+  rule: 排版参数（字号、边距、行距、对齐）一律来自渲染 profile 文件，源码中不得出现硬编码的中文排版常数；profile 未定义时使用显式默认表。
+- id: GEN-072
+  stage: render
+  priority: must
+  rule: 锚定到页面底部的元素（封面发布块、页码、书眉）由页回调绘制，不作为正文流 Flowable；正文流元素随内容流动。
+- id: GEN-073
+  stage: render
+  priority: should
+  gbt11-ref: 10.4.2.1（每幅图与其前面的条文、每个表与其后面的条文之间宜空一行）
+  rule: 整体性保护：图与其题注、小型表应尽量同页；只有确实放不下的大表才分页，分页时重复表头。
+- id: GEN-074
+  stage: render
+  priority: must
+  gbt11-ref: 附录F 表F.1 序号09（封面右下“发布”四号黑体）；图E.5（“发布”整体编排于发布机构之后）
+  rule: 词完整性：多汉字词作为一个整体排版，需要视觉间距时用字距（char spacing）实现，禁止插入空白字符或逐字拆分摆放。
+- id: GEN-075
+  stage: render
+  priority: must
+  gbt11-ref: 10.3.1.2（文件名称各元素之间空一个汉字的间隙）等“汉字间隙”类规定的实现方式
+  rule: 相对定位：元素间的间距用参考元素实测宽度加汉字宽度倍数计算，禁止使用绝对坐标魔法数。
+- id: GEN-076
+  stage: render
+  priority: must
+  rule: 渲染完成后自动生成报告：页数、warning 列表、缺失资产列表。
+- id: GEN-090
+  stage: verify
+  priority: must
+  rule: 每次合成的 PDF 必须做机器验证：文本层抽取后检查关键封面字段齐全、无孤立单字行、页数合理；验证项逐条对应本文件与标准专属规则的 ID。
+- id: GEN-091
+  stage: verify
+  priority: must
+  rule: 字体字号验证基于 PDF 内部对象（span 级 font 与 size），而非视觉截图比对。

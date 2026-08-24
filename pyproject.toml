@@ -12,7 +12,10 @@ dependencies = [
   "jsonschema>=4.0",
   "reportlab>=4.0",
   "PyMuPDF>=1.23",
-  "mineru>=1.0.0",
+  "mineru[core]>=1.0.0",
+  "torch>=2.0",
+  "torchvision>=0.15",
+  "httpx[socks]>=0.27",
 ]
 
 [project.scripts]

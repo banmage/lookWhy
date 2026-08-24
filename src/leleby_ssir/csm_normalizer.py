@@ -10,7 +10,10 @@ from .parser import Block, CSMDocument, Directive
 
 
 def render_std0(document: CSMDocument) -> str:
-    """Render the safe in-memory repairs as the immutable Std0 CSM baseline."""
+    """Render the safe in-memory repairs as the immutable Std0 CSM baseline.
+
+    规则对应: GEN-031（层次编号规范化）、GEN-032/033（表格题注处理）、GBT-B08（题注形如"表X 题名"）。
+    """
     lines = ["---", yaml.safe_dump(document.metadata, allow_unicode=True, sort_keys=False).strip(), "---", ""]
     for block in document.blocks:
         _render_block(lines, block)
@@ -32,6 +35,7 @@ def _directive(directive: Directive) -> str:
 
 
 def _render_block(lines: list[str], block: Block) -> None:
+    # 规则对应: GBT-B08（表题注）、GBT-X06（公式编号）、GEN-052（未知内容保留原文）。
     if block.directive and block.directive.name != "table-merge":
         lines.append(_directive(block.directive))
     if block.kind == "heading":

@@ -205,7 +205,10 @@ class CSMParser:
         issues.append(CSMIssue(code, "warning", message, line, repaired, repair_action))
 
     def _normalise_metadata(self, metadata: dict[str, Any], blocks: list[Block], source: Path, issues: list[CSMIssue]) -> None:
-        """Fill only machine metadata defaults; never alter a standard's body text."""
+        """Fill only machine metadata defaults; never alter a standard's body text.
+
+        规则对应: GEN-050（元数据 schema 一致）+ GBT-C01（文件名称/文件编号等必备字段兜底）。
+        """
         if metadata.get("csm-version") != "1.0":
             original = metadata.get("csm-version")
             metadata["csm-version"] = "1.0"
@@ -243,6 +246,8 @@ class CSMParser:
             self._issue(issues, "CSM-META-010", "Missing or invalid extensions object; supplied an empty object.", repaired=True, repair_action="Set in-memory extensions to an empty object.")
 
     def _parse_body(self, body: str, start_line: int) -> tuple[list[Block], list[str], list[str]]:
+        # 规则对应: GEN-031/GBT-H02-H03（章条编号与层级）、GBT-X02（表格）、GBT-X06（公式）、
+        # GEN-052（ssir 指令/引用注册表化，未知指令保留原文）。
         lines = body.splitlines()
         blocks: list[Block] = []
         errors: list[str] = []
@@ -550,6 +555,7 @@ class CSMParser:
 
     @staticmethod
     def _validate_document(metadata: dict[str, Any], blocks: list[Block], errors: list[str]) -> None:
+        # 规则对应: GBT-H02（章从 1 起连续编号）、GEN-050/052（id 唯一性与引用完整性）。
         headings = [block for block in blocks if block.kind == "heading"]
         h1 = [block for block in headings if block.level == 1]
         if len(h1) != 1:
@@ -576,7 +582,10 @@ class CSMParser:
 
     @staticmethod
     def _repair_tables(blocks: list[Block], issues: list[CSMIssue]) -> list[str]:
-        """Pad short rows only; extra cells have no safe, semantics-preserving repair."""
+        """Pad short rows only; extra cells have no safe, semantics-preserving repair.
+
+        规则对应: GBT-X02（表格一致性；短行补空、多余单元格报错不猜测修复）。
+        """
         fatal_errors: list[str] = []
         for block in blocks:
             if block.kind != "table":
@@ -641,7 +650,11 @@ class CSMParser:
 
     @staticmethod
     def _assess_standard_profile(metadata: dict[str, Any], blocks: list[Block], issues: list[CSMIssue]) -> None:
-        """Report only baseline mandatory concerns; optional GB/T components stay optional."""
+        """Report only baseline mandatory concerns; optional GB/T components stay optional.
+
+        规则对应: GBT-C03（前言必备）、GBT-C05（范围应为第 1 章）、P10-E03（产品标准技术要求必备）、
+        GEN-012（文件编号年份与一字线）。
+        """
         if metadata.get("document-type") != "standard":
             return
         headings = [block.text.strip() for block in blocks if block.kind == "heading" and block.level == 2]

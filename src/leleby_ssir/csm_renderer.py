@@ -10,7 +10,10 @@ import yaml
 
 
 def render_csm(document: dict[str, Any]) -> str:
-    """Render semantic SSIR content without copying derived provenance or quality data."""
+    """Render semantic SSIR content without copying derived provenance or quality data.
+
+    规则对应: GEN-051（CSM→SSIR→CSM 身份层字段往返一致）。
+    """
     metadata = _metadata(document)
     lines = ["---", yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).strip(), "---", ""]
     lines.extend([f"# {metadata['title']}", ""])
@@ -27,6 +30,7 @@ def write_csm(document: dict[str, Any], path: str | Path) -> None:
 
 
 def _metadata(document: dict[str, Any]) -> dict[str, Any]:
+    # 规则对应: GEN-051（身份层字段——标题/英文名/日期/机构/分类号/代替关系/一致性声明逐字段相等）。
     common = document["metadata"]["common"]
     standard = document["metadata"].get("standard", {})
     source_file = document.get("sourceFiles", [{}])[0]
@@ -45,6 +49,20 @@ def _metadata(document: dict[str, Any]) -> dict[str, Any]:
     }
     if document.get("documentType") == "standard":
         metadata["standard-number"] = standard.get("standardNumber", common["documentIdentifier"])
+    # Round-trip identity fields: the renderer must emit the same metadata
+    # keys it consumes, otherwise SSIR1 and SSIR2 diverge on identity.
+    for source_key, target_key in (
+        ("titleEn", "title-en"),
+        ("publicationDate", "publication-date"),
+        ("effectiveDate", "effective-date"),
+        ("issuer", "issuer"),
+        ("conformityStatement", "conformity-statement"),
+    ):
+        if common.get(source_key):
+            metadata[target_key] = common[source_key]
+    for key in ("ics", "ccs", "replaces"):
+        if standard.get(key):
+            metadata[key] = standard[key]
     profile = next(
         (
             quality["renderingProfile"]
@@ -73,6 +91,7 @@ class _RenderState:
         self.counts: defaultdict[str, int] = defaultdict(int)
 
     def render_node(self, node: dict[str, Any]) -> None:
+        # 规则对应: GBT-H02—H04（章条编号与标题的层级编排）、GEN-031（编号规范化）。
         level = min(max(int(node.get("level", 1)) + 1, 2), 6)
         self.lines.extend(["#" * level + " " + self._heading(node), ""])
         for content in sorted(node.get("contentElements", []), key=_sort_order):
@@ -81,6 +100,7 @@ class _RenderState:
             self.render_node(child)
 
     def _heading(self, node: dict[str, Any]) -> str:
+        # 规则对应: GBT-C09/GEN-030（附录编号、(规范性)/(资料性) 与标题连排不插空格）。
         title = node.get("title", "")
         number = node.get("number")
         if node.get("nodeType") == "annex":
@@ -92,6 +112,7 @@ class _RenderState:
         return title
 
     def render_content(self, content: dict[str, Any]) -> None:
+        # 规则对应: GBT-B03（段落）、GBT-B04（列项）、GBT-X03（注）、GBT-X05（示例）。
         kind = content["presentationType"]
         if kind in {"paragraph", "note", "example", "warning", "quote"}:
             text = content.get("textContent", "")
@@ -119,6 +140,8 @@ class _RenderState:
         return f"rt-{kind}-{self.counts[kind]:03d}"
 
     def _render_table(self, table: dict[str, Any]) -> None:
+        # 规则对应: GBT-B08（题注形如"表X 题名"，无编号无题名不输出题注行）、GBT-X02（表头/
+        # 合并单元格/空位以一字线表示）。
         table_id = self._next_id("tbl")
         header_rows = sum(1 for row in table["rows"] if row.get("isHeader")) or 1
         self.lines.append(f'<!-- ssir:table id="{table_id}" header-rows="{header_rows}" -->')
@@ -150,6 +173,7 @@ class _RenderState:
         return text.replace("|", r"\|")
 
     def _render_figure(self, figure: dict[str, Any]) -> None:
+        # 规则对应: GBT-X01（图编号+图题；资产缺失时以占位符标注并保留编号）。
         figure_id = self._next_id("fig")
         missing = figure.get("preservationStatus") == "partiallyPreserved" and not figure.get("assetRef")
         directive = f'<!-- ssir:figure id="{figure_id}"'
@@ -167,6 +191,7 @@ class _RenderState:
         self.lines.append("")
 
     def _render_formula(self, formula: dict[str, Any]) -> None:
+        # 规则对应: GBT-X06（数学公式另行编排、编号圆括号阿拉伯数字）。
         formula_id = self._next_id("fm")
         self.lines.extend([f'<!-- ssir:formula id="{formula_id}" -->', "$$", formula["rawText"], "$$"])
         if formula.get("number"):
@@ -174,6 +199,7 @@ class _RenderState:
         self.lines.append("")
 
     def _render_unknown(self, unknown: dict[str, Any]) -> None:
+        # 规则对应: GEN-052（未知内容注册表化，保留原始内容不丢弃）。
         unknown_id = self._next_id("unk")
         hint = unknown.get("contentTypeHint")
         directive = f'<!-- ssir:unknown id="{unknown_id}"'

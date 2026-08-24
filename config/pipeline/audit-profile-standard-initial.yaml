@@ -13,12 +13,12 @@ rule-sets:
     version: "0.1.0"
     mode: base
     required: true
-    source: rules/general-standard-audit.yaml
+    source: rules/base/gbt-1-1-2020/audit.yaml
   - id: gb-t-1-1-2020
     version: "source-ssir"
     mode: normative-reference
     required: true
-    source: rules/sources/GBT 1.1-2020.ssir.json
+    source: rules/base/gbt-1-1-2020/source.ssir.json
     extraction-status: pending-requirement-catalog
 execution-policy:
   conversion: never-block
