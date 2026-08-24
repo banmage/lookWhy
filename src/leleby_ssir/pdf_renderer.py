@@ -435,6 +435,13 @@ def _styles(base: Any, profile: dict[str, Any], font: str, body_font: str, cente
         "clause": ParagraphStyle("gbt-clause", parent=base["Heading3"], fontName=font, fontSize=10.5, leading=18, alignment=left, leftIndent=0, firstLineIndent=0, spaceBefore=8, spaceAfter=4),
         "subclause": ParagraphStyle("gbt-subclause", parent=base["Heading4"], fontName=font, fontSize=10.5, leading=18, alignment=left, leftIndent=0, firstLineIndent=0, spaceBefore=8, spaceAfter=4),
         "body": ParagraphStyle("gbt-body", parent=base["BodyText"], fontName=body_font, fontSize=body["size-pt"], leading=body["leading-pt"], alignment=justify, firstLineIndent=2 * body["size-pt"], spaceAfter=4),
+        # Untitled clause paragraphs start with the clause number; GB/T 1.1
+        # puts those numbers flush left (顶格) instead of taking the body
+        # two-Han-character first-line indent (GBT-B02).  They are left
+        # aligned, not justified: reportlab's justification stretches every
+        # space on a short first line, blowing up the gap after the clause
+        # number ("5.5.3" + 50pt), which OCR standards exhibit as noise.
+        "body-flush": ParagraphStyle("gbt-body-flush", parent=base["BodyText"], fontName=body_font, fontSize=body["size-pt"], leading=body["leading-pt"], alignment=left, firstLineIndent=0, spaceAfter=4),
         "note": ParagraphStyle("gbt-note", parent=base["BodyText"], fontName=body_font, fontSize=9, leading=15, alignment=justify, leftIndent=2 * body["size-pt"], spaceAfter=4),
         "list": ParagraphStyle("gbt-list", parent=base["BodyText"], fontName=body_font, fontSize=body["size-pt"], leading=body["leading-pt"], alignment=justify, leftIndent=2 * body["size-pt"], firstLineIndent=-2 * body["size-pt"], spaceAfter=2),
         "list-sub": ParagraphStyle("gbt-list-sub", parent=base["BodyText"], fontName=body_font, fontSize=body["size-pt"], leading=body["leading-pt"], alignment=justify, leftIndent=4 * body["size-pt"], firstLineIndent=-2 * body["size-pt"], spaceAfter=2),
@@ -595,6 +602,25 @@ def _cover_story(common: dict[str, Any], standard: dict[str, Any], styles: dict[
     return result
 
 
+def _clause_leading_number(text: str) -> str | None:
+    """Return the leading clause number when a body paragraph starts with one.
+
+    Untitled clauses (裸条) live in the CSM as bare paragraphs whose first
+    line begins with the clause number ("5.5.2承压零件应做…").  GB/T 1.1
+    typesets clause numbers flush left (顶格), so such paragraphs must not
+    take the two-Han-character body first-line indent.  The lookahead is
+    kept identical to _markup()'s clause-line normalisation so the two
+    decisions stay consistent.
+
+    规则对应: GBT-B02（条编号顶格编排，编号后空一个汉字接排）。
+    """
+    match = re.match(
+        r"^((?:\d+\.){1,3}\d+|[A-Z]\.\d+(?:\.\d+)*)(?=[ \u3000]*[\u4e00-\u9fff（(])",
+        str(text).strip(),
+    )
+    return match.group(1) if match else None
+
+
 def _append_content(story: list[Any], content: dict[str, Any], registries: dict[str, dict[str, dict[str, Any]]], styles: dict[str, Any], font: str, report: PDFRenderReport, asset_dir: Path, colors: Any, Table: Any, TableStyle: Any, Paragraph: Any, Spacer: Any, Image: Any) -> None:
     # 规则对应: GEN-032（表格题注拆分：居中题注 + 右对齐单位行）、GBT-B04（列项缩进）、
     # GBT-B10（注小五号宋体）、GBT-X06（公式另行居中、编号右对齐）、GBT-X01/B06（图与图题）。
@@ -621,7 +647,11 @@ def _append_content(story: list[Any], content: dict[str, Any], registries: dict[
             )
             story.append(Paragraph(_markup(text.strip()), unit_style))
         else:
-            story.append(Paragraph(_markup(text), styles["body"]))
+            # Untitled clause paragraphs (bare text starting with the clause
+            # number) render flush left per GBT-B02; ordinary body text keeps
+            # the two-Han-character first-line indent.
+            style = styles["body-flush"] if _clause_leading_number(text) else styles["body"]
+            story.append(Paragraph(_markup(text), style))
     elif kind == "note":
         story.append(Paragraph(_markup(content.get("textContent", "")), styles["note"]))
     elif kind == "list":
@@ -650,7 +680,7 @@ def _append_content(story: list[Any], content: dict[str, Any], registries: dict[
             story.append(image)
         else:
             report.warnings.append(f"Formula could not be typeset; retained as text: {formula['id']}")
-            story.append(Paragraph(_markup(formula.get("rawText", "")), styles["formula"]))
+            story.append(Paragraph(_markup(_latex_to_text(formula.get("rawText", ""))), styles["formula"]))
         if formula.get("number"):
             story.append(Paragraph(_markup(str(formula["number"])), styles["caption"]))
     elif kind == "figure":
@@ -707,8 +737,94 @@ def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any
     story.extend([grid, Spacer(1, 6)])
 
 
+def _latex_to_text(latex: str) -> str:
+    """Flatten a LaTeX math snippet into readable plain text for display.
+
+    MinerU embeds inline math as literal LaTeX in prose ("$\\mathrm{~T~}$",
+    "$K_{T}$").  reportlab has no math typesetter, so the command noise must
+    not leak into the rendered PDF: \\mathrm/\\pmb wrappers are unwrapped,
+    \\frac becomes a/b, common operators map to Unicode, and sub/superscripts
+    are flattened.  Only affects display; SSIR/CSM keep the LaTeX source.
+
+    规则对应: GBT-X06（数学公式另行居中编排；无法排版时以可读文本呈现）。
+    """
+    text = latex.strip()
+    # 1) \command{...} wrappers -> content (roman/bold/italic families);
+    #    inner whitespace is dropped ("\mathrm { k P a }" -> "kPa").
+    text = re.sub(
+        r"\\(?:mathrm|mathbf|mathit|mathsf|mathtt|pmb|textbf|textit|textrm|operatorname|boldsymbol|rm|it|bf)\s*\{([^{}]*)\}",
+        lambda m: re.sub(r"\s+", "", m.group(1)),
+        text,
+    )
+    # 2) sub/superscripts: K_{T} -> KT, x^{2} -> x2 (brace-free after step 1).
+    #    Leading whitespace before _ / ^ is consumed so MinerU's spaced
+    #    "K _ { T }" does not leave "K T" in the display text.
+    text = re.sub(r"\s*_\s*\{([^{}]*)\}", lambda m: m.group(1).replace("~", "").strip(), text)
+    text = re.sub(r"\s*\^\s*\{([^{}]*)\}", lambda m: m.group(1).replace("~", "").strip(), text)
+    text = re.sub(r"\s*_\s*([A-Za-z0-9])", r"\1", text)
+    text = re.sub(r"\s*\^\s*([A-Za-z0-9])", r"\1", text)
+    # 3) \frac{a}{b} -> (a)/(b).
+    text = re.sub(
+        r"\\frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}",
+        lambda m: f"({m.group(1).strip()})/({m.group(2).strip()})",
+        text,
+    )
+    # 4) Common operators -> Unicode (leqslant before leq to avoid prefix match).
+    for src, dst in (
+        (r"\leqslant", "≤"),
+        (r"\geqslant", "≥"),
+        (r"\leq", "≤"),
+        (r"\geq", "≥"),
+        (r"\cdot", "·"),
+        (r"\times", "×"),
+        (r"\pm", "±"),
+        (r"\approx", "≈"),
+        (r"\neq", "≠"),
+        (r"\infty", "∞"),
+        (r"\ldots", "…"),
+        (r"\cdots", "…"),
+        (r"\sqrt", "√"),
+        (r"\deg", "°"),
+        (r"\mu", "μ"),
+        (r"\Omega", "Ω"),
+        (r"\pi", "π"),
+        (r"\partial", "∂"),
+        (r"\Delta", "Δ"),
+        (r"\sum", "Σ"),
+    ):
+        text = text.replace(src, dst)
+    # 5) Drop any remaining \command, stray braces, tildes, backslashes.
+    text = re.sub(r"\\[a-zA-Z]+\s*", "", text)
+    text = text.replace("{", "").replace("}", "").replace("~", "").replace("\\", "")
+    # 6) Tighten spacing: no spaces around binary operators ("a · b" -> "a·b"),
+    #    inside parentheses, or around "/"; keep spaces around "=" for reading.
+    text = re.sub(r"\s*([·×≤≥±≈≠/+−])\s*", r"\1", text)
+    text = re.sub(r"\(\s+", "(", text)
+    text = re.sub(r"\s+\)", ")", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def _markup(text: str) -> str:
-    escaped = escape(str(text)).replace("\n", "<br/>")
+    text = str(text)
+    # Inline MinerU math ("$...$") is LaTeX; flatten it to readable text so
+    # command noise ("\\mathrm{~T~}") does not leak into the rendered PDF.
+    text = re.sub(r"\$([^$\n]+)\$", lambda m: _latex_to_text(m.group(1)), text)
+    # OCR whitespace noise: collapse space runs ("、   32.4 V") and join
+    # digit-group separators ("2 000 W" -> "2000 W").
+    text = re.sub(r" {2,}", " ", text)
+    text = re.sub(r"(?<=\d) (?=\d)", "", text)
+    # Untitled clause numbers: MinerU leaves the spacing after the number
+    # irregular ("5.3.1 泵…" vs "5.3.2泵…"); normalise to one Han space
+    # (GBT-B02 编号后空一个汉字接排).
+    text = re.sub(
+        r"(?m)^((?:\d+\.){1,3}\d+|[A-Z]\.\d+(?:\.\d+)*)[ \u3000]*([\u4e00-\u9fff（(])",
+        "\\1\u3000\\2",
+        text,
+    )
+    # Number-unit gap: use a non-breaking space so justified lines cannot
+    # stretch "50 Hz" into a wide gap (GB 3100 数值与单位间留一个空格).
+    text = re.sub(r"(?<=\d) (?=[A-Za-z%℃Ω])", "\u00A0", text)
+    escaped = escape(text).replace("\n", "<br/>")
     escaped = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped)
     escaped = re.sub(r"(?<!\*)\*(.+?)\*", r"<i>\1</i>", escaped)
     return escaped
@@ -796,7 +912,10 @@ def _heading_depth(number: str) -> int:
     # 规则对应: GEN-031/GBT-H02-H03（章条层次：点分编号决定字号层级）。
     if re.fullmatch(r"\d+", number):
         return 1
-    if re.fullmatch(r"\d+(?:\.\d)+", number):
+    # Each dot-segment may hold multiple digits ("5.10", "5.10.1"); a
+    # single-digit-only pattern silently mis-classifies 5.10.. as depth 0,
+    # which drops the heading into the indented body/front style.
+    if re.fullmatch(r"\d+(?:\.\d+)+", number):
         return number.count(".") + 1
     if re.fullmatch(r"[A-Z](?:\.\d+)*", number):
         return number.count(".") + 2

@@ -197,6 +197,39 @@ document-type: standard
         self.assertIn("CSM-ENC-002", codes)
         self.assertIn("GB-T-1.1-FOREWORD-001", codes)
 
+    def test_mineru_page_markers_are_dropped_even_mid_paragraph(self) -> None:
+        csm = '''---
+csm-version: "1.0"
+document-type: standard
+document-identifier: "Q/TEST 003—2026"
+standard-number: "Q/TEST 003—2026"
+title: "页码标记"
+language: zh-CN
+source: {mode: mineru-pdf, provenance: none}
+extensions: {}
+---
+
+# 页码标记
+
+## 1 范围
+
+本文件规定测试产品。
+
+3
+<!-- /ssir:mineru-pages -->
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "markers.csm.md"
+            path.write_text(csm, encoding="utf-8")
+            ssir, report = parse_csm_with_report(path)
+        texts = []
+        for node in ssir["structuralRoot"]["children"]:
+            for content in node.get("contentElements", []):
+                texts.append(str(content.get("textContent", "")))
+        joined = "\n".join(texts)
+        self.assertNotIn("mineru-pages", joined)
+        self.assertIn("本文件规定测试产品。", joined)
+
     def test_short_table_row_is_padded_and_reported(self) -> None:
         csm = '''---
 csm-version: "1.0"

@@ -188,15 +188,28 @@ def _classification_codes(part_dir: Path) -> dict[str, str]:
         # Normalise whitespace so OCR variants like "ICS01.\n120" or
         # "ICS01120 A00" still match the classification-code shape.
         compact = re.sub(r"\s+", " ", text)
-        ics = re.search(r"ICS\s*([0-9]+(?:\.[0-9]+){0,3})", compact, re.I)
-        ccs = re.search(r"(?:CCS)?\s*([A-Z])\s?(\d{1,2})\s*$", compact, re.I)
-        if not ccs:
-            # "A00" style with no separator between letter and digits.
-            ccs = re.search(r"\b([A-Z])(\d{2})\b", compact)
-        if ics:
-            codes.setdefault("ics", _normalize_ics(ics.group(1)))
-        if ccs and not compact.lower().startswith("ics"):
-            codes.setdefault("ccs", f"{ccs.group(1).upper()} {ccs.group(2)}")
+        m_ics = re.search(r"ICS\s*([0-9]+(?:\.[0-9]+){0,3})", compact, re.I)
+        if m_ics:
+            codes.setdefault("ics", _normalize_ics(m_ics.group(1)))
+        # CCS usually shares the ICS line ("ICS 01.120 CCS A 00"); tolerate
+        # OCR spacing variants like "CCS  K  24".  The whole line may start
+        # with ICS, so CCS is matched independently, not gated on the line
+        # not starting with ICS.
+        m_ccs = re.search(r"CCS\s*([A-Z])\s*(\d{1,2})\b", compact, re.I)
+        if m_ccs:
+            codes.setdefault("ccs", f"{m_ccs.group(1).upper()} {m_ccs.group(2)}")
+        else:
+            # Standalone "<字母><编号>" line without a CCS prefix (e.g. "A 00").
+            m_ccs2 = re.search(r"^\s*([A-Z])\s*(\d{1,2})\s*$", compact, re.I)
+            if m_ccs2:
+                codes.setdefault("ccs", f"{m_ccs2.group(1).upper()} {m_ccs2.group(2)}")
+            elif m_ics:
+                # "ICS01120 A00": the CCS rides the same line without a CCS
+                # prefix, as a trailing "<字母><编号>" token after the ICS
+                # number (OCR drops the spaces and the CCS label).
+                m_ccs3 = re.search(r"\b([A-Z])\s?(\d{1,2})\s*$", compact, re.I)
+                if m_ccs3 and m_ccs3.start() > m_ics.end():
+                    codes.setdefault("ccs", f"{m_ccs3.group(1).upper()} {m_ccs3.group(2)}")
     return codes
 
 
@@ -488,6 +501,47 @@ def _recover_annex_headings(markdown: str) -> str:
     become orphans.  The three lines are joined into one proper
     "## 附录 X（规范性） 标题" heading.
     """
+    # Variant 1: the same split emitted as consecutive heading lines
+    # ("# 附录B" / "# (规范性)" / "# 可靠性试验方法").  Leaving three H1s
+    # inflates the H1 count, corrupts merge title derivation and breaks the
+    # round-trip structure layer, so they are merged like the bare-paragraph
+    # variant.  Tried before the two-line variant so a 3-line split is not
+    # partially consumed.
+    heading_3 = re.compile(
+        r"^#{1,2}\s*附\s*录\s*([A-Z])\s*\n+#{1,2}\s*[(（](规范性|资料性|推荐性|规范性附录|资料性附录)[)）]\s*\n+#{1,2}\s*([^\n#]+)",
+        re.M,
+    )
+    markdown = heading_3.sub(
+        lambda m: f"## 附录 {m.group(1)}（{m.group(2).replace('附录', '')}） {m.group(3).strip()}\n\n",
+        markdown,
+    )
+    # Variant 2: "# 附 录 A" + "# (资料性附录) 质量评定程序或检验规则"
+    # (status and title share the second heading line).
+    heading_2 = re.compile(
+        r"^#{1,2}\s*附\s*录\s*([A-Z])\s*\n+#{1,2}\s*[(（]([^)）]+)[)）]\s*([^\n#]+)",
+        re.M,
+    )
+    markdown = heading_2.sub(
+        lambda m: f"## 附录 {m.group(1)}（{m.group(2).replace('附录', '')}） {m.group(3).strip()}\n\n",
+        markdown,
+    )
+    # Variant 3: "## 附录A" + optional bare "(资料性)" line + "## 标题".
+    # The status marker may ride as a bare paragraph between the two heading
+    # lines; when present it is recovered into the merged heading so GBT-C09
+    # (性质标识必备) can pass.  A following clause heading ("A.1 ...") or
+    # another annex stays untouched.
+    heading_split = re.compile(
+        r"^#{1,2}\s*附\s*录\s*([A-Z])\s*\n+(?:\s*[(（]([^)）]+)[)）]\s*\n+)?#{1,2}\s*(?!附录|[A-Z]\.\d)([^\n#]+)",
+        re.M,
+    )
+
+    def repl_split(match: re.Match[str]) -> str:
+        status = match.group(2).replace("附录", "").strip() if match.group(2) else ""
+        marker = f"（{status}）" if status else ""
+        return f"## 附录 {match.group(1)}{marker} {match.group(3).strip()}\n\n"
+
+    markdown = heading_split.sub(repl_split, markdown)
+    # Variant 0: bare paragraphs (no heading prefix), the original case.
     pattern = re.compile(
         r"^附录\s*([A-Z])\s*\n+\n*[(（](规范性|资料性|规范性附录|推荐性)[)）]\s*\n+\n*(.+?)\n+(?=##?\s|[^\n])",
         re.M,
@@ -612,6 +666,56 @@ def _recover_gbt_7_4_diagrams(markdown: str, source_pdf: Path, asset_dir: Path) 
     return pattern.sub(figures, markdown, count=1)
 
 
+def _demote_cover_headings(markdown: str) -> str:
+    """Demote cover-block H1 lines that are not the document title.
+
+    MinerU promotes cover lines — the "中华人民共和国国家标准" banner and the
+    English translation — to H1.  Neither is the document title (GBT-C01
+    文件名称); leaving them as H1s inflates the H1 count and corrupts title
+    derivation.  Only lines before the first "##" heading (the cover block of
+    the first part) are touched; the Chinese title H1, when present, stays.
+
+    规则对应: GBT-C01（文件名称必备，横幅/英文译名非标题）+ GEN-016（标题识别）。
+    """
+    head, sep, tail = markdown.partition("\n## ")
+    if not sep:
+        return markdown
+    fixed = re.sub(
+        r"(?m)^#\s+(中\s*华\s*人\s*民\s*共\s*和\s*国\s*国\s*家\s*标\s*准|[A-Za-z][A-Za-z0-9 ,.:;()'’/\\—\-]+)\s*$",
+        r"\1",
+        head,
+    )
+    return fixed + sep + tail
+
+
+def _cover_title(markdown: str) -> str:
+    """Recover the Chinese standard name from the cover block.
+
+    The cover name sits between the number/replaces lines and the English
+    title; MinerU emits it as a bare paragraph (no heading), so the H1-based
+    fallback cannot see it.  Returns the first CJK line that is not the
+    banner, a date, the number line, the 代替 line, or the publication block.
+
+    规则对应: GBT-C01（文件名称）+ GEN-016（标题识别，中文行）。
+    """
+    for line in markdown.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#"):
+            break  # first real heading ends the cover block
+        if re.match(r"^中\s*华\s*人\s*民\s*共\s*和\s*国\s*国\s*家\s*标\s*准\s*$", stripped):
+            continue
+        if re.search(r"发布|实施", stripped) or stripped.startswith("代替"):
+            continue
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}.*", stripped):
+            continue
+        if not re.search(r"[\u3400-\u9fff]", stripped):
+            continue  # number line / English title / dates are not the name
+        return re.sub(r"\s+", "", stripped)
+    return ""
+
+
 def extract(args: argparse.Namespace, state: dict[str, Any]) -> None:
     # 规则对应: GEN-002（分块抽取，每块可重试/断点续跑）、GEN-003（中间产物保留）。
     command = _mineru_command()
@@ -691,6 +795,8 @@ def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
             gbt_1_1_quirks=_is_gbt_1_1_2020(args.input),
         )
         raw = _recover_annex_headings(raw)
+        if part["start"] == 0:
+            raw = _demote_cover_headings(raw)
         image_source = source.parent / "images"
         if image_source.is_dir():
             image_target = args.output_dir / "assets" / "images"
@@ -728,6 +834,11 @@ def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
         ),
         "",
     )
+    if not real_heading:
+        # MinerU often leaves the cover standard name as a bare paragraph
+        # (no heading); recover it so the front-matter title is the actual
+        # document name, not a number fallback (GBT-C01 文件名称必备).
+        real_heading = _cover_title(parts_raw[0])
     title = args.title or _usable_title(real_heading, number)
     extra_front_matter: list[str] = []
     # Recover the cover ICS/CCS codes that MinerU drops as page headers.  An

@@ -510,6 +510,12 @@ class CSMParser:
             paragraph_lines = [line]
             i += 1
             while i < len(lines) and lines[i].strip() and not self._starts_new_block(lines, i):
+                if MINERU_PAGE_MARKER_RE.match(lines[i]):
+                    # MinerU page-range markers are provenance, not content;
+                    # skip them even mid-paragraph so they never leak into the
+                    # rendered PDF (GEN-005 页码标记不计入正文).
+                    i += 1
+                    continue
                 paragraph_lines.append(lines[i])
                 i += 1
             blocks.append(
@@ -657,10 +663,11 @@ class CSMParser:
         """
         if metadata.get("document-type") != "standard":
             return
-        headings = [block.text.strip() for block in blocks if block.kind == "heading" and block.level == 2]
+        # OCR/MinerU 常在标题字间插入空格（"前 言"），比对前去除空白。
+        headings = [re.sub(r"\s+", "", block.text.strip()) for block in blocks if block.kind == "heading" and block.level == 2]
         if "前言" not in headings:
             CSMParser._issue(issues, "GB-T-1.1-FOREWORD-001", "Standard document has no 前言 section; GB/T 1.1 treats the foreword as a required document element.")
-        if not any(re.match(r"^1\s+范围(?:\s|$)", title) for title in headings):
+        if not any(re.match(r"^1\s*范围", title) for title in headings):
             CSMParser._issue(issues, "GB-T-1.1-SCOPE-001", "No identifiable chapter 1 范围 was found; confirm the document scope manually.")
         profile = metadata.get("extensions", {}).get("standard-profile")
         if profile == "product" and not any("技术要求" in title for title in headings):

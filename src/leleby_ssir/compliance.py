@@ -121,13 +121,19 @@ def _check_cover_fields(metadata: dict[str, Any], report: ComplianceReport) -> N
 
 
 def _check_element_order(document: dict[str, Any], report: ComplianceReport) -> None:
-    """GBT-E03/E05 + GBT-H02: 前言与范围必备；范围应为第 1 章。"""
+    """GBT-E03/E05 + GBT-H02: 前言与范围必备；范围应为第 1 章。
+
+    OCR/MinerU 常把标题字间插入空格（"前 言"、"范 围"），比对前先去除空白。
+    """
+    def norm(text: str) -> str:
+        return re.sub(r"\s+", "", text).lower()
+
     headings = [
         (str(n.get("number") or ""), str(n.get("title") or ""))
         for n in _walk_nodes(document.get("structuralRoot", {}).get("children", []))
     ]
-    title_texts = [t.lower() for _, t in headings]
-    if not any("前言" == t or t.startswith("前言") for _, t in headings):
+    title_texts = [norm(t) for _, t in headings]
+    if not any(t.startswith("前言") for t in title_texts):
         report.findings.append(
             ComplianceFinding("GBT-E03", "gbt-1-1-2020", "must", "foreword-present", "必备要素缺失：前言")
         )
@@ -231,6 +237,12 @@ def verify_compliance(document: dict[str, Any], metadata: dict[str, Any] | None 
     if is_product_standard({"document-type": metadata.get("document-type", ""), "title": flat_metadata.get("title", "")}, document):
         report.applies.append("gbt-20001.10-2014")
         _check_numeric_requirements_have_units(document, report)
+
+    # Priority-to-status normalisation: only must rules fail the report;
+    # should/may rules produce warnings (GEN 优先级 措辞分级).
+    for finding in report.findings:
+        if finding.priority != "must" and finding.status == "fail":
+            finding.status = "warning"
 
     return report
 
