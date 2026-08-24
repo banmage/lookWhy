@@ -2,7 +2,7 @@
 
 本项目实现标准化文件的结构化信息表示（SSIR）M1：将用户提供的 Markdown 标准文件转换为可校验的 SSIR JSON（可选 Turtle），并通过 Markdown 回旋转换验证信息是否被保留。
 
-当前版本已提供面向任意国家标准 PDF 的 PDF -> CSM Markdown 通用适配器（标准号、标题和元数据均从 PDF 内容推导，不针对任何特定标准号）；MinerU 是首选后端，PyMuPDF 仅用于无 MinerU 时的文本层回退。扫描件、表格/图像精确识别和人工质量复核仍属于后续工作。
+当前版本已实际交付面向任意国家标准 PDF 的通用抽取与规范化链路：`ssir pdf extract` 可从 PDF 生成 CSM Markdown，标准号、标题和元数据均从 PDF 内容推导，不针对任何特定标准号；MinerU 是首选后端，PyMuPDF 仅作为无 MinerU 时的文本层回退。当前实现已进入可用状态，扫描件、表格/图像精确识别与人工质量复核仍属于后续增强工作。
 
 ## 当前功能
 
@@ -31,6 +31,8 @@
 python3 -m venv .venv
 .venv/bin/pip install -e .
 ```
+
+若希望直接启用 MinerU PDF 后端，请同时确保系统中可用 `mineru`（或 `magic-pdf` 兼容 CLI）命令；`pyproject.toml` 已加入 `mineru` 依赖，安装后会一并放入环境。
 
 未安装包时，也可以在仓库根目录使用 `PYTHONPATH=src python3 -m leleby_ssir` 运行命令。
 
@@ -192,12 +194,17 @@ CSM 的完整格式、YAML front matter、表格/图/公式/列表写法见 [CSM
 | `roundtrip.py` | SSIR1/SSIR2 四层比较与关键损失检查。 |
 | `report.py` | 转换报告数据结构和 JSON 序列化。 |
 
-## 当前边界和后续工作
+## 当前状态与后续工作
 
-M1 已完成 Markdown 到 SSIR 的核心链路及 Markdown 回旋验证。下一个阶段按以下顺序推进：
+当前项目已具备两条并行可用链路：
 
-1. 从 SSIR 按 GB/T 1.1 要求生成 PDF 形式的传统标准，并建立 PDF 视觉与语义验收。
-2. 从 SSIR 生成知识图谱/本体表达，即 lookWhy 格式标准，并定义 SSIR 到本体的稳定映射和校验。
-3. 补全 PDF 或扫描标准到 Markdown 的第一步：接入 MinerU/OCR，生成与 CSM 规范一致的 Markdown 和可追溯 sidecar。
+1. M1 已完成 Markdown -> SSIR 的核心链路及 Markdown 回旋验证；
+2. PDF -> CSM Markdown 适配器已实现并接入 `ssir pdf extract` / `tools/mineru_full_standard.py`，支持 MinerU 首选后端和 PyMuPDF 回退。
+
+后续按以下顺序推进：
+
+1. 从 SSIR 按 GB/T 1.1 要求生成传统 PDF 标准，并建立 PDF 视觉与语义验收；
+2. 从 SSIR 生成知识图谱/本体表达，即 lookWhy 格式标准，并定义 SSIR 到本体的稳定映射和校验；
+3. 进一步补全扫描件、表格/图像精确识别和人工质量复核流程，强化 PDF/MinerU 适配器的可追溯 sidecar 与 OCR 能力。
 
 这些工作不得改变已经冻结的 CSM -> SSIR 核心输入契约；新适配器应复用 Std0、SSIR Schema、转换报告和回环测试基准。

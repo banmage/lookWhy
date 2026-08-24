@@ -1,10 +1,10 @@
 # leleby SSIR M1 开发报告
 
-> **状态**：已完成的 Markdown -> SSIR 基线记录
+> **状态**：已完成的 Markdown -> SSIR 基线 + PDF/MinerU 适配器交付记录
 >
-> **日期**：2026-08-17
+> **日期**：2026-08-24
 >
-> **用途**：记录本阶段的需求演变、已完成工作、验证证据、关键决策、问题与限制，作为后续 PDF 渲染、lookWhy 本体和 PDF/扫描件识别开发的交接依据。
+> **用途**：记录本阶段的需求演变、已完成工作、验证证据、关键决策、问题与限制，作为后续 PDF 渲染、lookWhy 本体和 PDF/扫描件识别开发的交接依据；同时同步当前已落地的 MinerU/PDF 抽取链路。
 
 ## 1. 结论与当前可用能力
 
@@ -24,6 +24,8 @@
 
 M1 已通过仓库内全部测试。对 `examples/csm/` 的 5 份产品标准 Std0 样例进行批量回环，结果为 5/5 通过；CSM 模板的“原始 Markdown -> Std0 -> SSIR1 -> Std1 -> SSIR2”完整链路也已通过。
 
+与此并行，项目已补齐 PDF/MinerU 抽取能力：`ssir pdf extract` 能从任意国家标准 PDF 生成 CSM Markdown，优先调用本地 `mineru`/`magic-pdf` 命令，失败时自动回退到 PyMuPDF 文本层；`tools/mineru_full_standard.py` 执行可恢复的全量抽取、CSM 合并、Std0 规范化、SSIR 解析和回旋验证。一致性地说，当前仓库中 PDF 适配器已经不是未实现的规划，而是可运行的实际功能。
+
 ## 2. 需求演变与范围决策
 
 ### 2.1 初始目标
@@ -32,16 +34,17 @@ M1 已通过仓库内全部测试。对 `examples/csm/` 的 5 份产品标准 St
 
 ### 2.2 M1 的最终边界
 
-本阶段明确跳过 PDF/MinerU 解析，直接实现 CSM Markdown 到 SSIR 的第二步。最终工作范围为：
+本阶段的核心工作仍然以 CSM Markdown -> SSIR 为主线，但通过后续补丁已实际落地 PDF/MinerU 抽取链路，形成“用户 Markdown + PDF 输入”两条并行入口。当前工作范围为：
 
 - 定义并完善 CSM Markdown 模板，参考 GB/T 1.1-2020 与 GB/T 20001.10-2014；
 - 准备包含图、表、公式、列表、检验规则、附录等要素的产品标准 Markdown 样例；
 - 解析 CSM 并构建 SSIR JSON，提供可选 TTL 投影；
 - 对用户 Markdown 进行宽容校验、可修复问题记录和产品标准质量提示；
 - 实现 `Std0 -> SSIR1 -> Std1 -> SSIR2` 回旋转换与一致性验证；
+- 通过 `ssir pdf extract` / `tools/mineru_full_standard.py` 将 PDF 解析为 CSM Markdown，并生成 provenance sidecar；
 - 更新开发规范和面向使用者的 README。
 
-M1 明确不包含 PDF/DOCX 输入、MinerU、OCR、页码和坐标溯源、PDF 排版、视觉保真、完整本体推理或生产级 HTTP 服务。该边界避免在未冻结中间格式前将 PDF、排版和知识图谱三类复杂问题相互耦合。
+当前实现已经包含 PDF/DOCX 入口的先行能力（PDF 解析已具备实现与 CLI），但仍保留对复杂扫描件、表格/图像精确识别、人工质量复核和 PDF 版式渲染的后续增强边界。该边界避免在未冻结中间格式前将 PDF、排版和知识图谱三类复杂问题相互耦合。
 
 ### 2.3 Std0 定义的修正
 
