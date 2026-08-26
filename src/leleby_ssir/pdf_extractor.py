@@ -19,6 +19,10 @@ from pathlib import Path
 from typing import Any
 
 
+from .mineru_html import convert_mineru_markup, formula_assets_index
+from .naming import REP_EXTRACT_REPORT, REP_PROVENANCE, report_path, standard_number_from_text
+
+
 @dataclass(slots=True)
 class PdfExtractionReport:
     input_file: str
@@ -46,11 +50,6 @@ def _find_mineru() -> str | None:
         if found:
             return found
     return None
-
-
-def _standard_number(text: str, fallback: str) -> str:
-    match = re.search(r"\b(?:GB|GB/T|DB|QB|JB|DL|NY|ISO)[ /A-Z0-9.\-—]+", text, re.I)
-    return (match.group(0).strip() if match else fallback).replace("—", "-")
 
 
 def _usable_title(text: str, fallback: str) -> str:
@@ -112,7 +111,7 @@ def _pymupdf_extract(source: Path, target: Path, asset_dir: Path) -> tuple[str, 
     if len(doc) and sum(len(p.get_text()) for p in doc) == 0:
         warnings.append({"code": "PDF-TEXT-002", "severity": "error", "message": "PDF has no extractable text; use MinerU/OCR backend."})
     first_text = " ".join(doc[0].get_text().split()) if len(doc) else ""
-    number = _standard_number(first_text, source.stem)
+    number = standard_number_from_text(first_text, source.stem)
     title = _usable_title(first_text, number)
     body = _front_matter(number, title, source.name, "pymupdf") + f"# {title}\n\n" + "\n\n---\n\n".join(pages) + "\n"
     return body, anchors, len(doc), warnings
@@ -155,15 +154,19 @@ def _mineru_extract(source: Path, target: Path, asset_dir: Path, executable: str
         diagnostics = (completed.stderr or completed.stdout).strip()
         raise RuntimeError(f"MinerU completed but produced no Markdown file{': ' + diagnostics[-1000:] if diagnostics else ''}")
     raw = markdown.read_text(encoding="utf-8", errors="replace")
+    # MinerU HTML 表格/图片路径统一适配为 CSM（与全流水线共用同一转换器，
+    # 合并单元格以 table-merge 指令保留），provenance 哈希仍记原始抽取文本。
+    raw_hash = hashlib.sha256(raw.encode()).hexdigest()
+    raw = convert_mineru_markup(raw, "ext", formula_assets_index(markdown))
     # MinerU Markdown is preserved as content; CSM metadata is added around it.
     try:
         import fitz  # type: ignore
         pages = len(fitz.open(source))
     except Exception:
         pages = 0
-    number = _standard_number(raw[:2000], source.stem)
+    number = standard_number_from_text(raw[:2000], source.stem)
     title = _usable_title(next((line.lstrip("# ").strip() for line in raw.splitlines() if line.startswith("#")), ""), number)
-    anchors = [{"id": "mineru-markdown", "source": str(markdown.relative_to(work)), "textSha256": hashlib.sha256(raw.encode()).hexdigest()}]
+    anchors = [{"id": "mineru-markdown", "source": str(markdown.relative_to(work)), "textSha256": raw_hash}]
     return _front_matter(number, title, source.name, "mineru") + f"# {title}\n\n" + raw.rstrip() + "\n", anchors, pages, []
 
 
@@ -193,10 +196,10 @@ def extract_pdf_to_csm(source: str | Path, output: str | Path, *, backend: str =
         warnings.append({"code": "PDF-BACKEND-002", "severity": "warning", "message": "MinerU failed; PyMuPDF fallback used."})
     warnings.extend(extraction_warnings)
     target.write_text(body, encoding="utf-8")
-    sidecar_path = Path(sidecar) if sidecar else Path(f"{target}.provenance.json")
+    sidecar_path = Path(sidecar) if sidecar else report_path(target, REP_PROVENANCE)
     sidecar_payload = {"sourceFile": str(source_path), "sourceSha256": hashlib.sha256(source_path.read_bytes()).hexdigest(), "backend": selected, "pageCount": pages, "anchors": anchors}
     sidecar_path.write_text(json.dumps(sidecar_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     result = PdfExtractionReport(str(source_path), str(target), selected, "partial" if warnings else "complete", pages, warnings, str(sidecar_path))
-    report_path = Path(report) if report else Path(f"{target}.extraction-report.json")
-    result.write_json(report_path)
+    report_path_arg = Path(report) if report else report_path(target, REP_EXTRACT_REPORT)
+    result.write_json(report_path_arg)
     return result

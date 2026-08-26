@@ -213,6 +213,10 @@
         "issuer": {
           "type": "string"
         },
+        "banner": {
+          "type": "string",
+          "description": "Cover banner text (中华人民共和国国家/行业/地方/团体/企业标准)."
+        },
         "status": {
           "type": "string"
         },
@@ -259,7 +263,7 @@
         },
         "coverBadge": {
           "type": "string",
-          "description": "封面 GB 徽记图片资产路径（相对 assets 目录）"
+          "description": "封面徽记图片资产路径（保留以兼容历史数据；渲染端已改为按标准类型从 config/emblems/ 读取，不再使用该字段）"
         },
         "drafters": {
           "type": "array",

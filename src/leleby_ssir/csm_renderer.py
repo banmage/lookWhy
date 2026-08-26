@@ -50,7 +50,7 @@ def _metadata(document: dict[str, Any]) -> dict[str, Any]:
     if document.get("documentType") == "standard":
         metadata["standard-number"] = standard.get("standardNumber", common["documentIdentifier"])
     # Round-trip identity fields: the renderer must emit the same metadata
-    # keys it consumes, otherwise SSIR1 and SSIR2 diverge on identity.
+    # keys it consumes, otherwise ssir and verify diverge on identity.
     for source_key, target_key in (
         ("titleEn", "title-en"),
         ("publicationDate", "publication-date"),
@@ -147,6 +147,11 @@ class _RenderState:
         self.lines.append(f'<!-- ssir:table id="{table_id}" header-rows="{header_rows}" -->')
         if table.get("number") and table.get("caption"):
             self.lines.append(f"**表{table['number']} {table['caption']}**")
+        elif table.get("number"):
+            # Bare numbered caption ("表 N" with the title omitted — common in
+            # 行业标准/企业标准 layouts); keep the number so the roundtrip
+            # preserves GBT-X02 compliance (题注仅编号).
+            self.lines.append(f"**表{table['number']}**")
         elif table.get("caption"):
             self.lines.append(f"**表 {table['caption']}**")
         for row_index, row in enumerate(table["rows"]):
@@ -157,10 +162,13 @@ class _RenderState:
         for row in table["rows"]:
             for cell in row["cells"]:
                 if cell.get("rowspan", 1) > 1 or cell.get("colspan", 1) > 1:
+                    # row 为 0-based 表格行：表头行（rowIndex < header_rows）可为
+                    # 0 或负数，数据行为正数——与 builder 的 data_row 换算一致
+                    # （data_row = header_rows + row - 1）。
                     self.lines.append(
                         '<!-- ssir:table-merge table="{table}" row="{row}" column="{column}" rowspan="{rowspan}" colspan="{colspan}" -->'.format(
                             table=table_id,
-                            row=max(int(cell["rowIndex"]) - header_rows + 1, 1),
+                            row=int(cell["rowIndex"]) - header_rows + 1,
                             column=int(cell["colIndex"]) + 1,
                             rowspan=cell.get("rowspan", 1),
                             colspan=cell.get("colspan", 1),

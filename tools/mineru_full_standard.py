@@ -20,7 +20,8 @@ import sys
 import time
 from typing import Any
 
-from bs4 import BeautifulSoup
+from leleby_ssir.mineru_html import convert_mineru_markup, formula_assets_index
+from leleby_ssir.naming import standard_filename, standard_number_from_text
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,13 +61,8 @@ def _page_count(pdf: Path) -> int:
 
 # Generic helpers shared with the PDF extractor: these recognise common Chinese
 # national/industry standard-number prefixes (GB, GB/T, DB, QB, JB, DL, NY, ISO)
-# and are deliberately not specific to GB/T 1.1-2020.
-def _standard_number(text: str, fallback: str) -> str:
-    # 规则对应: GEN-012（文件编号识别与一字线规范化）。
-    match = re.search(r"\b(?:GB|GB/T|DB|QB|JB|DL|NY|ISO)[ /A-Z0-9.\-—]+", text, re.I)
-    return (match.group(0).strip() if match else fallback).replace("—", "-")
-
-
+# and are deliberately not specific to GB/T 1.1-2020.  The implementations live
+# in src/leleby_ssir/naming.py (single source of truth for the naming scheme).
 def _usable_title(text: str, fallback: str) -> str:
     # 规则对应: GBT-C01（封面必备信息——文件名称）；损坏字体解码兜底。
     compact = " ".join(text.split())
@@ -88,45 +84,70 @@ def _range_dir(output_dir: Path, start: int, end: int) -> Path:
     return output_dir / "parts" / f"pages-{start + 1:03d}-{end + 1:03d}"
 
 
+def _stage_paths(output_dir: Path, stem: str) -> dict[str, Path]:
+    """阶段目录布局（naming_specification.txt 第 4 节）：每个表示一个子目录。
+
+    00_source/ 01_extract/ 02_canonical/ 03_ssir/ 04_render/ 05_verify/；
+    资产统一放文档根 assets/（SSIR 的 assetRef 相对路径以
+    ``assets/images/...`` 引用，渲染器自 03_ssir/ 向上查找）。
+    """
+    return {
+        "source": output_dir / "00_source" / f"{stem}.source.pdf",
+        "checksum": output_dir / "00_source" / f"{stem}.checksum.sha256",
+        "raw": output_dir / "01_extract" / f"{stem}.raw.md",
+        "extract_report": output_dir / "01_extract" / f"{stem}.extract-report.json",
+        "provenance": output_dir / "01_extract" / f"{stem}.provenance.json",
+        "canonical": output_dir / "02_canonical" / f"{stem}.canonical.md",
+        "normalize_report": output_dir / "02_canonical" / f"{stem}.normalize-report.json",
+        "ssir": output_dir / "03_ssir" / f"{stem}.ssir.json",
+        "parse_report": output_dir / "03_ssir" / f"{stem}.parse-report.json",
+        "render_pdf": output_dir / "04_render" / f"{stem}.render.pdf",
+        "render_md": output_dir / "04_render" / f"{stem}.render.md",
+        "render_report": output_dir / "04_render" / f"{stem}.render-report.json",
+        "render_comparison": output_dir / "04_render" / f"{stem}.render-comparison.json",
+        "verify": output_dir / "05_verify" / f"{stem}.verify.json",
+        "roundtrip": output_dir / "05_verify" / f"{stem}.roundtrip.json",
+    }
+
+
+def _write_manifest(args: argparse.Namespace, state: dict[str, Any], title: str = "", number: str = "", status: str = "in-progress") -> None:
+    """写文档索引 manifest.json（naming_specification.txt 第 6 节）。"""
+    stem = args.output_stem or args.input.stem
+    paths = _stage_paths(args.output_dir, stem)
+    manifest: dict[str, Any] = {
+        "documentId": stem,
+        "title": title or state.get("title", ""),
+        "standardNumber": number or state.get("number", ""),
+        "status": status,
+        "created": state.get("createdAt"),
+        "updated": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "source": {
+            "originalFile": str(args.input.resolve()),
+            "checksum": f"sha256:{state.get('sourceSha256', '')}",
+        },
+        "pipeline": {
+            "raw": str(paths["raw"].relative_to(args.output_dir)),
+            "canonical": str(paths["canonical"].relative_to(args.output_dir)),
+            "ssir": str(paths["ssir"].relative_to(args.output_dir)),
+            "renderMd": str(paths["render_md"].relative_to(args.output_dir)),
+            "render": str(paths["render_pdf"].relative_to(args.output_dir)),
+            "verify": str(paths["verify"].relative_to(args.output_dir)),
+            "roundtrip": str(paths["roundtrip"].relative_to(args.output_dir)),
+        },
+        "stages": {
+            name: str(path.relative_to(args.output_dir)) if path.exists() else None
+            for name, path in paths.items()
+        },
+    }
+    _write_json(args.output_dir / "manifest.json", manifest)
+
+
 def _mineru_markdown(part_dir: Path) -> Path | None:
     candidates = sorted(part_dir.rglob("*.md"), key=lambda path: path.stat().st_size, reverse=True)
     return candidates[0] if candidates else None
 
 
-def _html_table_to_csm(html: str, table_id: str, caption: str | None) -> str:
-    """Turn MinerU HTML tables into the constrained CSM table representation.
-
-    规则对应: GBT-B08（题注形如"表X 题名"，编号必备）+ GEN-033（无编号且无题名不输出题注）。
-    """
-    soup = BeautifulSoup(html, "html.parser")
-    rows: list[list[str]] = []
-    for tr in soup.find_all("tr"):
-        row: list[str] = []
-        for cell in tr.find_all(["th", "td"], recursive=False):
-            text = " ".join(cell.get_text(" ", strip=True).split()).replace("|", r"\|")
-            span = max(int(cell.get("colspan", 1)), 1)
-            row.extend([text] + [""] * (span - 1))
-        if row:
-            rows.append(row)
-    if not rows:
-        return ""
-    width = max(len(row) for row in rows)
-    for row in rows:
-        row.extend([""] * (width - len(row)))
-    attrs = [f'id="mineru-table-{table_id}"', 'header-rows="1"']
-    if caption:
-        match = re.match(r"^表\s*([^\s]+)\s+(.+)$", caption)
-        if match:
-            attrs.extend([f'caption-number="{match.group(1)}"', f'caption="{match.group(2).replace(chr(34), "&quot;")}"'])
-    lines = [f"<!-- ssir:table {' '.join(attrs)} -->"]
-    for index, row in enumerate(rows):
-        lines.append("| " + " | ".join(row) + " |")
-        if index == 0:
-            lines.append("| " + " | ".join("---" for _ in row) + " |")
-    return "\n".join(lines)
-
-
-def _extract_cover_badge(source_pdf: Path, output_dir: Path) -> str | None:
+def _extract_cover_badge(source_pdf: Path, output_dir: Path, standard_number: str = "") -> str | None:
     """Extract the cover "GB" emblem image from page 1 into an asset.
 
     规则对应: GEN-018（封面徽标图片恢复，should）。
@@ -135,7 +156,14 @@ def _extract_cover_badge(source_pdf: Path, output_dir: Path) -> str | None:
     emblem itself is a raster image embedded in the source PDF.  The largest
     top-of-page image is recovered so rendering can place it back.
     Returns the asset path relative to the output directory, or None.
+
+    Enterprise standards (Q/) and group standards (T/) do not carry the GB
+    emblem — their covers may contain a company logo or a product photo, which
+    must NOT be cropped and drawn as a fake national emblem (GBT-L02 文件代号
+    美术体字仅适用于国家/行业标准封面).
     """
+    if re.match(r"^Q\s*/", standard_number.upper()) or re.match(r"^T\s*/", standard_number.upper()):
+        return None
     try:
         import fitz  # type: ignore
 
@@ -330,9 +358,12 @@ def _cover_metadata(part_dir: Path, markdown_text: str) -> dict[str, str]:
     if english_parts:
         result.setdefault("title-en", _tidy_english_title(" ".join(english_parts)))
 
-    for item in entries:
-        if item.get("page_idx") not in (0, None):
-            continue
+    page0 = sorted(
+        (item for item in entries if item.get("page_idx") in (0, None)),
+        key=lambda item: float((item.get("bbox") or [0, 0, 0, 0])[1]),
+    )
+    prev_footer: str = ""
+    for item in page0:
         text = str(item.get("text") or item.get("content") or "").strip()
         # OCR may split the word ("发 布") and fuse both bodies into one footer
         # line, so compare on whitespace-stripped text.
@@ -344,9 +375,26 @@ def _cover_metadata(part_dir: Path, markdown_text: str) -> dict[str, str]:
         if effective:
             result.setdefault("effective-date", effective.group(1))
         if "发布" in compact_line and not issued and not effective:
-            issuer = _canonical_issuer(compact_line)
+            issuer_text = compact_line
+            if compact_line == "发布" and prev_footer:
+                # MinerU splits "<机构>发布" into a footer line (机构名) and a
+                # bare "发布" line (page_number); merge them so the issuer
+                # resolves instead of being reported missing (GBT-C01).
+                issuer_text = prev_footer + "发布"
+            issuer = _canonical_issuer(issuer_text)
             if issuer:
                 result.setdefault("issuer", issuer)
+        # Remember the most recent footer-like CJK line (机构名) so a later
+        # standalone "发布" line can be merged with it.
+        if (
+            re.search(r"[\u3400-\u9fff]", compact_line)
+            and not issued
+            and not effective
+            and "发布" not in compact_line
+            and not re.match(r"^\d{4}-\d{2}-\d{2}", compact_line)
+            and not _is_cover_banner(compact_line)
+        ):
+            prev_footer = compact_line
     return result
 
 
@@ -451,43 +499,52 @@ def _segment_word(word: str, lexicon: set[str]) -> str | None:
     return " ".join(result) if result else None
 
 
+# Issuing bodies for national / industry / local / enterprise standards
+# (GBT-C01 封面必备信息——发布机构).  Keyed by distinctive fragments of the
+# cover footer ("<机构>发布"); deliberately generic so GB、JB/QB/DL/NY 等行业
+# 标准、DB 地方标准与企业标准都能映射到规范全称。
+_ISSUER_FRAGMENTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("质量监督", "质检"), "中华人民共和国国家质量监督检验检疫总局 中国国家标准化管理委员会"),
+    (("市场监督", "标督管"), "国家市场监督管理总局 国家标准化管理委员会"),
+    (("工业和信息化", "工信部", "机械行业", "机 行 业"), "中华人民共和国工业和信息化部"),
+    (("住房和城乡建设", "住建部"), "中华人民共和国住房和城乡建设部"),
+    (("交通运输", "交通部"), "中华人民共和国交通运输部"),
+    (("水利部", "水利行业"), "中华人民共和国水利部"),
+    (("农业农村", "农业部"), "中华人民共和国农业农村部"),
+    (("卫生健康", "卫生部"), "中华人民共和国国家卫生健康委员会"),
+    (("应急管理", "安监总局"), "中华人民共和国应急管理部"),
+    (("生态环境", "环保部", "环境保护"), "中华人民共和国生态环境部"),
+    (("文化和旅游", "文化部"), "中华人民共和国文化和旅游部"),
+    (("市场监管总局",), "国家市场监督管理总局"),
+    (("能源局", "能源行业"), "中华人民共和国国家能源局"),
+    (("民航局",), "中国民用航空局"),
+    (("轻工行业", "轻工业联合会"), "中国轻工业联合会"),
+    (("纺织工业", "纺织行业"), "中国纺织工业联合会"),
+    (("钢铁工业",), "中国钢铁工业协会"),
+    (("电力行业", "中电联"), "中国电力企业联合会"),
+    (("煤炭工业",), "中国煤炭工业协会"),
+    (("石油化工", "石化行业"), "中国石油和化学工业联合会"),
+    (("建筑材料", "建材行业"), "中国建筑材料联合会"),
+    (("有色金属",), "中国有色金属工业协会"),
+    (("包装行业",), "中国包装联合会"),
+    (("物流与采购", "物流行业"), "中国物流与采购联合会"),
+)
+
+
 def _canonical_issuer(text: str) -> str:
-    # 规则对应: GEN-014（发布机构识别与规范名称映射——通用机构名录）。
+    # 规则对应: GEN-014（发布机构识别与规范名称映射——通用机构名录，
+    # 覆盖国家标准/行业标准/地方标准/企业标准发布机构）。
     compact = re.sub(r"\s+", "", text)
-    # Distinctive fragments decide the era; check the quality-supervision
-    # administration first because its name embeds "标准化管理" via the
-    # co-published standardization committee line.
-    if "质量监督" in compact or "质检" in compact:
-        return "中华人民共和国国家质量监督检验检疫总局 中国国家标准化管理委员会"
-    if "市场监督" in compact or "标督管" in compact:
-        return "国家市场监督管理总局 国家标准化管理委员会"
-    if "标准化管理" in compact:
-        return "国家市场监督管理总局 国家标准化管理委员会"
+    for fragments, canonical in _ISSUER_FRAGMENTS:
+        if any(fragment in compact for fragment in fragments):
+            return canonical
+    # Generic fallback: "<机构名>发布" — keep the body verbatim so enterprise
+    # standards (企业标准 Q/…) whose issuer is an arbitrary company name still
+    # resolve instead of being reported missing (GBT-C01).
+    match = re.match(r"^([\u3400-\u9fff（）()·A-Za-z0-9\-]{4,40}?)发布$", compact)
+    if match:
+        return match.group(1)
     return ""
-
-
-def _formula_assets(source: Path) -> dict[str, list[str]]:
-    """Index MinerU equation crops by their normalized display-LaTex text.
-
-    规则对应: GEN-004（公式资产相对路径引用）+ GBT-X06（数学公式另行居中编排）。
-    """
-    candidates = sorted(source.parent.glob("*_content_list.json"))
-    if not candidates:
-        return {}
-    try:
-        entries = json.loads(candidates[0].read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    result: dict[str, list[str]] = {}
-    for item in entries:
-        if item.get("type") != "equation" or not item.get("img_path"):
-            continue
-        text = str(item.get("text", "")).strip()
-        if text.startswith("$$") and text.endswith("$$"):
-            text = text[2:-2].strip()
-        key = re.sub(r"\s+", "", text)
-        result.setdefault(key, []).append("assets/images/" + Path(str(item["img_path"])).name)
-    return result
 
 
 def _recover_annex_headings(markdown: str) -> str:
@@ -541,6 +598,19 @@ def _recover_annex_headings(markdown: str) -> str:
         return f"## 附录 {match.group(1)}{marker} {match.group(3).strip()}\n\n"
 
     markdown = heading_split.sub(repl_split, markdown)
+    # Variant 3b: "# 附录C" + bare "(规范性)" line + bare title paragraph —
+    # MinerU keeps only the annex letter as a heading and demotes both the
+    # status marker and the title to plain paragraphs (SJT 11859-2022).
+    heading_bare = re.compile(
+        r"^#{1,2}\s*附\s*录\s*([A-Z])\s*\n+\s*[(（](规范性|资料性|推荐性|规范性附录|资料性附录)[)）]\s*\n+([^\n#]+)",
+        re.M,
+    )
+
+    def repl_bare(match: re.Match[str]) -> str:
+        status = match.group(2).replace("附录", "").strip()
+        return f"## 附录 {match.group(1)}（{status}） {match.group(3).strip()}\n\n"
+
+    markdown = heading_bare.sub(repl_bare, markdown)
     # Variant 0: bare paragraphs (no heading prefix), the original case.
     pattern = re.compile(
         r"^附录\s*([A-Z])\s*\n+\n*[(（](规范性|资料性|规范性附录|推荐性)[)）]\s*\n+\n*(.+?)\n+(?=##?\s|[^\n])",
@@ -551,85 +621,6 @@ def _recover_annex_headings(markdown: str) -> str:
         return f"## 附录 {match.group(1)}（{match.group(2)}） {match.group(3).strip()}\n\n"
 
     return pattern.sub(repl, markdown)
-
-
-def _convert_mineru_markup(raw: str, part_prefix: str, formula_assets: dict[str, list[str]] | None = None, gbt_1_1_quirks: bool = False) -> str:
-    """Adapt MinerU HTML tables and relative image paths without altering prose.
-
-    规则对应: GEN-004（资产相对路径重写）、GEN-032/033（表格题注拆分与孤立题注抑制）、
-    GBT-X06（公式资产绑定）。
-    """
-    table_index = 0
-    output: list[str] = []
-    position = 0
-    for match in re.finditer(r"<table\b[^>]*>.*?</table>", raw, flags=re.IGNORECASE | re.DOTALL):
-        before = raw[position:match.start()]
-        output.append(before)
-        caption = None
-        previous = "".join(output).rstrip().splitlines()
-        if previous:
-            candidate = previous[-1].strip()
-            if re.match(r"^表\s*[^\s]+\s+.+$", candidate):
-                caption = candidate
-                output[-1] = re.sub(r"[^\n]+$", "", output[-1])
-        table_index += 1
-        converted = _html_table_to_csm(match.group(0), f"{part_prefix}-{table_index:03d}", caption)
-        output.append(converted if converted else match.group(0))
-        position = match.end()
-    output.append(raw[position:])
-    converted = "".join(output).replace("](images/", "](assets/images/")
-    lines = converted.splitlines()
-    cleaned: list[str] = []
-    image_pattern = re.compile(r"^!\[.*?\]\(([^)]+)\)$")
-    figure_caption = re.compile(r"^图\s*([A-Z]?\.?\d+(?:\.\d+)?)\s+(.+)$")
-    index = 0
-    while index < len(lines):
-        image = image_pattern.match(lines[index].strip())
-        if not image:
-            cleaned.append(lines[index])
-            index += 1
-            continue
-        caption_at = None
-        caption_match = None
-        for probe in range(index + 1, min(index + 7, len(lines))):
-            candidate = figure_caption.match(lines[probe].strip())
-            if candidate:
-                caption_at, caption_match = probe, candidate
-                break
-        if caption_match:
-            label = f"图 {caption_match.group(1)} {caption_match.group(2)}"
-            cleaned.append(f"![{label}]({image.group(1)})")
-            cleaned.extend(lines[index + 1:caption_at])
-            index = caption_at + 1
-        else:
-            cleaned.append(lines[index])
-            index += 1
-    converted = "\n".join(cleaned)
-    if gbt_1_1_quirks:
-        # GB/T 1.1-2020 appendix E only: MinerU omitted the E.11 raster and
-        # misidentified its index-layout image as a table directly after 图 E.10.
-        # Do not render that unrelated table under the E.10 caption.
-        converted = re.sub(
-            r"\n<!-- ssir:table id=\"mineru-table-p055-001\".*?\n图\s*E\.11\s+索引格式\n\n单位为毫米\n",
-            "\n> [待复核：MinerU 将图 E.11 索引格式误识别为表格，未提取可渲染的图像资产]\n",
-            converted,
-            flags=re.DOTALL,
-        )
-    formula_assets = formula_assets or {}
-    formula_index = 0
-
-    def bind_formula(match: re.Match[str]) -> str:
-        nonlocal formula_index
-        expression = match.group(1).strip()
-        candidates = formula_assets.get(re.sub(r"\s+", "", expression), [])
-        if not candidates:
-            return match.group(0)
-        asset = candidates.pop(0)
-        formula_index += 1
-        identifier = f"{part_prefix}-{formula_index:03d}"
-        return f'<!-- ssir:formula id="mineru-formula-{identifier}" asset-ref="{asset}" -->\n{match.group(0)}'
-
-    return re.sub(r"\$\$\s*\n(.*?)\n\$\$", bind_formula, converted, flags=re.DOTALL)
 
 
 def _recover_gbt_7_4_diagrams(markdown: str, source_pdf: Path, asset_dir: Path) -> str:
@@ -666,35 +657,60 @@ def _recover_gbt_7_4_diagrams(markdown: str, source_pdf: Path, asset_dir: Path) 
     return pattern.sub(figures, markdown, count=1)
 
 
+_COVER_BANNER_RE = re.compile(
+    r"(?:中华人民共和国)?[\u3400-\u9fff（）()·]{0,40}?(?:国家|行业|地方|团体|企业)标准"
+)
+
+
+def _is_cover_banner(compact: str) -> bool:
+    """True when the whitespace-stripped line is a cover banner.
+
+    规则对应: GBT-L03（封面横幅）+ GBT-C01（文件名称非横幅）。
+    横幅形态覆盖各级标准：中华人民共和国国家标准 / 中华人民共和国机械
+    行业标准 / 晋中经纬新科机械有限公司企业标准 / 团体标准 / 上海市地方
+    标准 等；机构名 + 层级字样（企业/团体/地方/行业/国家）均为横幅，
+    整行匹配才判定，避免把标题（如「减速器」）误判为横幅。
+    """
+    return bool(_COVER_BANNER_RE.fullmatch(compact))
+
+
 def _demote_cover_headings(markdown: str) -> str:
     """Demote cover-block H1 lines that are not the document title.
 
-    MinerU promotes cover lines — the "中华人民共和国国家标准" banner and the
-    English translation — to H1.  Neither is the document title (GBT-C01
-    文件名称); leaving them as H1s inflates the H1 count and corrupts title
-    derivation.  Only lines before the first "##" heading (the cover block of
-    the first part) are touched; the Chinese title H1, when present, stays.
+    MinerU promotes cover lines — the "中华人民共和国国家标准" banner (also
+    "<机构名>企业标准" for enterprise standards, "团体标准", "<省>地方标准"
+    etc.) and the English translation — to H1.  Neither is the document
+    title (GBT-C01 文件名称); leaving them as H1s inflates the H1 count and
+    corrupts title derivation.  Only lines before the first "##" heading (the
+    cover block of the first part) are touched; the Chinese title H1, when
+    present, stays.
 
     规则对应: GBT-C01（文件名称必备，横幅/英文译名非标题）+ GEN-016（标题识别）。
     """
     head, sep, tail = markdown.partition("\n## ")
     if not sep:
         return markdown
-    fixed = re.sub(
-        r"(?m)^#\s+(中\s*华\s*人\s*民\s*共\s*和\s*国\s*国\s*家\s*标\s*准|[A-Za-z][A-Za-z0-9 ,.:;()'’/\\—\-]+)\s*$",
-        r"\1",
-        head,
-    )
-    return fixed + sep + tail
+    fixed_lines: list[str] = []
+    for line in head.splitlines():
+        match = re.match(r"^#\s+(.+?)\s*$", line)
+        if match and (
+            _is_cover_banner(re.sub(r"\s+", "", match.group(1)))
+            or re.fullmatch(r"[A-Za-z][A-Za-z0-9 ,.:;()'’/\\—\-]+", match.group(1).strip())
+        ):
+            fixed_lines.append(match.group(1))  # demote: drop the H1 marker
+        else:
+            fixed_lines.append(line)
+    return "\n".join(fixed_lines) + sep + tail
 
 
 def _cover_title(markdown: str) -> str:
     """Recover the Chinese standard name from the cover block.
 
     The cover name sits between the number/replaces lines and the English
-    title; MinerU emits it as a bare paragraph (no heading), so the H1-based
-    fallback cannot see it.  Returns the first CJK line that is not the
-    banner, a date, the number line, the 代替 line, or the publication block.
+    title.  MinerU usually emits it as a bare paragraph (no heading), but for
+    enterprise standards it may promote the cover title to a heading too, so
+    heading lines whose content is neither banner, date, number nor the 发布/
+    实施 block are treated as the title.  Returns the first such CJK line.
 
     规则对应: GBT-C01（文件名称）+ GEN-016（标题识别，中文行）。
     """
@@ -702,17 +718,23 @@ def _cover_title(markdown: str) -> str:
         stripped = line.strip()
         if not stripped:
             continue
-        if stripped.startswith("#"):
-            break  # first real heading ends the cover block
-        if re.match(r"^中\s*华\s*人\s*民\s*共\s*和\s*国\s*国\s*家\s*标\s*准\s*$", stripped):
+        is_heading = stripped.startswith("#")
+        content = re.sub(r"^#+\s*", "", stripped)
+        compact = re.sub(r"\s+", "", content)
+        if _is_cover_banner(compact):
             continue
-        if re.search(r"发布|实施", stripped) or stripped.startswith("代替"):
+        if re.search(r"发布|实施", compact) or compact.startswith("代替"):
             continue
-        if re.fullmatch(r"\d{4}-\d{2}-\d{2}.*", stripped):
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}.*", compact):
             continue
-        if not re.search(r"[\u3400-\u9fff]", stripped):
+        if not re.search(r"[\u3400-\u9fff]", compact):
             continue  # number line / English title / dates are not the name
-        return re.sub(r"\s+", "", stripped)
+        if is_heading and re.match(
+            r"^(前\s*言|引\s*言|目\s*次|参考文献|索引|附录|范围|规范性引用文件|术语和定义)",
+            compact,
+        ):
+            break  # a real body heading ends the cover block
+        return compact
     return ""
 
 
@@ -782,16 +804,15 @@ def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
 
     _log(f"Merging {len(expected)} completed MinerU page ranges into one CSM Markdown document")
     stem = args.output_stem or args.input.stem
-    destination = args.output_dir / f"{stem}.mineru.csm.md"
     parts_raw: list[str] = []
     sources: list[dict[str, Any]] = []
     for start in expected:
         part = completed[start]
         source = args.output_dir / part["markdown"]
-        raw = _convert_mineru_markup(
+        raw = convert_mineru_markup(
             source.read_text(encoding="utf-8", errors="replace").strip(),
             f"p{part['start'] + 1:03d}",
-            _formula_assets(source),
+            formula_assets_index(source),
             gbt_1_1_quirks=_is_gbt_1_1_2020(args.input),
         )
         raw = _recover_annex_headings(raw)
@@ -812,13 +833,36 @@ def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
 
     # Derive the standard number and title from the extraction when the caller
     # did not supply them explicitly, matching the generic PDF extractor logic.
-    number = args.standard_number or _standard_number("\n".join(parts_raw)[:3000], stem)
+    number = args.standard_number or standard_number_from_text("\n".join(parts_raw)[:3000], stem)
     number = re.sub(r"\.(?=\d)", "", number) if number.count(".") > 1 else number
-    # The first H1 is often the cover banner ("中华人民共和国国家标准"),
-    # not the standard name.  Pick the first H1 that is neither the banner
-    # (compared with whitespace stripped — OCR may space out the banner),
-    # the English title, nor front-matter headings.
-    banner_titles = {"中华人民共和国国家标准", "中华人民共和国国家标淮"}
+    # 输出文件命名方案（用户确认）：推荐性/指导性标准 /T /Z 并入代号
+    # （GB/T→GBT、JB/T→JBT），企业/团体斜杠转下划线，代号与顺序号间加
+    # 下划线（GBT_15034-2012、Q_XKBZ_002-2026）。显式 --output-stem 优先；
+    # 否则按解析出的标准号规范化命名并写入 state 供后续阶段复用。
+    if not args.output_stem:
+        derived = standard_filename(number)
+        if derived:
+            stem = derived
+            args.output_stem = derived
+            state["outputStem"] = derived
+    paths = _stage_paths(args.output_dir, stem)
+    destination = paths["raw"]
+    # 阶段目录（00_source … 05_verify）可能尚不存在（例如推导出的 ID 与
+    # 输入文件名不同导致目录名变化），确保父目录全部就位。
+    for stage_path in paths.values():
+        stage_path.parent.mkdir(parents=True, exist_ok=True)
+    # 00_source：永久保留原始文件副本 + 校验和（只读，永不修改）。
+    paths["source"].parent.mkdir(parents=True, exist_ok=True)
+    if not paths["source"].is_file():
+        shutil.copy2(args.input, paths["source"])
+    source_sha256 = state.get("sourceSha256") or hashlib.sha256(args.input.read_bytes()).hexdigest()
+    paths["checksum"].write_text(f"sha256:{source_sha256}\n", encoding="utf-8")
+    # The first H1 is often the cover banner ("中华人民共和国国家标准" /
+    # "中华人民共和国机械行业标准" / "<机构名>企业标准"), not the standard name.
+    # Pick the first H1 that is neither a banner (compared with whitespace
+    # stripped — OCR may space it out; _is_cover_banner covers 国家/行业/
+    # 地方/团体/企业标准 so GB、JB、DB、T/、Q/ 语料都适用), the English
+    # title, nor front-matter headings.
     heading_candidates = [
         line.lstrip("#").strip()
         for part in parts_raw
@@ -829,7 +873,7 @@ def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
         (
             heading
             for heading in heading_candidates
-            if re.sub(r"\s+", "", heading) not in {re.sub(r"\s+", "", b) for b in banner_titles}
+            if not _is_cover_banner(re.sub(r"\s+", "", heading))
             and not re.fullmatch(r"[A-Za-z][A-Za-z0-9 ,.:;()\-']+", heading)
         ),
         "",
@@ -868,10 +912,9 @@ def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
             # Explicit caller values replace any auto-recovered ones.
             extra_front_matter = [line for line in extra_front_matter if not line.startswith(f"{key}:")]
             extra_front_matter.append(f"{key}: {json.dumps(str(value), ensure_ascii=False)}")
-    # Recover the cover "GB" emblem as a croppable image asset.
-    badge_asset = _extract_cover_badge(args.input, args.output_dir)
-    if badge_asset:
-        extra_front_matter.append("cover-badge: " + json.dumps(badge_asset))
+    # 封面徽标不再从 PDF 提取：渲染端按标准类型从 config/emblems/ 固定位置
+    # 读取（GEN-018/GBT-L02），提取的图块既不可靠也不通用，故此处不再写入
+    # cover-badge 资产（SSIR 的 coverBadge 字段保留以兼容历史数据）。
     lines = [
         "---",
         'csm-version: "1.0"',
@@ -884,7 +927,7 @@ def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
         "source:",
         "  mode: mineru-pdf",
         f"  original-file-name: {json.dumps(args.input.name, ensure_ascii=False)}",
-        "  provenance: mineru-full-standard-state.json",
+        "  provenance: pipeline-state.json",
         'extraction-backend: "mineru pipeline"',
         "---",
         "",
@@ -897,11 +940,14 @@ def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
         body = f"# {title}\n\n{body}"
     lines.extend([body, ""])
     destination.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
-    provenance = args.output_dir / f"{stem}.mineru.provenance.json"
+    provenance = paths["provenance"]
     _write_json(provenance, {
         "sourcePdf": str(args.input.resolve()), "sourceSha256": state["sourceSha256"], "pageCount": state["pageCount"],
         "backend": state["backend"], "parameters": state["parameters"], "parts": sources,
     })
+    state["title"] = title
+    state["number"] = number
+    _write_json(args.state_file, state)
     _log(f"Merged Markdown written: {destination}")
     _log(f"Provenance written: {provenance}")
     return destination
@@ -914,11 +960,20 @@ def finalize(args: argparse.Namespace, merged: Path) -> Path | None:
     service 层 verify_compliance 按 GEN-* → GBT-* → P10-* 三层执行并写入转换报告。
     """
     stem = args.output_stem or args.input.stem
-    std0 = args.output_dir / f"{stem}.mineru.std0.csm.md"
-    ssir = args.output_dir / f"{stem}.mineru.ssir.json"
-    normalize = [str(Path(sys.prefix) / "bin" / "ssir"), "csm", "normalize", "--input", str(merged), "--std0-output", str(std0)]
-    parsed = [str(Path(sys.prefix) / "bin" / "ssir"), "csm", "parse", "--input", str(std0), "--output", str(ssir)]
-    _log("Normalizing merged MinerU Markdown into CSM Std0")
+    paths = _stage_paths(args.output_dir, stem)
+    canonical = paths["canonical"]
+    ssir = paths["ssir"]
+    normalize = [
+        str(Path(sys.prefix) / "bin" / "ssir"), "csm", "normalize",
+        "--input", str(merged), "--canonical-output", str(canonical),
+        "--report", str(paths["normalize_report"]),
+    ]
+    parsed = [
+        str(Path(sys.prefix) / "bin" / "ssir"), "csm", "parse",
+        "--input", str(canonical), "--output", str(ssir),
+        "--report", str(paths["parse_report"]),
+    ]
+    _log("Normalizing merged MinerU Markdown into canonical CSM")
     if subprocess.run(normalize, cwd=ROOT).returncode:
         print("CSM normalization needs review; MinerU extraction and provenance remain available.", file=sys.stderr)
         return None
@@ -960,7 +1015,7 @@ def main() -> int:
     parser.add_argument("--title", type=str, help="standard title written into the CSM front matter (default: first H1 from the extraction)")
     parser.add_argument("--chunk-size", type=int, default=18, help="Pages per restartable MinerU invocation (default: 18).")
     parser.add_argument("--stage", choices=("extract", "merge", "finalize", "all"), default="all")
-    parser.add_argument("--roundtrip", action="store_true", help="Run CSM Std0 -> SSIR -> CSM Std1 -> SSIR round-trip verification after parsing.")
+    parser.add_argument("--roundtrip", action="store_true", help="Run CSM canonical -> SSIR -> CSM render.md -> verify round-trip verification after parsing.")
     parser.add_argument("--render", action="store_true", help="Render parsed SSIR to PDF and write a comparison report.")
     parser.add_argument("--toc-depth", default="2", help="Maximum numbered TOC level for --render (positive integer or all; default: 2).")
     args = parser.parse_args()
@@ -972,8 +1027,12 @@ def main() -> int:
         parser.error("--chunk-size must be positive")
     args.output_dir = args.output_dir or ROOT / "out" / "mineru" / re.sub(r"\W+", "-", args.input.stem).strip("-")
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    args.state_file = args.output_dir / "mineru-full-standard-state.json"
+    args.state_file = args.output_dir / "pipeline-state.json"
     state = _load_json(args.state_file, {})
+    state.setdefault("createdAt", datetime.now().astimezone().isoformat(timespec="seconds"))
+    # 断点续跑：stem 在上一次 merge 已推导并存入 state，直接复用。
+    if not args.output_stem and state.get("outputStem"):
+        args.output_stem = state["outputStem"]
     _log(f"Input PDF: {args.input.resolve()}")
     _log(f"Output directory: {args.output_dir.resolve()}")
     _log(f"Stage: {args.stage}; round-trip: {args.roundtrip}; render after parsing: {args.render}")
@@ -987,27 +1046,33 @@ def main() -> int:
         merged = merge(args, state)
         _log(f"Merged MinerU Markdown: {merged}")
         if args.stage == "merge":
+            _write_manifest(args, state)
             return 0
         ssir = finalize(args, merged)
-        stem = args.output_stem or args.input.stem
+        paths = _stage_paths(args.output_dir, args.output_stem or args.input.stem)
         if args.roundtrip and ssir:
-            std0 = args.output_dir / f"{stem}.mineru.std0.csm.md"
-            std1 = args.output_dir / f"{stem}.mineru.std1.csm.md"
-            roundtrip = [str(Path(sys.prefix) / "bin" / "ssir"), "csm", "roundtrip", "--input", str(std0), "--std1-output", str(std1)]
-            _log("Running SSIR round-trip verification (Std0 -> SSIR1 -> Std1 -> SSIR2)")
+            roundtrip = [
+                str(Path(sys.prefix) / "bin" / "ssir"), "csm", "roundtrip",
+                "--input", str(paths["canonical"]), "--render-md-output", str(paths["render_md"]),
+                "--verify-output", str(paths["verify"]), "--report", str(paths["roundtrip"]),
+            ]
+            _log("Running SSIR round-trip verification (canonical -> SSIR -> render.md -> verify)")
             result = subprocess.run(roundtrip, cwd=ROOT)
             if result.returncode not in (0, 3):
                 raise RuntimeError("SSIR round-trip verification failed")
-            _log(f"Round-trip result: {result.returncode} (0 = SSIR1/SSIR2 equivalent; 3 = critical information loss)")
+            _log(f"Round-trip result: {result.returncode} (0 = equivalent; 3 = critical information loss)")
         if args.render and ssir:
-            pdf = args.output_dir / f"{stem}.mineru.pdf"
-            render = [str(Path(sys.prefix) / "bin" / "ssir"), "pdf", "render", "--input", str(ssir), "--output", str(pdf), "--toc-depth", args.toc_depth]
+            render = [
+                str(Path(sys.prefix) / "bin" / "ssir"), "pdf", "render",
+                "--input", str(paths["ssir"]), "--output", str(paths["render_pdf"]),
+                "--report", str(paths["render_report"]), "--toc-depth", args.toc_depth,
+            ]
             _log("Rendering SSIR JSON as a traditional standard-style PDF")
             if subprocess.run(render, cwd=ROOT).returncode:
                 raise RuntimeError("SSIR PDF renderer failed")
-            comparison = args.output_dir / f"{stem}.mineru.pdf-comparison.json"
-            compare(args.input, pdf, comparison)
-            _log(f"Generated PDF comparison: {comparison}")
+            compare(args.input, paths["render_pdf"], paths["render_comparison"])
+            _log(f"Generated PDF comparison: {paths['render_comparison']}")
+        _write_manifest(args, state, status="completed")
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

@@ -21,7 +21,7 @@ class EquivalenceDifference:
 @dataclass(slots=True)
 class RoundTripReport:
     input_file: str
-    std1_file: str
+    render_md_file: str
     ssir1_id: str
     ssir2_id: str
     passed: bool
@@ -32,7 +32,7 @@ class RoundTripReport:
     def to_dict(self) -> dict[str, Any]:
         return {
             "inputFile": self.input_file,
-            "std1File": self.std1_file,
+            "renderMdFile": self.render_md_file,
             "ssir1Id": self.ssir1_id,
             "ssir2Id": self.ssir2_id,
             "passed": self.passed,
@@ -51,7 +51,7 @@ class RoundTripReport:
         )
 
 
-def compare_ssir(ssir1: dict[str, Any], ssir2: dict[str, Any], input_file: str = "", std1_file: str = "") -> RoundTripReport:
+def compare_ssir(ssir1: dict[str, Any], ssir2: dict[str, Any], input_file: str = "", render_md_file: str = "") -> RoundTripReport:
     """Compare semantic views, explicitly excluding derived IDs, anchors, runs and quality data."""
     first = _semantic_views(ssir1)
     second = _semantic_views(ssir2)
@@ -76,7 +76,7 @@ def compare_ssir(ssir1: dict[str, Any], ssir2: dict[str, Any], input_file: str =
         layer_status["criticalInformation"] = "pass"
     return RoundTripReport(
         input_file=input_file,
-        std1_file=std1_file,
+        render_md_file=render_md_file,
         ssir1_id=ssir1["id"],
         ssir2_id=ssir2["id"],
         passed=not differences,

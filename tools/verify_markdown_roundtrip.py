@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Batch-verify CSM Std0 -> SSIR1 -> CSM Std1 -> SSIR2 round trips."""
+"""Batch-verify CSM canonical -> SSIR -> CSM render.md -> verify round trips."""
 
 from __future__ import annotations
 
@@ -8,18 +8,19 @@ import json
 from pathlib import Path
 import sys
 
+from leleby_ssir.naming import artifact_id
 from leleby_ssir.service import round_trip_csm
 
 
 def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", type=Path, action="append", help="CSM Std0 file; repeat as needed")
+    parser.add_argument("--input", type=Path, action="append", help="canonical CSM file; repeat as needed")
     parser.add_argument(
         "--examples-dir",
         type=Path,
-        help="verify every *.csm.md in this directory (used when --input is absent)",
+        help="verify every *.canonical.md (legacy *.csm.md) in this directory (used when --input is absent)",
     )
-    parser.add_argument("--output-dir", type=Path, required=True, help="directory for Std1 and JSON reports")
+    parser.add_argument("--output-dir", type=Path, required=True, help="directory for render.md and JSON reports")
     arguments = parser.parse_args()
     if not arguments.input and not arguments.examples_dir:
         parser.error("one of --input or --examples-dir is required")
@@ -30,18 +31,19 @@ def main() -> int:
     arguments = _arguments()
     paths = list(arguments.input or [])
     if arguments.examples_dir:
-        paths.extend(sorted(arguments.examples_dir.glob("*.csm.md")))
+        paths.extend(sorted(arguments.examples_dir.glob("*.canonical.md")))
+        paths.extend(sorted(arguments.examples_dir.glob("*.csm.md")))  # 兼容旧夹具
     paths = list(dict.fromkeys(paths))
     arguments.output_dir.mkdir(parents=True, exist_ok=True)
     results: list[dict[str, object]] = []
     for path in paths:
-        stem = path.name.removesuffix(".csm.md")
-        std1 = arguments.output_dir / f"{stem}.std1.csm.md"
-        report_path = arguments.output_dir / f"{stem}.roundtrip-report.json"
+        stem = artifact_id(path.name)
+        render_md = arguments.output_dir / f"{stem}.render.md"
+        report_target = arguments.output_dir / f"{stem}.roundtrip.json"
         try:
-            _, _, report = round_trip_csm(path, std1)
-            report.write_json(report_path)
-            results.append({"input": str(path), "std1": str(std1), "report": str(report_path), "passed": report.passed})
+            _, _, report = round_trip_csm(path, render_md)
+            report.write_json(report_target)
+            results.append({"input": str(path), "renderMd": str(render_md), "report": str(report_target), "passed": report.passed})
         except Exception as exc:  # Keep batch diagnostics for every supplied baseline.
             results.append({"input": str(path), "passed": False, "error": str(exc)})
     summary = {

@@ -6,9 +6,10 @@ from pathlib import Path
 
 from .builder import SSIRBuilder
 from .compliance import compliance_issues, verify_compliance
-from .csm_normalizer import write_std0
+from .csm_normalizer import write_canonical
 from .csm_renderer import write_csm
 from .exporters import json_bytes, turtle_text
+from .naming import REP_PARSE_REPORT, report_path
 from .parser import CSMParser
 from .report import ConversionReport
 from .roundtrip import RoundTripReport, compare_ssir
@@ -38,28 +39,38 @@ def parse_csm(path: str | Path, strict: bool = False) -> dict:
 
 def normalize_csm(
     path: str | Path,
-    std0_output: str | Path,
+    canonical_output: str | Path,
     strict: bool = False,
 ) -> tuple[dict, ConversionReport]:
-    """Safely repair raw Markdown and persist its CSM Std0 baseline."""
+    """Safely repair raw Markdown and persist its canonical CSM baseline."""
     document = CSMParser(strict=strict).read(path)
     ssir = SSIRBuilder().build(document)
     validate_ssir(ssir)
-    write_std0(document, std0_output)
+    write_canonical(document, canonical_output)
     return ssir, ConversionReport.completed(document, ssir["id"])
 
 
 def round_trip_csm(
     path: str | Path,
-    std1_output: str | Path,
+    render_md_output: str | Path,
     strict: bool = False,
+    verify_output: str | Path | None = None,
 ) -> tuple[dict, dict, RoundTripReport]:
-    """Execute CSM(std0) -> SSIR1 -> CSM(std1) -> SSIR2 and compare semantic views."""
+    """Execute CSM(canonical) -> SSIR -> CSM(render.md) -> verify and compare semantic views.
+
+    ``render_md_output`` 是 SSIR 确定性渲染回的 CSM（04_render 中间产物，原 Std1）；
+    ``verify_output`` 可选，用于持久化从 ``render.md`` 再解析得到的 SSIR
+    （05_verify 的 verify.json，原 SSIR2），供回环报告引用。
+    """
     source = Path(path)
-    target = Path(std1_output)
+    target = Path(render_md_output)
     ssir1 = parse_csm(source, strict=strict)
     write_csm(ssir1, target)
     ssir2 = parse_csm(target, strict=strict)
+    if verify_output is not None:
+        verify_target = Path(verify_output)
+        verify_target.parent.mkdir(parents=True, exist_ok=True)
+        verify_target.write_bytes(json_bytes(ssir2))
     report = compare_ssir(ssir1, ssir2, str(source), str(target))
     return ssir1, ssir2, report
 
@@ -80,6 +91,6 @@ def write_output(
         target.write_text(turtle_text(ssir), encoding="utf-8")
     else:
         raise ValueError(f"unsupported output format: {output_format}")
-    report_target = Path(report) if report is not None else Path(f"{target}.conversion-report.json")
+    report_target = Path(report) if report is not None else report_path(target, REP_PARSE_REPORT)
     conversion_report.write_json(report_target)
     return ssir, conversion_report

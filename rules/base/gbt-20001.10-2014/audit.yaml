@@ -1,0 +1,101 @@
+schema-version: "1.0"
+kind: audit-rule-set
+id: product-standard-audit
+version: "0.1.0"
+status: draft
+title: 产品标准专项审核准则（GB/T 20001.10-2014）
+description: >-
+  在产品标准（document-type=product-standard 或标题/范围命中产品标准判定）上
+  叠加的专项审核。只产生审核发现，不阻断原始文档到 SSIR 的转换；
+  与 gbt-1-1-2020/audit.yaml 的通用审核一起构成产品标准的完整审核层。
+source:
+  type: maintained-rule-set
+  authority: leleby
+  based-on: "GB/T 20001.10-2014"
+  effective-date: "2026-08-25"
+applicability:
+  document-types: [standard]
+  requires: product-standard-classified
+execution-policy:
+  conversion: never-block
+  unknown-rule-result: unresolved
+  default-severity: warning
+  result-states: [pass, fail, warning, not-applicable, unresolved]
+rules:
+  - id: P10-AUD-001
+    title: 产品标准应具有要求章
+    category: structure
+    requirement:
+      obligation: required
+      applicability: product-standard-classified
+      statement: 产品标准正文应包含"要求"章（GB/T 20001.10 5.4）。
+    target: {scope: structural-tree, path: $.structuralRoot}
+    check: {operator: contains_node_title, expected: 要求}
+    severity: warning
+    evidence: {required: true, kind: [node, source-anchor]}
+  - id: P10-AUD-002
+    title: 产品标准应具有试验方法章
+    category: structure
+    requirement:
+      obligation: required
+      applicability: product-standard-classified
+      statement: 产品标准正文应包含"试验方法"章（GB/T 20001.10 5.6）。
+    target: {scope: structural-tree, path: $.structuralRoot}
+    check: {operator: contains_node_title, expected: 试验方法}
+    severity: warning
+    evidence: {required: true, kind: [node, source-anchor]}
+  - id: P10-AUD-003
+    title: 试验方法编号应镜像要求编号
+    category: numbering
+    requirement:
+      obligation: required
+      applicability: has_requirements_and_test_methods
+      statement: 试验方法章的条编号与要求章的条编号应一一对应（如 5.5.2 对 4.7.2）（GB/T 20001.10 5.6.2）。
+    target: {scope: structural-tree, path: $.structuralRoot}
+    check: {operator: test_method_numbering_mirrors_requirements}
+    severity: warning
+    evidence: {required: true, kind: [node, value, source-anchor]}
+  - id: P10-AUD-004
+    title: 定量要求应携带单位
+    category: expression
+    requirement:
+      obligation: required
+      applicability: has_numeric_requirements
+      statement: 定量要求（数值 + 极限连接符 ≤/≥/~）必须给出单位，不允许只有数值没有单位（GB/T 20001.10 5.4.4）。
+    target: {scope: document, path: $.structuralRoot}
+    check: {operator: numeric_requirements_carry_units}
+    severity: warning
+    evidence: {required: true, kind: [text, source-anchor]}
+  - id: P10-AUD-005
+    title: 要求应可验证
+    category: expression
+    requirement:
+      obligation: required
+      applicability: has_quantitative_requirements
+      statement: 声明"应符合…规定"的定量指标，应能在本文件的试验方法章或引用的方法中找到对应验证手段（GB/T 20001.10 5.4.3）。
+    target: {scope: document, path: $.structuralRoot}
+    check: {operator: quantitative_requirements_have_test_methods}
+    severity: warning
+    evidence: {required: true, kind: [text, source-anchor, referenced-node]}
+  - id: P10-AUD-006
+    title: 检验规则应声明检验分类
+    category: structure
+    requirement:
+      obligation: recommended
+      applicability: product-standard-classified
+      statement: 产品标准宜给出检验分类（出厂检验/型式检验）与检验项目（GB/T 20001.10 5.7）。
+    target: {scope: structural-tree, path: $.structuralRoot}
+    check: {operator: contains_node_title_any, expected: [出厂检验, 型式检验]}
+    severity: warning
+    evidence: {required: true, kind: [node, source-anchor]}
+  - id: P10-AUD-007
+    title: 分类与标记规则应完整
+    category: structure
+    requirement:
+      obligation: recommended
+      applicability: has_classification_chapter
+      statement: 有"分类与标记"章时，应含分类方法、类别与标记规则（GB/T 20001.10 5.3）。
+    target: {scope: structural-tree, path: $.structuralRoot}
+    check: {operator: classification_marking_rules_present}
+    severity: warning
+    evidence: {required: true, kind: [node, source-anchor]}

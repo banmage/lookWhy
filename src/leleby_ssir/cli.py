@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import sys
 
+from .naming import REP_NORMALIZE_REPORT, REP_PARSE_REPORT, REP_RENDER_REPORT, REP_ROUNDTRIP, report_path
 from .parser import CSMError
 from .service import normalize_csm, round_trip_csm, validate_csm, write_output
 from .validation import SSIRValidationError
@@ -32,21 +33,24 @@ def _parser() -> argparse.ArgumentParser:
     validate = csm_command.add_parser("validate", help="validate a CSM file")
     validate.add_argument("--input", required=True, type=Path)
     validate.add_argument("--strict", action="store_true", help="treat recoverable warnings as errors")
-    normalize = csm_command.add_parser("normalize", help="repair raw Markdown and write a CSM Std0 baseline")
+    normalize = csm_command.add_parser("normalize", help="repair raw Markdown and write a canonical CSM baseline")
     normalize.add_argument("--input", required=True, type=Path, help="raw user Markdown input")
-    normalize.add_argument("--std0-output", required=True, type=Path, help="corrected CSM Std0 output path")
-    normalize.add_argument("--report", type=Path, help="conversion report path; defaults beside --std0-output")
+    normalize.add_argument("--canonical-output", dest="canonical_output", type=Path, help="corrected canonical CSM output path (legacy flag: --std0-output)")
+    normalize.add_argument("--std0-output", dest="canonical_output", type=Path, help=argparse.SUPPRESS)
+    normalize.add_argument("--report", type=Path, help="normalize report path; defaults beside --canonical-output")
     normalize.add_argument("--strict", action="store_true", help="reject recoverable input issues")
     parse = csm_command.add_parser("parse", help="convert CSM to SSIR")
     parse.add_argument("--input", required=True, type=Path)
     parse.add_argument("--output", required=True, type=Path)
     parse.add_argument("--format", choices=("json", "ttl"), default="json")
-    parse.add_argument("--report", type=Path, help="conversion report path; defaults beside --output")
+    parse.add_argument("--report", type=Path, help="parse report path; defaults beside --output")
     parse.add_argument("--strict", action="store_true", help="reject recoverable input issues")
     roundtrip = csm_command.add_parser("roundtrip", help="render SSIR as CSM and verify SSIR semantic equivalence")
     roundtrip.add_argument("--input", required=True, type=Path)
-    roundtrip.add_argument("--std1-output", required=True, type=Path, help="rendered CSM(std1) output path")
-    roundtrip.add_argument("--report", type=Path, help="round-trip report path; defaults beside --std1-output")
+    roundtrip.add_argument("--render-md-output", dest="render_md_output", type=Path, help="rendered CSM (render.md) output path; legacy flag: --std1-output")
+    roundtrip.add_argument("--std1-output", dest="render_md_output", type=Path, help=argparse.SUPPRESS)
+    roundtrip.add_argument("--verify-output", type=Path, help="optional re-parsed SSIR (verify.json) output path")
+    roundtrip.add_argument("--report", type=Path, help="round-trip report path; defaults beside --render-md-output")
     roundtrip.add_argument("--strict", action="store_true", help="reject recoverable input issues in either CSM document")
     pdf = command.add_parser("pdf", help="extract PDFs or render validated SSIR JSON")
     pdf_command = pdf.add_subparsers(dest="pdf_command", required=True)
@@ -66,7 +70,12 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    parser = _parser()
+    args = parser.parse_args(argv)
+    if getattr(args, "csm_command", None) == "normalize" and not args.canonical_output:
+        parser.error("the following arguments are required: --canonical-output (or legacy --std0-output)")
+    if getattr(args, "csm_command", None) == "roundtrip" and not args.render_md_output:
+        parser.error("the following arguments are required: --render-md-output (or legacy --std1-output)")
     try:
         if getattr(args, "command", None) == "pdf" and args.pdf_command == "extract":
             from .pdf_extractor import extract_pdf_to_csm
@@ -76,9 +85,9 @@ def main(argv: list[str] | None = None) -> int:
         if getattr(args, "command", None) == "pdf" and args.pdf_command == "render":
             from .pdf_renderer import render_pdf_file
             report = render_pdf_file(args.input, args.output, profile_path=args.profile, toc_depth=args.toc_depth)
-            report_path = args.report or Path(f"{args.output}.render-report.json")
-            report.write_json(report_path)
-            print(json.dumps({"output": str(args.output), "report": str(report_path), "pageCount": report.page_count, "warnings": len(report.warnings)}, ensure_ascii=False))
+            report_path_arg = args.report or report_path(args.output, REP_RENDER_REPORT)
+            report.write_json(report_path_arg)
+            print(json.dumps({"output": str(args.output), "report": str(report_path_arg), "pageCount": report.page_count, "warnings": len(report.warnings)}, ensure_ascii=False))
             return 0
         if args.csm_command == "validate":
             document = validate_csm(args.input, strict=args.strict)
@@ -87,20 +96,20 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"valid": True, "warnings": len(document.warnings), "convertible": True}, ensure_ascii=False))
             return 0
         if args.csm_command == "roundtrip":
-            _, _, report = round_trip_csm(args.input, args.std1_output, strict=args.strict)
-            report_path = args.report or Path(f"{args.std1_output}.roundtrip-report.json")
-            report.write_json(report_path)
-            print(json.dumps({"std1": str(args.std1_output), "report": str(report_path), "passed": report.passed}, ensure_ascii=False))
+            _, _, report = round_trip_csm(args.input, args.render_md_output, strict=args.strict, verify_output=args.verify_output)
+            report_path_arg = args.report or report_path(args.render_md_output, REP_ROUNDTRIP)
+            report.write_json(report_path_arg)
+            print(json.dumps({"renderMd": str(args.render_md_output), "report": str(report_path_arg), "passed": report.passed}, ensure_ascii=False))
             return 0 if report.passed else 3
         if args.csm_command == "normalize":
-            ssir, report = normalize_csm(args.input, args.std0_output, strict=args.strict)
-            report_path = args.report or Path(f"{args.std0_output}.conversion-report.json")
-            report.write_json(report_path)
-            print(json.dumps({"std0": str(args.std0_output), "documentId": ssir["id"], "report": str(report_path), "status": report.overall_status}, ensure_ascii=False))
+            ssir, report = normalize_csm(args.input, args.canonical_output, strict=args.strict)
+            report_path_arg = args.report or report_path(args.canonical_output, REP_NORMALIZE_REPORT)
+            report.write_json(report_path_arg)
+            print(json.dumps({"canonical": str(args.canonical_output), "documentId": ssir["id"], "report": str(report_path_arg), "status": report.overall_status}, ensure_ascii=False))
             return 0
         ssir, report = write_output(args.input, args.output, args.format, strict=args.strict, report=args.report)
-        report_path = args.report or Path(f"{args.output}.conversion-report.json")
-        print(json.dumps({"output": str(args.output), "documentId": ssir["id"], "format": args.format, "report": str(report_path), "status": report.overall_status}, ensure_ascii=False))
+        report_path_arg = args.report or report_path(args.output, REP_PARSE_REPORT)
+        print(json.dumps({"output": str(args.output), "documentId": ssir["id"], "format": args.format, "report": str(report_path_arg), "status": report.overall_status}, ensure_ascii=False))
         return 0
     except (CSMError, SSIRValidationError, OSError, RuntimeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)

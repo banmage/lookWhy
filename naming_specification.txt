@@ -1,0 +1,314 @@
+# leleby SSIR 文件命名与目录结构规范
+
+> **版本**：2.0（2026-08-26，重构落地版）
+> **状态**：正式生效。本版与代码实现同步（2026-08-26 命名重构），取代 v1.0 与
+> 所有历史命名（Std0、Std1、SSIR1、SSIR2、conversion-report 等）。
+> **适用范围**：所有源码、测试、平台资产、租户数据、运行时缓存及流水线产物。
+> **单一事实源**：ID 推导与文件名解析的实现位于 `src/leleby_ssir/naming.py`
+> （`standard_filename` / `standard_number_from_text` / `artifact_id` /
+> `report_path`）；本规范与实现不一致时，以代码为准并修正本规范。
+
+---
+
+## 1. 总体设计原则
+
+### 1.1 核心原则
+- **身份唯一**：每个标准文档拥有全局唯一的 `STANDARD_ID`（如 `GBT_15034-2012`），所有派生文件均以此为基础。
+- **表示明确**：文件名后缀以“`.`”分隔表示**数据形态**（representation），例如 `.source.pdf`、`.canonical.md`、`.ssir.json`。
+- **阶段隔离**：目录结构按**处理阶段**（pipeline stage）分层，每个阶段目录职责单一。
+- **所有权分离**：平台基础资产（管理员）、企业私有资产（租户）、运行时缓存物理隔离，权限清晰（见第 11 节）。
+- **可追溯性**：每个文档目录包含 `manifest.json` 索引；报告、校验和、资源引用均存于对应阶段子目录。
+
+### 1.2 文件名解析规则（右往左）
+文件名统一为 `<STANDARD_ID>.<representation>.<ext>`，其中：
+- `ext` 是最后一段（`.pdf`、`.md`、`.json`、`.ttl`、`.sha256` 等）；
+- `representation` 是倒数第二段，**恒为单 token**（可含连字符，如 `normalize-report`）；
+- `STANDARD_ID` 是其余部分。
+
+因此 `STANDARD_ID` 内部允许出现点号（`GBT_1.1-2020.canonical.md` 的 ID 是
+`GBT_1.1-2020`），不会被误切。程序通过 `artifact_id()`（已知表示后缀表，最长
+优先）解析；报告默认路径由 `report_path()` 生成（与产物同目录、同 ID）。
+
+### 1.3 弃用命名对照表
+| 旧名称 | 新名称 | 新后缀 | 说明 |
+|--------|--------|--------|------|
+| Std0           | Canonical  | `.canonical.md` | 唯一人工可编辑的权威 CSM（normalize 产物） |
+| Std1           | Render.md  | `.render.md` | 由 SSIR 确定性渲染回的中间 CSM，回环验证输入 |
+| SSIR1          | SSIR       | `.ssir.json` | 首次解析得到的结构化语义 |
+| SSIR2          | Verify     | `.verify.json` | 从渲染结果再解析得到的 SSIR（回环验证输入） |
+| roundtrip-report | Roundtrip | `.roundtrip.json` | 比较报告 |
+| conversion-report（normalize） | Normalize Report | `.normalize-report.json` | 规范化报告 |
+| conversion-report（parse）    | Parse Report     | `.parse-report.json`     | 解析报告 |
+| extraction-report | Extract Report | `.extract-report.json` | 抽取报告 |
+| render-report  | Render Report | `.render-report.json` | 渲染报告 |
+| pdf-comparison | Render Comparison | `.render-comparison.json` | 原稿 vs 渲染 PDF 统计 |
+
+> 报告表示统一以 `-report` 结尾、单 token（不用 `normalize.report` 双点形式），
+> 保证第 1.2 节的右往左解析恒成立。
+
+---
+
+## 2. 标准 ID 命名规范
+
+### 2.1 ID 生成规则
+从原始文档的标准号推导，规则分两条分支：
+
+1. **推荐性/指导性标准**：`/T`、`/Z` **并入**代号前缀，不留斜杠。
+   - `GB/T 15034-2012` → `GBT_15034-2012`
+   - `JB/T 14054-2021` → `JBT_14054-2021`
+   - `SJ/T 11859-2022` → `SJT_11859-2022`
+   - `DB11/T 1000-2020` → `DB11T_1000-2020`
+   - `GB/Z 123-2020` → `GBZ_123-2020`
+2. **企业/团体/机构标准**：`/` **转为下划线**。
+   - `Q/XKBZ 002-2026` → `Q_XKBZ_002-2026`
+   - `T/CAS 501-2021` → `T_CAS_501-2021`
+
+通用规则：
+- 代号与顺序号之间用**下划线**；
+- 年份保留**半字线**（一字线 — 统一规范化为 -）；
+- **顺序号内部的点号是标准号的合法组成部分，保留**：
+  `GB/T 1.1-2020` → `GBT_1.1-2020`、`GB/T 20001.10-2014` → `GBT_20001.10-2014`；
+- 无年份的标准允许不带年份（如 `Q_003`）。
+
+**示例**：
+| 原始标准号 | 生成的 `STANDARD_ID` |
+|------------|----------------------|
+| GB/T 15034-2012 | `GBT_15034-2012` |
+| GB 15034-2012   | `GB_15034-2012`   |
+| GB/T 1.1-2020   | `GBT_1.1-2020`    |
+| JB/T 14054-2021 | `JBT_14054-2021`  |
+| DB11/T 1000.1-2020 | `DB11T_1000.1-2020` |
+| Q/XKBZ 002-2026 | `Q_XKBZ_002-2026` |
+| T/CAS 501-2021  | `T_CAS_501-2021`  |
+| SJ/T 11859-2022 | `SJT_11859-2022`  |
+
+### 2.2 唯一性
+- 同一租户内 `STANDARD_ID` 必须唯一。
+- 平台内置标准（如 GB/T 1.1）遵循同一规则。
+
+---
+
+## 3. 文件命名规范（按表示）
+
+所有文件名统一为 `<STANDARD_ID>.<representation>.<ext>`，representation 固定取值如下：
+
+| 表示（representation） | 扩展名 | 阶段目录 | 说明 |
+|------------------------|--------|----------|------|
+| `source`           | `.pdf` / `.docx` / `.rtf` / `.txt` / `.md` | `00_source` | 用户上传的原始文件（永不修改），附 `<ID>.checksum.sha256` |
+| `raw`              | `.md`  | `01_extract` | MinerU/OCR 直接输出的未加工 Markdown（合并后） |
+| `extract-report`   | `.json` | `01_extract` | 抽取报告（后端、页数、警告） |
+| `provenance`       | `.json` | `01_extract` | 来源 sidecar（源文件、SHA-256、分块锚点） |
+| `canonical`        | `.md`  | `02_canonical` | 经安全纠错后的权威 CSM（唯一人工可编辑版本） |
+| `normalize-report` | `.json` | `02_canonical` | 纠错报告 |
+| `ssir`             | `.json` | `03_ssir` | 从 canonical 解析得到的 SSIR 主文件 |
+| `semantic`         | `.ttl` / `.jsonld` | `03_ssir` | 从 SSIR 导出的知识图谱/本体（可选，`--format ttl`） |
+| `parse-report`     | `.json` | `03_ssir` | 解析报告 |
+| `render`           | `.pdf`（发布版）/ `.md`（中间渲染 CSM） | `04_render` | 从 SSIR 渲染的输出；`.render.md` 是回环验证输入 |
+| `render-report`    | `.json` | `04_render` | 渲染报告 |
+| `render-comparison` | `.json` | `04_render` | 原稿与渲染 PDF 的页数/文本量对比 |
+| `verify`           | `.json` | `05_verify` | 从 `render.md` 再解析得到的 SSIR（回环验证输入） |
+| `roundtrip`        | `.json` | `05_verify` | 比较 `ssir.json` 与 `verify.json` 的报告 |
+| `diff`             | `.json` | `05_verify` | 详细差异（可选） |
+
+**示例**：
+```
+GBT_15034-2012.source.pdf
+GBT_15034-2012.canonical.md
+GBT_15034-2012.ssir.json
+GBT_15034-2012.semantic.ttl
+GBT_15034-2012.render.pdf
+GBT_15034-2012.render.md
+GBT_15034-2012.verify.json
+GBT_15034-2012.roundtrip.json
+```
+
+---
+
+## 4. 目录结构
+
+### 4.1 顶层目录（项目根，实际结构）
+```
+lookwhy/
+├── src/leleby_ssir/         # 源码（核心包；naming.py 为命名单一事实源）
+├── tests/                   # 单元测试
+├── tools/                   # 辅助脚本（mineru_full_standard.py 等）
+├── config/                  # 渲染 profile、徽标、审核 profile
+├── rules/                   # 合规规则库（GEN/GBT/P10）
+├── corpus/                  # ★ 金标准测试夹具（回归验证），保留不迁移
+│   ├── golden/              #   <ID>.pdf 源件 + csm/ 手写 *.canonical.md
+│   └── reference-standards/ #   参考标准 Markdown
+├── docs/                    # 项目文档
+├── storage/                 # ★ 多租户运行时存储（gitignored，未来发布区）
+└── out/                     # ★ 运行产物（gitignored，单文档目录见 4.2）
+```
+
+> **与 v1.0 的差异**：v1.0 曾建议把 `corpus/golden/` 迁移到
+> `tenants/demo/documents/`。**该建议废弃**——回归测试夹具与租户业务数据
+> 必须分离；`corpus/` 永久保留为只读夹具库，租户数据（未来）放 `storage/`。
+
+### 4.2 单标准文档目录（流水线工具 `mineru_full_standard.py` 产出）
+```
+out/mineru/{input}/                # 文档根（docroot）；--output-dir 可改
+├── manifest.json                  # 文档索引（见第 6 节）
+├── pipeline-state.json            # 任务状态（可断点续跑，非文档资产）
+├── 00_source/                     # 原始文件（只读）
+│   ├── {STANDARD_ID}.source.pdf
+│   └── {STANDARD_ID}.checksum.sha256
+├── 01_extract/                    # 抽取产出
+│   ├── {STANDARD_ID}.raw.md
+│   ├── {STANDARD_ID}.extract-report.json
+│   ├── {STANDARD_ID}.provenance.json
+│   └── parts/                     # MinerU 分块输出（可恢复）
+├── 02_canonical/                  # 权威 CSM（人工可编辑）
+│   ├── {STANDARD_ID}.canonical.md
+│   └── {STANDARD_ID}.normalize-report.json
+├── 03_ssir/                       # 结构化语义
+│   ├── {STANDARD_ID}.ssir.json
+│   ├── {STANDARD_ID}.semantic.ttl   # 可选
+│   └── {STANDARD_ID}.parse-report.json
+├── 04_render/                     # 渲染产物
+│   ├── {STANDARD_ID}.render.pdf
+│   ├── {STANDARD_ID}.render.md     # 中间渲染 CSM（回环验证输入）
+│   ├── {STANDARD_ID}.render-report.json
+│   └── {STANDARD_ID}.render-comparison.json
+├── 05_verify/                     # 回环验证
+│   ├── {STANDARD_ID}.verify.json
+│   └── {STANDARD_ID}.roundtrip.json
+└── assets/                        # 文档资源库（见第 5 节）
+    └── images/
+```
+
+> **重要**：`02_canonical` 是唯一需要人工干预的文件；其余阶段均由工具自动生成。
+
+### 4.3 多租户目标架构（未来）
+`platform/`（管理员资产：规则、内置标准、本体、模板、徽标）、
+`tenants/{tenant}/`（企业私有：`workspace/` 编辑区 → 审核通过 → `documents/`
+发布区；另含 `knowledge/`、`audits/`）、`runtime/`（临时缓存）。
+当前开发阶段未落地；`storage/` 已按 gitignore 预留。
+
+---
+
+## 5. 资源管理（Assets）
+
+所有图片、公式、表格等资源统一存放在**文档根 `assets/`** 下，按类型分目录；
+SSIR 中引用资源使用相对路径（从文档根出发）：
+```json
+{
+  "figureId": "FIG-001",
+  "assetRef": "assets/images/fig_001.png"
+}
+```
+- 图片：`assets/images/fig_{序号}.png`；公式：`assets/images/eq_{序号}.png`（MinerU 裁剪）；
+- **解析规则**：渲染器先按 SSIR 输入文件所在目录解析，未命中则逐级向上查找
+  （`03_ssir/` → 文档根 `assets/`），越过 `manifest.json` 所在目录即停止
+  （`pdf_renderer._resolve_asset`）。
+- 阶段目录内不复制资产（单一副本原则）。
+
+---
+
+## 6. Manifest 文件
+
+每个文档目录必须包含 `manifest.json`，作为文档元数据索引（由流水线工具写入）：
+
+```json
+{
+  "documentId": "Q_XKBZ_002-2026",
+  "title": "减速器",
+  "standardNumber": "Q/XKBZ 002-2026",
+  "status": "completed",
+  "created": "2026-08-26T22:58:09+08:00",
+  "updated": "2026-08-26T22:58:23+08:00",
+  "source": { "originalFile": "...", "checksum": "sha256:..." },
+  "pipeline": {
+    "raw": "01_extract/Q_XKBZ_002-2026.raw.md",
+    "canonical": "02_canonical/Q_XKBZ_002-2026.canonical.md",
+    "ssir": "03_ssir/Q_XKBZ_002-2026.ssir.json",
+    "renderMd": "04_render/Q_XKBZ_002-2026.render.md",
+    "render": "04_render/Q_XKBZ_002-2026.render.pdf",
+    "verify": "05_verify/Q_XKBZ_002-2026.verify.json",
+    "roundtrip": "05_verify/Q_XKBZ_002-2026.roundtrip.json"
+  }
+}
+```
+
+程序可通过读取 `manifest.json` 快速定位所有阶段产物，无需扫描目录。
+
+---
+
+## 7. 流水线阶段与输入输出关系
+
+```
+00_source/     → 01_extract/      → 02_canonical/   → 03_ssir/      → 04_render/    → 05_verify/
+.source.pdf    → .raw.md          → .canonical.md   → .ssir.json    → .render.pdf   → .verify.json
+.checksum.sha256 → .provenance.json → .normalize-report → .parse-report → .render-report → .roundtrip.json
+                 → assets/        → (人工编辑)       → .semantic.ttl → .render.md    → (回环比较)
+                                   → (规范化)                       → .render-comparison
+```
+
+- **00_source**：永久保存原始文件，只读。
+- **01_extract**：MinerU 分块抽取 → 合并为 `raw.md`，记录版面信息与来源哈希。
+- **02_canonical**：对 raw 执行安全纠错（normalize），生成 `canonical.md`。此文件可人工修改（但应保持机器可解析）。
+- **03_ssir**：解析 `canonical.md` 生成 SSIR JSON 及可选的 TTL。
+- **04_render**：从 SSIR 生成符合 GB/T 1.1 的 PDF 发布版；`.render.md` 是确定性渲染回的 CSM。
+- **05_verify**：从 `render.md` 再解析得到 `verify.json`，与 `ssir.json` 四层比较，输出 `roundtrip.json`。
+
+---
+
+## 8. CLI 旗标对照（v2.0 起）
+
+| 命令 | 新旗标 | 旧旗标（兼容） |
+|------|--------|----------------|
+| `csm normalize` | `--canonical-output` | `--std0-output` |
+| `csm roundtrip` | `--render-md-output`（可选 `--verify-output`） | `--std1-output` |
+
+报告默认路径（未显式给 `--report` 时）由 `report_path()` 生成：
+`<产物同目录>/<STANDARD_ID>.<表示>.json`，例如
+`02_canonical/GBT_1.1-2020.canonical.md` → `02_canonical/GBT_1.1-2020.normalize-report.json`。
+
+---
+
+## 9. 迁移与兼容性（2026-08-26 已执行）
+
+- 代码：`src/leleby_ssir/naming.py` 新增；CLI/service/extractor/roundtrip/renderer/
+  流水线工具全部切换到新命名；旧旗标保留为兼容别名。
+- 流水线工具 `tools/mineru_full_standard.py` 产出改为 4.2 节阶段目录；
+  状态文件更名 `mineru-full-standard-state.json` → `pipeline-state.json`
+  （**旧 run 无法按旧状态文件续跑**，需重新 `--stage extract`）。
+- corpus：PDF 统一为 `<ID>.pdf`（含修正 `DB11T_1000.12020` → `DB11T_1000.1-2020`），
+  `csm/` 夹具统一为 `<ID>.canonical.md`（旧 `.csm.md` 后缀仍被识别）。
+- `out/` 中的旧扁平命名产物为历史残留（gitignored），可删除。
+- 报告文件名不再使用 `conversion-report` 等模糊名称。
+
+---
+
+## 10. 扩展新数据形态
+
+新增表示只需在 `naming.py` 的表示表登记一个单 token 后缀（如 `.html`、`.docx`），
+不改变目录结构、ID 规则或解析规则。
+
+---
+
+## 11. 权限模型（概要）
+
+| 目录 | 管理员 | 租户自身 | 其他租户 | 系统（运行时） |
+|------|--------|----------|----------|----------------|
+| `rules/` `config/` `corpus/` | 读写 | 只读 | 只读 | 只读 |
+| `storage/tenants/{tenant}/documents/` | 读写（可管理） | 读写 | 无 | 读写（仅任务期间） |
+| `storage/tenants/{tenant}/workspace/` | 无 | 读写 | 无 | 读写（仅任务期间） |
+| `out/` | 无 | 无 | 无 | 读写 |
+
+开发阶段以本地单租户（`out/mineru/`）为主；多租户发布区沿用同一文档目录结构。
+
+---
+
+## 12. 维护与更新
+
+- 本规范为项目顶层设计文档；所有代码、配置、文档都应遵循。
+- 命名实现集中在 `src/leleby_ssir/naming.py`，改命名先改这里，再同步本规范。
+- 禁止在代码中硬编码旧命名（`std0`、`ssir1`、`conversion-report`），新代码使用
+  `canonical`、`ssir`、`verify`、`render.md` 等术语。
+- 新增数据形态或阶段必须同步更新本规范。
+
+---
+
+**本规范 v2.0 自 2026-08-26 起生效，作为 lookWhy/leleby SSIR 项目数据管理的基础，并与代码实现保持一致。**
