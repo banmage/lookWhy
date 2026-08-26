@@ -1,6 +1,6 @@
 import unittest
 
-from leleby_ssir.pdf_renderer import _clause_leading_number, _heading_depth, _heading_parts, _latex_to_text, _markup, _starts_new_page, _toc_label
+from leleby_ssir.pdf_renderer import _clause_leading_number, _heading_depth, _heading_parts, _latex_to_text, _list_marker, _markup, _ocr_l_one, _starts_new_page, _table_cell_superscripts, _toc_label
 
 
 class PdfRendererHeadingTests(unittest.TestCase):
@@ -81,6 +81,44 @@ class UntitledClauseFlushTests(unittest.TestCase):
         self.assertEqual(_clause_leading_number("5.3.1 泵应选用与介质适宜的轴封。"), "5.3.1")
         self.assertEqual(_clause_leading_number("B.1.3.1抽样"), "B.1.3.1")
         self.assertEqual(_clause_leading_number("A.2 试验应在 20 ℃ 下进行。"), "A.2")
+
+    def test_list_marker_normalisation_maps_ocr_dashes(self) -> None:
+        # GB/T 1.1-2020 6.6.3：- / — 渲染为 ——，• 归一为 ·，其余原样保留。
+        self.assertEqual(_list_marker("-"), "——")
+        self.assertEqual(_list_marker("—"), "——")
+        self.assertEqual(_list_marker("——"), "——")
+        self.assertEqual(_list_marker("•"), "·")
+        self.assertEqual(_list_marker("a)"), "a)")
+        self.assertEqual(_list_marker("1)"), "1)")
+        self.assertEqual(_list_marker("·"), "·")
+
+    def test_table_cell_superscripts_marks_footnote_references(self):
+        # GB/T 1.1 表脚注：匝间绝缘ᵃ —— OCR 还原成普通字符后渲染回上角标（GBT-C18）。
+        # 哨兵经 _markup 的 XML 转义后恢复为真实 <super> 标签。
+        def rendered(text: str) -> str:
+            return _markup(_table_cell_superscripts(text))
+
+        self.assertEqual(rendered("匝间绝缘a"), "匝间绝缘<super>a</super>")
+        self.assertEqual(rendered("匝间绝缘ａ"), "匝间绝缘<super>ａ</super>")
+        self.assertEqual(
+            rendered("a 匝间绝缘的检验可在部件生产过程中进行。"),
+            "<super>a</super> 匝间绝缘的检验可在部件生产过程中进行。",
+        )
+        # 单位字母/大写不误伤
+        self.assertEqual(rendered("规格mm"), "规格mm")
+        self.assertEqual(rendered("输入功率W"), "输入功率W")
+        self.assertEqual(rendered("250V"), "250V")
+        self.assertEqual(rendered("≤55 dB(A)"), "≤55\xa0dB(A)")
+
+    def test_ocr_l_one_heuristic(self) -> None:
+        # 全字母列表中的孤立 1）是 OCR 把 l）误读成 1）。
+        self.assertTrue(_ocr_l_one(["a）", "b）", "1）", "c）", "d）"]))
+        self.assertTrue(_ocr_l_one(["a)", "1)", "b)"]))
+        # 真子列表（多个数字）不触发；单条 a)+1) 也不触发。
+        self.assertFalse(_ocr_l_one(["a）", "1）", "2）"]))
+        self.assertFalse(_ocr_l_one(["a）", "1）"]))
+        self.assertFalse(_ocr_l_one(["1）", "2）"]))
+        self.assertFalse(_ocr_l_one(["a）", "b）"]))
 
     def test_plain_body_paragraphs_stay_indented(self):
         # No leading clause number: keeps the body first-line indent.

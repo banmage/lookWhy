@@ -46,6 +46,30 @@ class PDFRenderReport:
         Path(path).write_text(json.dumps(self.to_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _resolve_asset(asset_dir: Path, ref: str) -> Path:
+    """Resolve a relative asset reference for rendering.
+
+    Relative ``assetRef`` paths resolve against the SSIR input file's
+    directory first, then upward toward the document root (stage-directory
+    layout: ``03_ssir/<ID>.ssir.json`` -> ``<docroot>/assets/``), stopping at
+    the directory that carries ``manifest.json`` or after four ancestors.
+    Missing references return the primary candidate so callers fall back to
+    their placeholder logic.
+    """
+    if not ref or Path(ref).is_absolute():
+        return Path(ref or "")
+    primary = asset_dir / ref
+    if primary.is_file():
+        return primary
+    for parent in list(asset_dir.parents)[:4]:
+        probe = parent / ref
+        if probe.is_file():
+            return probe
+        if (parent / "manifest.json").is_file():
+            break
+    return primary
+
+
 def render_pdf(
     document: dict[str, Any],
     output: str | Path,
@@ -111,7 +135,9 @@ def render_pdf(
     target.parent.mkdir(parents=True, exist_ok=True)
     # Relative assetRef paths are resolved against the SSIR input file's
     # directory first (MinerU writes assets/ next to the SSIR JSON), falling
-    # back to the output directory for generated formula images.
+    # back to the output directory for generated formula images.  In the
+    # stage-directory layout (03_ssir/<ID>.ssir.json -> <docroot>/assets/)
+    # the reference is also searched upward toward the document root.
     asset_dir = Path(input_file).resolve().parent if input_file and Path(input_file).is_file() else target.parent
     report = PDFRenderReport(input_file, str(target), str(profile_file), profile["id"], str(font_file))
     standard_no = document.get("metadata", {}).get("standard", {}).get("standardNumber", "")
@@ -146,15 +172,14 @@ def render_pdf(
                 28 * mm,
                 font_name,
             )
-            badge = standard.get("coverBadge")
-            if badge:
-                badge_path = (asset_dir / badge).resolve()
-                if badge_path.is_file():
-                    # Emblem sits at the top-right of the cover, above the
-                    # standard-number block and clear of the banner text.
-                    canvas.saveState()
-                    canvas.drawImage(str(badge_path), A4[0] - float(margins["right"]) * mm - 100, A4[1] - 42 * mm, width=100, height=42, preserveAspectRatio=True, mask="auto")
-                    canvas.restoreState()
+            # 封面徽标按标准类型从固定位置读取（GEN-018/GBT-L02），不再使用
+            # 从 PDF 提取的 coverBadge 图块。徽标位于封面右上角、编号区块
+            # 之上，避开横幅文字。
+            emblem_path = _cover_emblem_path(str(standard_no), profile, profile_file)
+            if emblem_path:
+                canvas.saveState()
+                canvas.drawImage(str(emblem_path), A4[0] - float(margins["right"]) * mm - 100, A4[1] - 42 * mm, width=100, height=42, preserveAspectRatio=True, mask="auto")
+                canvas.restoreState()
         canvas.restoreState()
 
     styles = _styles(getSampleStyleSheet(), profile, font_name, body_font_name, TA_CENTER, TA_JUSTIFY, TA_LEFT)
@@ -270,15 +295,22 @@ def render_pdf(
                 y -= self.leading
 
     class _CoverBanner(Flowable):
-        """Spread the national-standard banner across the cover's text block."""
+        """Spread the standard-level banner across the cover's text block."""
+        def __init__(self, text: str = "中华人民共和国国家标准") -> None:
+            super().__init__()
+            self.text = text
         def wrap(self, available_width: float, available_height: float) -> tuple[float, float]:
             self.width = available_width
             return available_width, 30
 
         def draw(self) -> None:
-            text = "中华人民共和国国家标准"
-            # GB/T 1.1 Appendix F: cover banner is 一号黑体 (26pt).
-            size = 26
+            # 规则对应: GBT-L03（封面横幅）——按标准层级渲染：国家/行业/地方/
+            # 团体/企业标准分别取 "中华人民共和国…" 横幅或元数据 banner 文本，
+            # 而非硬编码国家标准横幅。
+            text = self.text or "中华人民共和国国家标准"
+            # GB/T 1.1 Appendix F: cover banner is 一号黑体 (26pt); shrink to
+            # keep long industry banners on one line.
+            size = 26 if len(text) <= 12 else max(26 - (len(text) - 12), 14)
             canvas = self.canv
             text_width = canvas.stringWidth(text, font_name, size)
             char_space = max((self.width - text_width) / max(len(text) - 1, 1), 0)
@@ -327,6 +359,31 @@ def render_pdf(
                 canvas.drawCentredString(self.width - 12, 30, "准")
                 canvas.drawCentredString(self.width - 12, 14, "发")
                 canvas.drawCentredString(self.width - 12, -2, "布")
+
+    class _EndLine(Flowable):
+        """GB/T 1.1-2020 终结线：标准正文末尾的居中粗实线，长度=版心宽度四分之一。
+
+        Follows the GB/T 1.1 closing rule (末页应有终结线): a single centred
+        rule whose length is one quarter of the text-block width, drawn a
+        short gap below the last content line (GBT-C13).
+        """
+
+        def __init__(self, gap: float = 18, line_width: float = 1.5) -> None:
+            super().__init__()
+            self.gap = gap
+            self.line_width = line_width
+            self.height = gap + line_width
+
+        def wrap(self, available_width: float, available_height: float) -> tuple[float, float]:
+            self.width = available_width
+            self.length = max(available_width / 4.0, 1.0)
+            return available_width, self.height
+
+        def draw(self) -> None:
+            canvas = self.canv
+            canvas.setLineWidth(self.line_width)
+            # 线条画在 flowable 底部；gap 位于内容与线条之间。
+            canvas.line((self.width - self.length) / 2, self.line_width, (self.width + self.length) / 2, self.line_width)
 
     def toc_story(toc_nodes: list[dict[str, Any]], toc_pages: dict[str, int]) -> list[Any]:
         rows = []
@@ -383,6 +440,9 @@ def render_pdf(
                 body_title_inserted = True
             marker_factory = (lambda item: _TOCMarker(item["id"])) if record_pages is not None else None
             _append_node(story, node, registries, styles, font_name, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, marker_factory, PageBreak)
+        if has_cover:
+            # GB/T 1.1-2020 末页应有终结线（GBT-C13）；仅标准类文档（与封面同门控）。
+            story.append(_EndLine())
         return story
 
     doc_width = A4[0] - (float(margins["left"]) + float(margins["right"])) * mm
@@ -428,26 +488,28 @@ def _styles(base: Any, profile: dict[str, Any], font: str, body_font: str, cente
     # 三号 (16pt), chapter headings 五号-equivalent scale per profile.
     return {
         "title": ParagraphStyle("gbt-title", parent=base["Title"], fontName=font, fontSize=26, leading=34, alignment=center, spaceAfter=8),
-        "front": ParagraphStyle("gbt-front", parent=base["BodyText"], fontName=body_font, fontSize=rules["front-matter"]["size-pt"], leading=rules["front-matter"]["leading-pt"], alignment=justify, firstLineIndent=2 * body["size-pt"], spaceAfter=4),
+        "front": ParagraphStyle("gbt-front", parent=base["BodyText"], fontName=body_font, fontSize=rules["front-matter"]["size-pt"], leading=rules["front-matter"]["leading-pt"], alignment=justify, firstLineIndent=2 * body["size-pt"], spaceAfter=4, wordWrap="CJK"),
         # GB/T 1.1 keeps chapter and clause headings flush left.  The chapter
         # line is one size larger; all clause levels share a size and leading.
         "section": ParagraphStyle("gbt-section", parent=base["Heading2"], fontName=font, fontSize=12, leading=22, alignment=left, leftIndent=0, firstLineIndent=0, spaceBefore=16, spaceAfter=10),
         "clause": ParagraphStyle("gbt-clause", parent=base["Heading3"], fontName=font, fontSize=10.5, leading=18, alignment=left, leftIndent=0, firstLineIndent=0, spaceBefore=8, spaceAfter=4),
         "subclause": ParagraphStyle("gbt-subclause", parent=base["Heading4"], fontName=font, fontSize=10.5, leading=18, alignment=left, leftIndent=0, firstLineIndent=0, spaceBefore=8, spaceAfter=4),
-        "body": ParagraphStyle("gbt-body", parent=base["BodyText"], fontName=body_font, fontSize=body["size-pt"], leading=body["leading-pt"], alignment=justify, firstLineIndent=2 * body["size-pt"], spaceAfter=4),
+        "body": ParagraphStyle("gbt-body", parent=base["BodyText"], fontName=body_font, fontSize=body["size-pt"], leading=body["leading-pt"], alignment=justify, firstLineIndent=2 * body["size-pt"], spaceAfter=4, wordWrap="CJK"),
         # Untitled clause paragraphs start with the clause number; GB/T 1.1
         # puts those numbers flush left (顶格) instead of taking the body
         # two-Han-character first-line indent (GBT-B02).  They are left
         # aligned, not justified: reportlab's justification stretches every
         # space on a short first line, blowing up the gap after the clause
         # number ("5.5.3" + 50pt), which OCR standards exhibit as noise.
-        "body-flush": ParagraphStyle("gbt-body-flush", parent=base["BodyText"], fontName=body_font, fontSize=body["size-pt"], leading=body["leading-pt"], alignment=left, firstLineIndent=0, spaceAfter=4),
-        "note": ParagraphStyle("gbt-note", parent=base["BodyText"], fontName=body_font, fontSize=9, leading=15, alignment=justify, leftIndent=2 * body["size-pt"], spaceAfter=4),
-        "list": ParagraphStyle("gbt-list", parent=base["BodyText"], fontName=body_font, fontSize=body["size-pt"], leading=body["leading-pt"], alignment=justify, leftIndent=2 * body["size-pt"], firstLineIndent=-2 * body["size-pt"], spaceAfter=2),
-        "list-sub": ParagraphStyle("gbt-list-sub", parent=base["BodyText"], fontName=body_font, fontSize=body["size-pt"], leading=body["leading-pt"], alignment=justify, leftIndent=4 * body["size-pt"], firstLineIndent=-2 * body["size-pt"], spaceAfter=2),
+        "body-flush": ParagraphStyle("gbt-body-flush", parent=base["BodyText"], fontName=body_font, fontSize=body["size-pt"], leading=body["leading-pt"], alignment=left, firstLineIndent=0, spaceAfter=4, wordWrap="CJK"),
+        "note": ParagraphStyle("gbt-note", parent=base["BodyText"], fontName=body_font, fontSize=9, leading=15, alignment=justify, leftIndent=2 * body["size-pt"], spaceAfter=4, wordWrap="CJK"),
+        # GB/T 1.1-2020 6.6.3：第一层次列项（——/a)）空两个汉字起排、
+        # 回行对齐第5汉字；第二层次列项（·/1)）空四个汉字起排、回行对齐第7汉字。
+        "list": ParagraphStyle("gbt-list", parent=base["BodyText"], fontName=body_font, fontSize=body["size-pt"], leading=body["leading-pt"], alignment=justify, leftIndent=4 * body["size-pt"], firstLineIndent=-2 * body["size-pt"], spaceAfter=2, wordWrap="CJK"),
+        "list-sub": ParagraphStyle("gbt-list-sub", parent=base["BodyText"], fontName=body_font, fontSize=body["size-pt"], leading=body["leading-pt"], alignment=justify, leftIndent=6 * body["size-pt"], firstLineIndent=-2 * body["size-pt"], spaceAfter=2, wordWrap="CJK"),
         "caption": ParagraphStyle("gbt-caption", parent=base["BodyText"], fontName=font, fontSize=10.5, leading=14, alignment=center, spaceBefore=4, spaceAfter=4),
         "formula": ParagraphStyle("gbt-formula", parent=base["Code"], fontName=body_font, fontSize=10, leading=16, alignment=center, spaceAfter=4),
-        "table": ParagraphStyle("gbt-table", parent=base["BodyText"], fontName=body_font, fontSize=rules["table"]["size-pt"], leading=rules["table"]["leading-pt"], alignment=left),
+        "table": ParagraphStyle("gbt-table", parent=base["BodyText"], fontName=body_font, fontSize=rules["table"]["size-pt"], leading=rules["table"]["leading-pt"], alignment=center),
         "toc-title": ParagraphStyle("gbt-toc-title", parent=base["Title"], fontName=font, fontSize=16, leading=22, alignment=center, spaceAfter=14),
         # GB/T 1.1 annex heading block: 附录 letter, status and title are
         # centred, in that order, with the title in the largest size.
@@ -539,6 +601,105 @@ def _draw_cover_publication(canvas: Any, left: float, right: float, issued: str,
     canvas.restoreState()
 
 
+def _cover_banner_text(standard_number: str) -> str:
+    """Derive the cover banner from the standard-number prefix.
+
+    规则对应: GBT-L03（封面横幅）——国家/行业/地方/团体/企业标准横幅各不相同：
+    GB → 中华人民共和国国家标准；JB/QB 等行业标准 → 中华人民共和国××行业标准
+    （机械、轻工…按前缀映射）；DB → ××地方标准；T/ → 团体标准；Q/ → 企业标准。
+    """
+    number = re.sub(r"\s+", "", standard_number).upper()
+    if number.startswith(("GB/T", "GB ", "GB—", "GBZ", "GB")):
+        return "中华人民共和国国家标准"
+    industry = {
+        "JB": "机械",
+        "QB": "轻工",
+        "QC": "汽车",
+        "NJ": "农机",
+        "YB": "黑色冶金",
+        "YS": "有色金属",
+        "SH": "石油化工",
+        "HG": "化工",
+        "DL": "电力",
+        "MT": "煤炭",
+        "JT": "交通",
+        "TB": "铁道",
+        "MH": "民用航空",
+        "NY": "农业",
+        "SC": "水产",
+        "LY": "林业",
+        "WS": "卫生",
+        "YY": "医药",
+        "MZ": "民政",
+        "GA": "公共安全",
+        "HJ": "生态环境",
+        "QX": "气象",
+        "WH": "文化",
+        "TY": "体育",
+        "JY": "教育",
+        "GM": "密码",
+    }
+    prefix = re.match(r"^([A-Z]{1,2})/", number)
+    if prefix and prefix.group(1) in industry:
+        return f"中华人民共和国{industry[prefix.group(1)]}行业标准"
+    if number.startswith("DB"):
+        return "中华人民共和国地方标准"
+    if re.match(r"^T/", number):
+        return "团体标准"
+    if re.match(r"^Q/", number):
+        return "企业标准"
+    return ""
+
+
+def _standard_prefix(standard_number: str) -> str:
+    """Extract the standard-number prefix used for emblem lookup.
+
+    规则对应: GEN-018（封面徽标按标准类型分派）。归一化空格后取文件代号
+    前缀：GB/T、GB/Z、GB（国家）；JB/QB/QC/SJ/DL/NY…（行业）；DB（地方）；
+    T/（团体）；Q/（企业）。企业/团体标准的斜杠属于代号本身，保留。
+    """
+    number = re.sub(r"\s+", "", standard_number).upper()
+    m = re.match(r"^(GB/T|GB/Z|GB|DB|T/|Q/|[A-Z]{1,2}/?)", number)
+    return m.group(1) if m else ""
+
+
+def _cover_emblem_path(
+    standard_number: str,
+    profile: dict[str, Any],
+    profile_file: Path,
+) -> Path | None:
+    """Resolve the cover emblem image for a standard-number prefix.
+
+    规则对应: GEN-018/GBT-L02——封面大图标按标准类型从固定位置读取（如
+    GB_logo.png、JB_logo.png、company_logo.png），每类标准一条独立映射，
+    互不影响；不再采用从 PDF 提取的 coverBadge 图块。mapping 最长前缀
+    优先匹配；文件缺失回退 default；再缺失返回 None（不绘制）。
+
+    The profile declares the emblems directory relative to the profile file;
+    the mapping is prefix -> file name.  This function only *resolves* the
+    path — the caller decides whether to draw it.
+    """
+    emblems = profile.get("emblems") or {}
+    directory = Path(profile_file).resolve().parent / str(emblems.get("directory", "emblems"))
+    mapping = emblems.get("mapping") or {}
+    default_name = str(emblems.get("default", "default_logo.png"))
+    number = re.sub(r"\s+", "", standard_number).upper()
+    # Longest-prefix match first (GB/T before GB), then the file existence
+    # fallback chain: mapped file -> default -> None.
+    chosen = ""
+    for prefix in sorted(mapping, key=len, reverse=True):
+        if number.startswith(prefix):
+            chosen = str(mapping[prefix])
+            break
+    for name in (chosen, default_name):
+        if not name:
+            continue
+        candidate = directory / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def _cover_story(common: dict[str, Any], standard: dict[str, Any], styles: dict[str, Any], Paragraph: Any, Spacer: Any, PageBreak: Any, HRFlowable: Any, CoverBanner: Any, CoverPublicationBlock: Any, *, include_front_title: bool = True, report: Any = None) -> list[Any]:
     """Render mandatory GB/T cover fields when the SSIR metadata provides them.
 
@@ -583,7 +744,10 @@ def _cover_story(common: dict[str, Any], standard: dict[str, Any], styles: dict[
     result: list[Any] = []
     result.append(Paragraph(_markup(f"ICS {ics}"), cover_left))
     result.append(Paragraph(_markup(f"CCS {ccs}"), cover_left))
-    result.extend([Spacer(1, 34), CoverBanner(), Spacer(1, 30), Paragraph(_markup(standard_number), cover_number)])
+    # 规则对应: GBT-L03（封面横幅）——优先用元数据 banner；否则按 standard-number
+    # 前缀推导标准层级（GB=国家、JB/QB/DB 等行业与地方、T/=团体、Q/=企业）。
+    banner = common.get("banner", "") or _cover_banner_text(str(standard.get("standardNumber", "")))
+    result.extend([Spacer(1, 34), CoverBanner(banner), Spacer(1, 30), Paragraph(_markup(standard_number), cover_number)])
     if standard.get("replaces"):
         result.append(Paragraph(_markup(f"代替： {standard['replaces']}"), cover_replaces))
     result.extend([Spacer(1, 7), HRFlowable(width="100%", thickness=1.8, spaceBefore=0, spaceAfter=0, color=colors.black)])
@@ -600,6 +764,49 @@ def _cover_story(common: dict[str, Any], standard: dict[str, Any], styles: dict[
     if include_front_title:
         result.extend([Paragraph(_markup(title), styles["title"]), Spacer(1, 14)])
     return result
+
+
+def _list_marker(marker: str) -> str:
+    """GB/T 1.1-2020 6.6.3 列项符号归一：- / — → ——，• → ·，其余原样保留。"""
+    if marker in ("-", "—"):
+        return "——"
+    if marker == "•":
+        return "·"
+    return marker
+
+
+def _ocr_l_one(markers: list[str]) -> bool:
+    """OCR 常把字母 l）误读为数字 1）（GBT-C12）。
+
+    同一列表中其余项均为字母编号、且只有一个数字 1）时判定为 l）：
+    真子列表（1)、2)、3)…）不会触发；单条 "a) + 1)" 也保留原样。
+    """
+    letters = [m for m in markers if re.match(r"^[A-Za-z][)）]$", m)]
+    digit_ones = [m for m in markers if m in ("1)", "1）")]
+    return bool(digit_ones) and len(letters) >= 2 and len(letters) + len(digit_ones) == len(markers)
+
+
+def _table_cell_superscripts(text: str) -> str:
+    """表格单元格/表注的脚注引用标记渲染为上角标（GBT-C18）。
+
+    GB/T 1.1 表脚注：被注释内容后跟上角标字母（匝间绝缘ᵃ），表下方以
+    "a 说明" 列出。OCR 把上角标还原为普通字符（半角 a 或全角 ａ），此处：
+    - 表注行行首的 "a "（标记+空格）→ 上角标；
+    - 汉字后紧跟的全角小写字母 ａ-ｚ → 上角标（全角必为 OCR 标记）；
+    - 汉字后紧跟的半角小写单字母 → 上角标，但排除可能的小写单字母单位
+      （m/s/g/l/t/h），避免误伤 "规格mm"/"长度m" 等。
+    """
+    # 行首脚注标记: "a 说明" / "ａ 说明"
+    text = re.sub(r"^([a-zA-Zａ-ｚＡ-Ｚ])(?:[ \u3000]+)(\S)", "\x00SUP\x00\\1\x00/SUP\x00 \\2", text)
+    # 汉字后全角小写字母
+    text = re.sub(r"(?<=[\u4e00-\u9fff])([ａ-ｚ])", "\x00SUP\x00\\1\x00/SUP\x00", text)
+    # 汉字后半角小写单字母（排除单位 m/s/g/l/t/h）
+    text = re.sub(
+        r"(?<=[\u4e00-\u9fff])([abcefijknopqruvwxyz])(?![\u4e00-\u9fffA-Za-z])",
+        "\x00SUP\x00\\1\x00/SUP\x00",
+        text,
+    )
+    return text
 
 
 def _clause_leading_number(text: str) -> str | None:
@@ -655,18 +862,22 @@ def _append_content(story: list[Any], content: dict[str, Any], registries: dict[
     elif kind == "note":
         story.append(Paragraph(_markup(content.get("textContent", "")), styles["note"]))
     elif kind == "list":
-        for item in sorted(content.get("listItems", []), key=_order):
-            marker = str(item.get("marker", "-"))
-            # GB/T 1.1 lists use two Han-character indents for a), and an
-            # additional two for its 1) subitems.
-            list_style = styles["list-sub"] if marker.rstrip(")）").isdigit() else styles["list"]
+        items = sorted(content.get("listItems", []), key=_order)
+        markers = [str(item.get("marker", "-")) for item in items]
+        ocr_l_one = _ocr_l_one(markers)
+        for item in items:
+            marker = _list_marker(str(item.get("marker", "-")))
+            if ocr_l_one and marker in ("1)", "1）"):
+                marker = "l）"
+            # 数字编号与间隔号属于第二层次（list-sub），其余属第一层次（list）。
+            list_style = styles["list-sub"] if (marker in ("·",) or marker.rstrip(")）").isdigit()) else styles["list"]
             story.append(Paragraph(_markup(f"{marker} {item.get('text', '')}"), list_style))
     elif kind == "table":
         _append_table(story, registries["tables"][content["tableRef"]], styles, colors, Table, TableStyle, Paragraph)
     elif kind == "formula":
         formula = registries["formulas"][content["formulaRef"]]
         asset = formula.get("assetRef")
-        source_image = (asset_dir / asset).resolve() if asset and not Path(asset).is_absolute() else Path(asset or "")
+        source_image = _resolve_asset(asset_dir, asset) if asset else Path("")
         image_path = source_image if source_image.is_file() else _formula_image(formula.get("latex") or formula.get("rawText", ""), asset_dir)
         if image_path:
             image = Image(str(image_path))
@@ -686,7 +897,7 @@ def _append_content(story: list[Any], content: dict[str, Any], registries: dict[
     elif kind == "figure":
         figure = registries["figures"][content["figureRef"]]
         asset = figure.get("assetRef")
-        asset_path = (asset_dir / asset).resolve() if asset and not Path(asset).is_absolute() else Path(asset or "")
+        asset_path = _resolve_asset(asset_dir, asset) if asset else Path("")
         if asset and asset_path.is_file():
             image = Image(str(asset_path))
             scale = min(455 / image.imageWidth, 520 / image.imageHeight)
@@ -721,7 +932,7 @@ def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any
     if number or caption:
         story.append(Paragraph(_markup(f"表{number} {caption}".strip()), styles["caption"]))
     rows = sorted(table.get("rows", []), key=lambda row: row["rowIndex"])
-    data = [[Paragraph(_markup(cell.get("text", "")), styles["table"]) for cell in sorted(row.get("cells", []), key=lambda cell: cell["colIndex"])] for row in rows]
+    data = [[Paragraph(_markup(_table_cell_superscripts(cell.get("text", ""))), styles["table"]) for cell in sorted(row.get("cells", []), key=lambda cell: cell["colIndex"])] for row in rows]
     if not data:
         return
     width = 455
@@ -733,6 +944,16 @@ def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any
         for cell in row.get("cells", []):
             if cell.get("rowspan", 1) > 1 or cell.get("colspan", 1) > 1:
                 commands.append(("SPAN", (cell["colIndex"], cell["rowIndex"]), (cell["colIndex"] + cell.get("colspan", 1) - 1, cell["rowIndex"] + cell.get("rowspan", 1) - 1)))
+        # OCR often loses the colspan of a full-width note row ("注：…" spread
+        # over every column).  A lone long text cell left unmerged collapses to
+        # one narrow column, wraps into dozens of lines and can exceed the page
+        # frame (reportlab LayoutError).  Span it across the whole grid so the
+        # note flows at full width.
+        cells = sorted(row.get("cells", []), key=lambda c: c["colIndex"])
+        filled = [c for c in cells if str(c.get("text", "")).strip()]
+        if len(cells) > 2 and len(filled) == 1 and len(str(filled[0].get("text", ""))) >= 20:
+            r = row["rowIndex"]
+            commands.append(("SPAN", (0, r), (-1, r)))
     grid.setStyle(TableStyle(commands))
     story.extend([grid, Spacer(1, 6)])
 
@@ -825,6 +1046,10 @@ def _markup(text: str) -> str:
     # stretch "50 Hz" into a wide gap (GB 3100 数值与单位间留一个空格).
     text = re.sub(r"(?<=\d) (?=[A-Za-z%℃Ω])", "\u00A0", text)
     escaped = escape(text).replace("\n", "<br/>")
+    # Restore the footnote-superscript sentinels emitted by _table_cell_superscripts
+    # (GBT-C18): they must survive XML escaping, so the real <super> tags are
+    # re-inserted only after escape().
+    escaped = escaped.replace("\x00SUP\x00", "<super>").replace("\x00/SUP\x00", "</super>")
     escaped = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped)
     escaped = re.sub(r"(?<!\*)\*(.+?)\*", r"<i>\1</i>", escaped)
     return escaped

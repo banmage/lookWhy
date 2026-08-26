@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class CSMToSSIRTests(unittest.TestCase):
     def test_pmrz_preserves_figures_table_list_and_quality_notices(self) -> None:
-        ssir = parse_csm(ROOT / "corpus/golden/csm/Q_PMRZ_9-2024.csm.md")
+        ssir = parse_csm(ROOT / "corpus/golden/csm/Q_PMRZ_9-2024.canonical.md")
         self.assertEqual(ssir["documentType"], "standard")
         self.assertEqual(ssir["sourceFiles"][0]["mimeType"], "text/markdown")
         self.assertEqual(len(ssir["tables"]), 1)
@@ -27,7 +27,7 @@ class CSMToSSIRTests(unittest.TestCase):
         self.assertIn("GB20001-10-6.3", ssir["qualityAssessments"][0]["comments"])
 
     def test_tqdz_preserves_table_and_marked_lists(self) -> None:
-        ssir = parse_csm(ROOT / "corpus/golden/csm/Q_TQDZ_004-2026.csm.md")
+        ssir = parse_csm(ROOT / "corpus/golden/csm/Q_TQDZ_004-2026.canonical.md")
         table = ssir["tables"][0]
         self.assertEqual(table["caption"], "基本参数")
         self.assertEqual(table["number"], "1")
@@ -48,9 +48,9 @@ class CSMToSSIRTests(unittest.TestCase):
 
     def test_additional_product_standard_examples_convert(self) -> None:
         examples = {
-            "Q_YYJD_001-2024.csm.md": {"tables": 1, "figures": 1, "formulas": 0, "status": "partial"},
-            "Q_HKT_16016-2026.csm.md": {"tables": 1, "figures": 0, "formulas": 1, "status": "complete"},
-            "T_ZZB_1064-2019.csm.md": {"tables": 1, "figures": 0, "formulas": 0, "status": "partial"},
+            "Q_YYJD_001-2024.canonical.md": {"tables": 1, "figures": 1, "formulas": 0, "status": "partial"},
+            "Q_HKT_16016-2026.canonical.md": {"tables": 1, "figures": 0, "formulas": 1, "status": "complete"},
+            "T_ZZB_1064-2019.canonical.md": {"tables": 1, "figures": 0, "formulas": 0, "status": "partial"},
         }
         for file_name, expected in examples.items():
             with self.subTest(file_name=file_name):
@@ -64,20 +64,20 @@ class CSMToSSIRTests(unittest.TestCase):
 
     def test_markdown_round_trip_preserves_all_csm_examples(self) -> None:
         paths = [
-            *sorted((ROOT / "corpus/golden/csm").glob("*.csm.md")),
+            *sorted((ROOT / "corpus/golden/csm").glob("*.canonical.md")),
             ROOT / "corpus/golden/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md",
         ]
         with tempfile.TemporaryDirectory() as directory:
             for path in paths:
                 with self.subTest(path=path.name):
-                    std1 = Path(directory) / f"{path.stem}.std1.csm.md"
-                    ssir1, ssir2, report = round_trip_csm(path, std1)
-                    self.assertTrue(std1.exists())
+                    render_md = Path(directory) / f"{path.stem}.render.md"
+                    ssir1, ssir2, report = round_trip_csm(path, render_md)
+                    self.assertTrue(render_md.exists())
                     self.assertTrue(report.passed, report.to_dict())
                     self.assertEqual(ssir1["metadata"]["common"], ssir2["metadata"]["common"])
 
     def test_comparator_reports_critical_normative_and_table_changes(self) -> None:
-        ssir1 = parse_csm(ROOT / "corpus/golden/csm/Q_HKT_16016-2026.csm.md")
+        ssir1 = parse_csm(ROOT / "corpus/golden/csm/Q_HKT_16016-2026.canonical.md")
         ssir2 = deepcopy(ssir1)
         ssir2["tables"][0]["rows"][1]["cells"][0]["text"] = "999"
         content = next(
@@ -106,13 +106,13 @@ class CSMToSSIRTests(unittest.TestCase):
     def test_round_trip_preserves_annex_kind_and_identifier(self) -> None:
         path = ROOT / "corpus/golden/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md"
         with tempfile.TemporaryDirectory() as directory:
-            ssir1, ssir2, report = round_trip_csm(path, Path(directory) / "std1.md")
+            ssir1, ssir2, report = round_trip_csm(path, Path(directory) / "render.md")
         annex1 = next(node for node in self._nodes(ssir1["structuralRoot"]) if node["nodeType"] == "annex")
         annex2 = next(node for node in self._nodes(ssir2["structuralRoot"]) if node["nodeType"] == "annex")
         self.assertTrue(report.passed, report.to_dict())
         self.assertEqual((annex1["number"], annex1["title"]), (annex2["number"], annex2["title"]))
 
-    def test_normalize_writes_std0_without_changing_body_semantics(self) -> None:
+    def test_normalize_writes_canonical_without_changing_body_semantics(self) -> None:
         raw = (
             b'\xef\xbb\xbf---\r\n'
             b'document-type: standard\r\n'
@@ -131,20 +131,129 @@ class CSMToSSIRTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as directory:
             raw_path = Path(directory) / "raw.md"
-            std0_path = Path(directory) / "standard.std0.csm.md"
+            canonical_path = Path(directory) / "standard.canonical.md"
             raw_path.write_bytes(raw)
-            ssir0, report = normalize_csm(raw_path, std0_path)
-            ssir0_reparsed = parse_csm(std0_path)
-            rendered = std0_path.read_bytes()
-        self.assertTrue(std0_path.name.endswith(".csm.md"))
+            ssir0, report = normalize_csm(raw_path, canonical_path)
+            ssir0_reparsed = parse_csm(canonical_path)
+            rendered = canonical_path.read_bytes()
+        self.assertTrue(canonical_path.name.endswith(".canonical.md"))
         self.assertFalse(rendered.startswith(b"\xef\xbb\xbf"))
         self.assertNotIn(b"\r", rendered)
         self.assertIn(b'csm-version: \'1.0\'', rendered)
         self.assertTrue(any(issue.code == "CSM-ENC-001" for issue in report.issues))
         self.assertTrue(compare_ssir(ssir0, ssir0_reparsed).passed)
 
+    def test_ocr_collapsed_dash_markers_still_parse_as_lists(self) -> None:
+        # OCR 常把 GB/T 1.1 的 "——" 压成单个 "-"/"—" 且丢失后方空格
+        # （GBT-C12）。此类行必须仍按列项解析，marker 取整段破折号。
+        raw = (
+            "---\n"
+            "document-type: standard\n"
+            "document-identifier: \"Q/TEST 004—2026\"\n"
+            "standard-number: \"Q/TEST 004—2026\"\n"
+            "title: \"Dash markers\"\n"
+            "language: zh-CN\n"
+            "---\n\n"
+            "# Dash markers\n\n"
+            "## 前言\n\n"
+            "-标准的适用范围扩展到了永磁无刷直流电动机；\n"
+            "\n"
+            "—修改了电动机输入功率的技术要求；\n"
+            "\n"
+            "——增加了空载试验的要求。\n\n"
+            "## 1 范围\n\n"
+            "-交流电动机额定电压为220V。\n"
+            "-电动机具有功率因数补偿功能时，其保证值应不小于0.95。\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            raw_path = Path(directory) / "raw.md"
+            canonical_path = Path(directory) / "standard.canonical.md"
+            raw_path.write_text(raw, encoding="utf-8")
+            ssir, report = normalize_csm(raw_path, canonical_path)
+            ssir_reparsed = parse_csm(canonical_path)
+        lists = [
+            element
+            for node in self._nodes(ssir["structuralRoot"])
+            for element in node.get("contentElements", [])
+            if element["presentationType"] == "list"
+        ]
+        markers = [item["marker"] for content in lists for item in content["listItems"]]
+        self.assertEqual(markers, ["-", "—", "——", "-", "-"])
+        self.assertTrue(compare_ssir(ssir, ssir_reparsed).passed)
+
+    def test_ocr_glyph_confused_markers_are_corrected_and_recorded(self) -> None:
+        # OCR 把 l）误读为 1）、把 1 误读为 l/I、把 0 误读为 O；多数派上下文
+        # 中的可混淆项在解析时纠正（CSM-OCR-001 repaired），canonical 随之更正。
+        raw = (
+            "---\n"
+            "document-type: standard\n"
+            "document-identifier: \"Q/TEST 005—2026\"\n"
+            "standard-number: \"Q/TEST 005—2026\"\n"
+            "title: \"Glyph markers\"\n"
+            "language: zh-CN\n"
+            "---\n\n"
+            "# Glyph markers\n\n"
+            "## 4 技术要求\n\n"
+            "铭牌上应标明的项目如下：\n\n"
+            "a） 电动机名称；\n"
+            "b） 电动机型号；\n"
+            "c） 额定电压(V)；\n"
+            "1） 绝缘等级；\n"
+            "e） 防护等级；\n"
+            "f） 制造日期。\n\n"
+            "试验次数如下：\n\n"
+            "1) 第一次；\n"
+            "2) 第二次；\n"
+            "3) 第三次；\n"
+            "l) 第四次；\n"
+            "O) 第五次。\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            raw_path = Path(directory) / "raw.md"
+            canonical_path = Path(directory) / "standard.canonical.md"
+            raw_path.write_text(raw, encoding="utf-8")
+            ssir, report = normalize_csm(raw_path, canonical_path)
+            rendered = canonical_path.read_text(encoding="utf-8")
+            ssir_reparsed = parse_csm(canonical_path)
+        self.assertIn("l） 绝缘等级；", rendered)
+        self.assertIn("1） 第四次；", rendered)
+        self.assertIn("0） 第五次。", rendered)
+        self.assertNotIn("1） 绝缘等级；", rendered)
+        repaired = [i for i in report.issues if i.code == "CSM-OCR-001" and i.repaired]
+        self.assertEqual(len(repaired), 3)
+        # 纠正后 SSIR 与 canonical 回环稳定
+        self.assertTrue(compare_ssir(ssir, ssir_reparsed).passed)
+
+    def test_marker_parens_and_clause_spacing_normalised(self) -> None:
+        # GBT-C19：列表编号括号统一全角（d) → d））；GBT-B02：正文条号后
+        # 统一一个空格（4.6.1电动机 → 4.6.1 电动机）。
+        raw = (
+            "---\n"
+            "document-type: standard\n"
+            "document-identifier: \"Q/TEST 006—2026\"\n"
+            "standard-number: \"Q/TEST 006—2026\"\n"
+            "title: \"Spacing\"\n"
+            "language: zh-CN\n"
+            "---\n\n"
+            "# Spacing\n\n"
+            "## 4 技术要求\n\n"
+            "4.6.1电动机表面应无污迹。\n\n"
+            "4.6.2试验项目如下：\n\n"
+            "d) 额定频率(Hz)；\n"
+            "e) 额定电压(V)。\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            raw_path = Path(directory) / "raw.md"
+            canonical_path = Path(directory) / "standard.canonical.md"
+            raw_path.write_text(raw, encoding="utf-8")
+            normalize_csm(raw_path, canonical_path)
+            rendered = canonical_path.read_text(encoding="utf-8")
+        self.assertIn("4.6.1 电动机表面应无污迹。", rendered)
+        self.assertIn("d） 额定频率(Hz)；", rendered)
+        self.assertIn("e） 额定电压(V)。", rendered)
+
     def test_same_input_produces_deterministic_json(self) -> None:
-        path = ROOT / "corpus/golden/csm/Q_TQDZ_004-2026.csm.md"
+        path = ROOT / "corpus/golden/csm/Q_TQDZ_004-2026.canonical.md"
         self.assertEqual(json_bytes(parse_csm(path)), json_bytes(parse_csm(path)))
 
     def test_duplicate_ssir_id_is_rejected(self) -> None:

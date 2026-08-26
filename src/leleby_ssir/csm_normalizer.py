@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 import yaml
 
 from .parser import Block, CSMDocument, Directive
 
 
-def render_std0(document: CSMDocument) -> str:
-    """Render the safe in-memory repairs as the immutable Std0 CSM baseline.
+def render_canonical(document: CSMDocument) -> str:
+    """Render the safe in-memory repairs as the immutable canonical CSM baseline.
 
     规则对应: GEN-031（层次编号规范化）、GEN-032/033（表格题注处理）、GBT-B08（题注形如"表X 题名"）。
     """
@@ -20,10 +21,10 @@ def render_std0(document: CSMDocument) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def write_std0(document: CSMDocument, path: str | Path) -> None:
+def write_canonical(document: CSMDocument, path: str | Path) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(render_std0(document), encoding="utf-8", newline="\n")
+    target.write_text(render_canonical(document), encoding="utf-8", newline="\n")
 
 
 def _directive(directive: Directive) -> str:
@@ -42,7 +43,14 @@ def _render_block(lines: list[str], block: Block) -> None:
         lines.extend(["#" * int(block.level or 1) + " " + block.text, ""])
     elif block.kind in {"paragraph", "note", "example", "warning", "quote"}:
         prefix = "> " if block.kind != "paragraph" else ""
-        lines.extend(["\n".join(prefix + line for line in block.text.splitlines()), ""])
+        # 正文条号与后续汉字之间统一留一个半角空格（GBT-B02 编号后空一格接排；
+        # OCR 常把 "4.6.1电动机" 的空格吞掉，导致正文与标题的间隔不一致）。
+        text = re.sub(
+            r"(?m)^(\d+(?:\.\d+){1,3}|[A-Z]\.\d+(?:\.\d+)*)(?=[\u4e00-\u9fff（(])",
+            r"\1 ",
+            block.text,
+        )
+        lines.extend(["\n".join(prefix + line for line in text.splitlines()), ""])
     elif block.kind == "list":
         lines.extend(f"{item['marker']} {item['text']}" for item in block.data["items"])
         lines.append("")
@@ -52,6 +60,9 @@ def _render_block(lines: list[str], block: Block) -> None:
             caption = block.directive.attrs.get("caption")
             if caption_number and caption:
                 lines.append(f"**表{caption_number} {caption}**")
+            elif caption_number:
+                # Bare numbered caption ("表 N") roundtrips as "**表N**".
+                lines.append(f"**表{caption_number}**")
         for row_index, row in enumerate(block.data["rows"]):
             lines.append("| " + " | ".join(cell.replace("|", r"\|") for cell in row) + " |")
             if row_index == 0:

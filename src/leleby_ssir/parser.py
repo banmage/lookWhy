@@ -71,8 +71,14 @@ HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 TABLE_SEPARATOR_RE = re.compile(r"^\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$")
 IMAGE_RE = re.compile(r"^!\[(.*?)\]\((.*?)\)\s*$")
 NUMBERED_ITEM_RE = re.compile(r"^([A-Za-z]+[)）]|\d+[)）])\s*(.*)$")
-UNORDERED_ITEM_RE = re.compile(r"^[-*+]\s+(.*)$")
+# GB/T 1.1 列项符号为破折号（——）或间隔号（·）；OCR 常把 "——" 压成
+# 单个 "-" 或 "—" 且丢失后方空格，故破折号允许无空格（GBT-C12）。
+# CommonMark 的 "*"/"+" 项目符号仍要求后方空格，避免误吞 "**加粗**" 行首。
+UNORDERED_ITEM_RE = re.compile(r"^(?:([-—]+)|([*+])\s+)\s*(.*)$")
 TABLE_CAPTION_RE = re.compile(r"^\*\*表([^\s]+)\s+(.+?)\*\*$")
+# Bare numbered caption: "**表N**" — 行业标准/企业标准常见排版，题注只有编号
+# 无题名 (GBT-B08 编号必备；题名可省略)。
+TABLE_BARE_CAPTION_RE = re.compile(r"^\*\*表([^\s]+)\*\*$")
 
 SUPPORTED_DIRECTIVES = {
     "block",
@@ -178,6 +184,7 @@ class CSMParser:
         for warning in parse_warnings:
             issues.append(CSMIssue("CSM-STRUCT-001", "warning", warning))
         fatal_errors.extend(self._repair_tables(blocks, issues))
+        self._repair_list_markers(blocks, issues)
         fatal_errors.extend(self._classify_body_errors(parse_errors, issues))
         self._normalise_metadata(metadata, blocks, source, issues)
         document_errors: list[str] = []
@@ -480,10 +487,22 @@ class CSMParser:
                 start = i
                 list_directive = pending.pop("list", None)
                 items: list[dict[str, str]] = []
-                while i < len(lines) and self._is_list_line(lines[i]):
-                    marker, item_text = self._parse_list_line(lines[i])
-                    items.append({"marker": marker, "text": item_text, "line": str(line_no(i))})
-                    i += 1
+                while i < len(lines):
+                    if self._is_list_line(lines[i]):
+                        marker, item_text = self._parse_list_line(lines[i])
+                        items.append({"marker": marker, "text": item_text, "line": str(line_no(i))})
+                        i += 1
+                        continue
+                    if not lines[i].strip():
+                        # Loose list (CommonMark): blank lines between list items
+                        # stay inside the list; MinerU 常以空行分隔各列项（GBT-C12）。
+                        lookahead = i
+                        while lookahead < len(lines) and not lines[lookahead].strip():
+                            lookahead += 1
+                        if lookahead < len(lines) and self._is_list_line(lines[lookahead]):
+                            i = lookahead
+                            continue
+                    break
                 blocks.append(
                     Block(
                         kind="list",
@@ -503,6 +522,18 @@ class CSMParser:
                 if next_index < len(lines) and lines[next_index].startswith("|"):
                     pending["table"].attrs["caption-number"] = table_caption.group(1)
                     pending["table"].attrs["caption"] = table_caption.group(2)
+                    i += 1
+                    continue
+
+            bare_caption = TABLE_BARE_CAPTION_RE.match(line)
+            if bare_caption and "table" in pending:
+                next_index = i + 1
+                while next_index < len(lines) and not lines[next_index].strip():
+                    next_index += 1
+                if next_index < len(lines) and lines[next_index].startswith("|"):
+                    # Bare "表 N" caption (number only, no title) — keep the
+                    # number so GBT-X02 passes; no caption attribute.
+                    pending["table"].attrs["caption-number"] = bare_caption.group(1)
                     i += 1
                     continue
 
@@ -540,10 +571,15 @@ class CSMParser:
     def _parse_list_line(line: str) -> tuple[str, str]:
         unordered = UNORDERED_ITEM_RE.match(line)
         if unordered:
-            return line[0], unordered.group(1)
+            return unordered.group(1) or unordered.group(2), unordered.group(3)
         numbered = NUMBERED_ITEM_RE.match(line)
         assert numbered
-        return numbered.group(1), numbered.group(2)
+        marker = numbered.group(1)
+        # 编号括号统一为全角（GBT-C19）：OCR 常混用 a) / a）——半角括号在
+        # 渲染时与文字的视觉间隔明显小于全角括号，导致列表项间隔不统一。
+        if marker.endswith(")"):
+            marker = marker[:-1] + "）"
+        return marker, numbered.group(2)
 
     @staticmethod
     def _starts_new_block(lines: list[str], index: int) -> bool:
@@ -618,6 +654,53 @@ class CSMParser:
                         repair_action="Padded trailing empty table cells in memory.",
                     )
         return fatal_errors
+
+    @staticmethod
+    def _repair_list_markers(blocks: list[Block], issues: list[CSMIssue]) -> None:
+        """Correct OCR glyph-confused list markers in context (CSM-OCR-001).
+
+        OCR 常把字母 l）误读为数字 1）、把 1 误读为 l/I、把 0 误读为 O。
+        孤立纠正会误伤真子列表，因此只在多数派上下文中纠正少数派里的
+        可混淆项（多数派至少 2 个且严格多于少数派）：
+        - 字母多数 + 数字 outlier 1）/1） → l）/l）；
+        - 数字多数 + 字母 outlier l/I）/l/I） → 1）/1）；O）/O） → 0）/0）。
+        """
+        letter_re = re.compile(r"^[A-Za-z][)）]$")
+        digit_re = re.compile(r"^\d+[)）]$")
+        letter_fix = {"1)": "l)", "1）": "l）"}
+        digit_fix = {"l)": "1)", "l）": "1）", "I)": "1)", "I）": "1）", "O)": "0)", "O）": "0）"}
+        for block in blocks:
+            if block.kind != "list":
+                continue
+            items: list[dict[str, str]] = block.data["items"]
+            markers = [str(item["marker"]) for item in items]
+            if len(markers) < 3:
+                continue
+            letter_indexes = [i for i, m in enumerate(markers) if letter_re.match(m)]
+            digit_indexes = [i for i, m in enumerate(markers) if digit_re.match(m)]
+            if len(letter_indexes) + len(digit_indexes) != len(markers):
+                continue  # 混入破折号/间隔号等无编号标记，上下文不明确
+            if len(letter_indexes) >= 2 and len(letter_indexes) > len(digit_indexes) and digit_indexes:
+                targets = [i for i in digit_indexes if markers[i] in letter_fix]
+                fix, context = letter_fix, "letters"
+            elif len(digit_indexes) >= 2 and len(digit_indexes) > len(letter_indexes) and letter_indexes:
+                targets = [i for i in letter_indexes if markers[i] in digit_fix]
+                fix, context = digit_fix, "digits"
+            else:
+                continue
+            for target in targets:
+                original = markers[target]
+                corrected = fix[original]
+                items[target]["marker"] = corrected
+                CSMParser._issue(
+                    issues,
+                    "CSM-OCR-001",
+                    f"List marker {original!r} is a likely OCR misread of {corrected!r} "
+                    f"(majority of sibling markers are {context}).",
+                    line=int(items[target].get("line", 0)) or None,
+                    repaired=True,
+                    repair_action=f"Rewrote marker {original} to {corrected} in memory.",
+                )
 
     @staticmethod
     def _classify_body_errors(errors: list[str], issues: list[CSMIssue]) -> list[str]:
