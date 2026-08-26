@@ -17,8 +17,11 @@ page:
 fonts:
   primary: WenQuanYiZenHei
   primary-file: /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc
-  body: ARPLUMing
-  body-file: /usr/share/fonts/truetype/arphic/uming.ttc
+  # 正文宋体：思源宋体（Noto Serif CJK SC，大陆标准字形，全角标点贴底）。
+  # 系统自带的是 CFF 轮廓的 .ttc（reportlab 无法加载），本 profile 使用
+  # otf2ttf 转换后的 TrueType 版（tools/prepare_serif_font.py 一键生成）。
+  body: NotoSerifSC
+  body-file: config/rendering/fonts/NotoSerifCJKsc-Regular.ttf
 styles:
   body: {size-pt: 10.5, leading-pt: 18, first-line-indent-em: 2, alignment: justify}
   section: {size-pt: 16, leading-pt: 22, alignment: center}
@@ -37,3 +40,29 @@ figures:
   missing-asset: placeholder
 formulas:
   fallback: raw-text
+# 封面徽标（GEN-018/GBT-L02 文件代号美术体字）：按标准类型从固定目录读取，
+# 不再使用从 PDF 提取的 coverBadge 图块。mapping 的 key 是 standard-number
+# 前缀（最长匹配优先），每类标准一个独立条目与独立图形文件；新增类型只需
+# 加一条映射并放入对应 <prefix>_logo.png，不影响其他类型。目录相对本 profile
+# 文件解析；文件缺失回退 default，再缺失则不绘制徽标。
+emblems:
+  directory: ../emblems
+  default: default_logo.png
+  mapping:
+    # 国家标准（强制性 GB / 推荐性 GB/T / 指导性 GB/Z）
+    "GB/T": GB_logo.png
+    "GB/Z": GB_logo.png
+    "GB": GB_logo.png
+    # 行业标准（按行业代号前缀）
+    "JB": JB_logo.png
+    "QB": QB_logo.png
+    "QC": QC_logo.png
+    "SJ": SJ_logo.png
+    "DL": DL_logo.png
+    "NY": NY_logo.png
+    # 地方标准
+    "DB": DB_logo.png
+    # 团体标准
+    "T/": T_logo.png
+    # 企业标准
+    "Q/": company_logo.png
