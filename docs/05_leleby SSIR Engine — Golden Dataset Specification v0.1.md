@@ -13,7 +13,7 @@
 
 > **当前 M1 数据集边界**：M1 使用 CSM Markdown 作为唯一输入，Golden Dataset 的主类别为 `Dataset M-CSM`。现有 PDF/OCR 类 Dataset A/B/C 及 Normative Rendering Dataset E 保留为 M2 及以后使用；M1 不要求准备 PDF、MinerU 输出或 OCR 资产。
 >
-> M1 的权威输入为 `examples/csm/` 下的 CSM 文件；其期望输出为人工审核后的 SSIR JSON（建议存放于 `fixtures/golden/csm/`），而不是把系统首次生成的 JSON 自动视为 Golden。
+> M1 的权威输入为 `corpus/golden/csm/` 下的 CSM 文件；其期望输出为人工审核后的 SSIR JSON（建议存放于 `fixtures/golden/csm/`），而不是把系统首次生成的 JSON 自动视为 Golden。
 
 
 ## 1. Scope
@@ -28,7 +28,7 @@
 
 **Golden Dataset 的核心用途**：
 
-1. **验证 Extraction Fidelity**：作为 Golden Test 的输入，验证 `Std₀ → SSIR₁` 的正确性
+1. **验证 Extraction Fidelity**：作为 Golden Test 的输入，验证 `源文档 → SSIR` 的正确性
 2. **验证 Round-trip Preservation**：作为 Round-trip Test 的基准输入
 3. **验证 Normative Rendering**：Dataset E 专门用于验证 Rendering Conformance
 4. **回归防护**：防止系统修改导致已有功能退化

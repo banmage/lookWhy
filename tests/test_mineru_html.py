@@ -175,10 +175,10 @@ class HeaderMergeRoundTripTests(unittest.TestCase):
             root = Path(directory)
             source = root / "t.canonical.md"
             source.write_text(csm, encoding="utf-8")
-            ssir1, ssir2, report = round_trip_csm(source, root / "t.render.md")
+            ssir, verify, report = round_trip_csm(source, root / "t.render.md")
             self.assertTrue(report.passed, report.to_dict())
-            for ssir in (ssir1, ssir2):
-                table = ssir["tables"][0]
+            for document in (ssir, verify):
+                table = document["tables"][0]
                 header_cell = table["rows"][0]["cells"][2]
                 self.assertEqual(header_cell["text"], "c")
                 self.assertEqual(header_cell["colspan"], 2)

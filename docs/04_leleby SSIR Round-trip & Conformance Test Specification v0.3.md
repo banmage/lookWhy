@@ -12,7 +12,7 @@
 > - **更新 §8 Golden Dataset**：增加 Normative Rendering 测试文档要求
 > - **更新 §22 Test Cases Catalog**：新增 Normative Rendering 测试用例（NR-001～NR-004、RT-009）
 
-> **当前 M1 测试范围**：先将用户原始 Markdown 宽容校验并完成无语义损失的基础纠错，冻结为 `Std0` CSM Markdown；再验收 `Std0 → SSIR1 JSON → Std1 CSM Markdown → SSIR2 JSON`。CSM 语法/结构/内容/产品标准质量提示、JSON Schema、Markdown 溯源、确定性 CSM 渲染、四层等价比较和 Critical Information Loss 属于 M1；PDF、MinerU、OCR、DOCX/PDF 渲染和 PDF 级视觉保真暂列 M2。
+> **当前 M1 测试范围**：先将用户原始 Markdown 宽容校验并完成无语义损失的基础纠错，冻结为 `Canonical` CSM Markdown；再验收 `Canonical CSM Markdown → SSIR JSON → Render.md CSM Markdown → Verify JSON`。CSM 语法/结构/内容/产品标准质量提示、JSON Schema、Markdown 溯源、确定性 CSM 渲染、四层等价比较和 Critical Information Loss 属于 M1；PDF、MinerU、OCR、DOCX/PDF 渲染和 PDF 级视觉保真暂列 M2。
 >
 > M1 的权威测试输入为 `examples/csm/` 下的全部 CSM 文件；模板文件可用于输入契约和回环测试，不直接作为 Golden SSIR。
 
@@ -40,20 +40,20 @@
 **Round-trip 核心定义**：
 
 ```
-原始 Markdown → 基础校验/纠错 → Std₀ → SSIR₁ → Std₁ → SSIR₂
+原始 Markdown → 基础校验/纠错 → Canonical → SSIR → Render.md → Verify
 
-验证目标：SSIR₁ ≈ SSIR₂（SSIR Semantic Equivalence）
-而非：Std₀ ≈ Std₁（文档外观等价）
+验证目标：SSIR ≈ Verify（SSIR Semantic Equivalence）
+而非：Canonical ≈ Render.md（文档外观等价）
 ```
 
 其中：
 - `原始 Markdown`：用户上传的未校正文件；它是导入诊断和修复记录的来源，不是回环等价比较的基准。
-- `Std₀`：已完成基础格式纠错、可被 CSMParser 接受的 CSM Markdown 基线文档；回环从该文件开始。
-- `SSIR₁`：从 Std₀ 提取的信息基准状态
-- `Std₁`：从 SSIR₁ 渲染生成的规范化 CSM Markdown 文档（**Normative Markdown Rendering**，依据 GB/T 1.1-2020 等 Rendering Profile）
-- `SSIR₂`：从 Std₁ 再次提取的恢复状态
+- `Canonical`：已完成基础格式纠错、可被 CSMParser 接受的 CSM Markdown 基线文档；回环从该文件开始。
+- `SSIR`：从 Canonical 提取的信息基准状态
+- `Render.md`：从 SSIR 渲染生成的规范化 CSM Markdown 文档（**Normative Markdown Rendering**，依据 GB/T 1.1-2020 等 Rendering Profile）
+- `Verify`：从 Render.md 再次提取的恢复状态
 
-**关键原则**：原始 Markdown 的修复必须只涉及机器元数据和无语义损失的格式边界，且逐项写入转换报告；正文、标准编号原文、数值、单位、公式、比较符和规范性动词不得自动改写。`Std₀` 与 `Std₁` 的 Markdown 表现差异不必然表示 Round-trip 失败，比较对象始终是 `SSIR₁` 与 `SSIR₂`。
+**关键原则**：原始 Markdown 的修复必须只涉及机器元数据和无语义损失的格式边界，且逐项写入转换报告；正文、标准编号原文、数值、单位、公式、比较符和规范性动词不得自动改写。`Canonical` 与 `Render.md` 的 Markdown 表现差异不必然表示 Round-trip 失败，比较对象始终是 `SSIR` 与 `Verify`。
 
 
 ## 2. Normative References
@@ -73,10 +73,10 @@
 | **Golden Dataset** | 一组预先选定的、具有已知特征的标准文档集合，用于验证系统的正确性 |
 | **Golden SSIR** | 从 Golden Dataset 中提取的、经过人工审核确认为正确的 SSIR 实例。既是 Extraction 的 Expected，也是 Round-trip 的 Reference State |
 | **Round-trip Preservation** | SSIR 经传统文档渲染、规范化及再次提取后，其核心信息、结构和语义应保持不变的属性 |
-| **Round-trip Completeness** | SSIR₁ 中的信息元素在 SSIR₂ 中被成功恢复的程度 |
+| **Round-trip Completeness** | SSIR 中的信息元素在 Verify 中被成功恢复的程度 |
 | **SSIR Semantic Equivalence** | 两个 SSIR 实例在身份、结构、内容、关系层面等价，忽略非语义差异（如 ID、时间戳、坐标） |
-| **Extraction Fidelity** | Std₀ → SSIR₁ 的正确程度 |
-| **Normative Rendering Conformance** | SSIR₁ → Std₁ 是否符合目标规范（如 GB/T 1.1-2020），且遵循 ALLOWED_NORMALIZATIONS / FORBIDDEN_CHANGES 边界 |
+| **Extraction Fidelity** | Canonical → SSIR 的正确程度 |
+| **Normative Rendering Conformance** | SSIR → Render.md 是否符合目标规范（如 GB/T 1.1-2020），且遵循 ALLOWED_NORMALIZATIONS / FORBIDDEN_CHANGES 边界 |
 | **Normalization Stability** | 系统在多次 `SSIR → 渲染 → 提取` 循环后是否收敛到稳定状态 |
 | **Normalization Fixed Point** | 系统达到稳定状态，后续循环不再产生变化 |
 | **Critical Information Loss** | 规范性要求、禁止性条款、强制条件、数值、单位、比较符、引用目标等关键信息的丢失或改变 |
@@ -108,9 +108,9 @@
 | 测试类别 | 验证的能力 | 对应 Conformance |
 |----------|-----------|------------------|
 | Schema Conformance | JSON Schema 合规性（含 v0.3 新字段） | 所有等级 |
-| Extraction Fidelity | Std₀ → SSIR₁ | 所有等级 |
-| Normative Rendering Conformance | SSIR₁ → Std₁（含 ALLOWED_NORMALIZATIONS / FORBIDDEN_CHANGES） | Core 及以上 |
-| Round-trip Preservation | SSIR₁ ≈ SSIR₂ | Core 及以上 |
+| Extraction Fidelity | Canonical → SSIR | 所有等级 |
+| Normative Rendering Conformance | SSIR → Render.md（含 ALLOWED_NORMALIZATIONS / FORBIDDEN_CHANGES） | Core 及以上 |
+| Round-trip Preservation | SSIR ≈ Verify | Core 及以上 |
 | Normalization Stability | 系统收敛性 | Core 及以上 |
 | Semantic Enrichment | L4 能力 | Full 及以上 |
 
@@ -316,9 +316,9 @@ Data Model v0.4 §7.3 定义的 12 项绝对禁止变化：
 | L1 | Schema Conformance | JSON Schema 合规性（含 v0.3 新字段） |
 | L2 | Unit Test | 核心处理组件正确性 |
 | L3 | Integration Test | 模块间接口正确性 |
-| L4 | Extraction Fidelity | Std₀ → SSIR₁ 正确性 |
-| L5 | Normative Rendering Conformance | SSIR₁ → Std₁ 合规性（含 ALLOWED_NORMALIZATIONS / FORBIDDEN_CHANGES） |
-| L6 | Round-trip Preservation | SSIR₁ ≈ SSIR₂ |
+| L4 | Extraction Fidelity | Canonical → SSIR 正确性 |
+| L5 | Normative Rendering Conformance | SSIR → Render.md 合规性（含 ALLOWED_NORMALIZATIONS / FORBIDDEN_CHANGES） |
+| L6 | Round-trip Preservation | SSIR ≈ Verify |
 | L7 | Normalization Stability | 系统收敛性 |
 | L8 | E2E Acceptance | 完整业务路径 |
 | L9 | Regression | 无退化 |
@@ -328,10 +328,10 @@ Data Model v0.4 §7.3 定义的 12 项绝对禁止变化：
 
 | 测试支柱 | 链路 | 核心问题 |
 |----------|------|----------|
-| **Extraction Fidelity Test** | `Std₀ → SSIR₁` | 是否正确理解原文？ |
-| **Normative Rendering Conformance Test** | `SSIR₁ → Std₁` | 输出是否符合规范且不违反 FORBIDDEN_CHANGES？ |
-| **Round-trip Preservation Test** | `SSIR₁ → Std₁ → SSIR₂` | 信息是否丢失？ |
-| **Normalization Stability Test** | `SSIR₁ → Std₁ → SSIR₂ → Std₂ → SSIR₃` | 系统是否收敛稳定？ |
+| **Extraction Fidelity Test** | `Canonical → SSIR` | 是否正确理解原文？ |
+| **Normative Rendering Conformance Test** | `SSIR → Render.md` | 输出是否符合规范且不违反 FORBIDDEN_CHANGES？ |
+| **Round-trip Preservation Test** | `SSIR → Render.md → Verify` | 信息是否丢失？ |
+| **Normalization Stability Test** | `SSIR → Render.md → Verify → Render.md₂ → Verify₂` | 系统是否收敛稳定？ |
 
 
 ## 8. Golden Dataset
@@ -427,16 +427,16 @@ fixtures/golden/
 
 ### 9.1 定义
 
-验证 `Std₀ → SSIR₁` 的正确性。
+验证 `Canonical → SSIR` 的正确性。
 
 ### 9.2 测试方法
 
 ```
-Std₀
+Canonical
   ↓
 Extraction Pipeline
   ↓
-SSIR₁
+SSIR
   ↓
 Compare with Golden SSIR
   ↓
@@ -471,17 +471,17 @@ Extraction Fidelity Report
 
 ### 10.1 定义
 
-验证 `SSIR₁ → Std₁` 是否符合目标规范（GB/T 1.1-2020），且遵循 **ALLOWED_NORMALIZATIONS** / **FORBIDDEN_CHANGES** 边界。
+验证 `SSIR → Render.md` 是否符合目标规范（GB/T 1.1-2020），且遵循 **ALLOWED_NORMALIZATIONS** / **FORBIDDEN_CHANGES** 边界。
 
 ### 10.2 测试方法
 
 ```
-SSIR₁ (Golden)
+SSIR (Golden)
   ↓
 Normative Rendering Pipeline
   (with specified Rendering Profile)
   ↓
-Std₁ (CSM Markdown)
+Render.md (CSM Markdown)
   ↓
 Manual + Automated Inspection
   ↓
@@ -504,7 +504,7 @@ Normative Rendering Conformance Report
 
 | 规范化操作 | 验证方法 | 预期 |
 |------------|----------|------|
-| 编号格式规范化 | 比较 Std₁ 编号格式 | 符合 GB/T 1.1 |
+| 编号格式规范化 | 比较 Render.md 编号格式 | 符合 GB/T 1.1 |
 | 标点规范化 | 检查标点 | 符合规范 |
 | 空格规范化 | 检查空格 | 符合规范 |
 | 数字格式规范化 | 检查数字格式 | 符合规范 |
@@ -515,7 +515,7 @@ Normative Rendering Conformance Report
 
 | 禁止变化 | 验证方法 | 预期 |
 |----------|----------|------|
-| normative_verb_change | 比较 SSIR₁ 与 Std₁ 的规范性动词 | 无变化 |
+| normative_verb_change | 比较 SSIR 与 Render.md 的规范性动词 | 无变化 |
 | prohibition_change | 比较禁止性表述 | 无变化 |
 | numeric_value_change | 比较数值 | 无变化 |
 | unit_change | 比较单位 | 无变化 |
@@ -533,7 +533,7 @@ Normative Rendering Conformance Report
 | 验证项 | 方法 | 预期 |
 |--------|------|------|
 | Profile 选择 | 检查 QualityAssessment.renderingProfile | 与指定 Profile 一致 |
-| Profile 合规 | 验证 Std₁ 符合 Profile 规则 | 全部符合 |
+| Profile 合规 | 验证 Render.md 符合 Profile 规则 | 全部符合 |
 
 ### 10.7 通过标准
 
@@ -548,20 +548,20 @@ Normative Rendering Conformance Report
 
 ### 11.1 定义
 
-验证 `SSIR₁ → CSM Std₁ → SSIR₂` 后 `SSIR₁ ≈ SSIR₂`。M1 的 Std₁ 必须是可再次被 CSMParser 接受的 Markdown 文件。
+验证 `SSIR → Render.md → Verify` 后 `SSIR ≈ Verify`。M1 的 Render.md 必须是可再次被 CSMParser 接受的 Markdown 文件。
 
 ### 11.2 测试方法
 
 ```
                     ┌───────────────┐
-                    │ Std₀（已纠错） │
+                    │ Canonical（已纠错） │
                     └───────┬───────┘
                             │
                      Extraction
                             │
                             ▼
                     ┌───────────────┐
-                    │    SSIR₁      │  ← Round-trip Reference State
+                    │    SSIR      │  ← Round-trip Reference State 
                     └───────┬───────┘
                             │
                   Normative Markdown Rendering
@@ -569,19 +569,19 @@ Normative Rendering Conformance Report
                             │
                             ▼
                     ┌───────────────┐
-                    │     Std₁      │  ← 规范化输出
+                    │     Render.md      │  ← 规范化输出
                     └───────┬───────┘
                             │
                      Re-Extraction
                             │
                             ▼
                     ┌───────────────┐
-                    │    SSIR₂      │  ← 恢复状态
+                    │    Verify      │  ← 恢复状态
                     └───────┬───────┘
                             │
                             ▼
                   ┌──────────────────┐
-                  │ SSIR₁ vs SSIR₂   │
+                  │ SSIR vs Verify   │
                   │ Four-layer       │
                   │ Compare          │
                   └──────────────────┘
@@ -658,13 +658,13 @@ M1 的可执行入口为：
 ```text
 ssir csm roundtrip \
   --input examples/csm/Q_TQDZ_004-2026.csm.md \
-  --std1-output out/Q_TQDZ_004-2026.std1.csm.md \
-  --report out/Q_TQDZ_004-2026.roundtrip-report.json
+  --render-md-output out/Q_TQDZ_004-2026.render.md \
+  --report out/Q_TQDZ_004-2026.roundtrip.json
 ```
 
-命令返回 `0` 表示四层比较和关键损失检查通过，返回 `3` 表示 SSIR1/SSIR2 语义不等价，返回 `2` 表示输入或生成的 CSM 无法安全解析。
+命令返回 `0` 表示四层比较和关键损失检查通过，返回 `3` 表示 SSIR/Verify 语义不等价，返回 `2` 表示输入或生成的 CSM 无法安全解析。
 
-批量执行时使用下列验证程序。`--examples-dir` 下的每一个 `.csm.md` 都被视为已经纠错的 Std0；程序输出每份 Std1、每份回环报告及 `roundtrip-summary.json`，任意失败时返回 `3`：
+批量执行时使用下列验证程序。`--examples-dir` 下的每一个 `*.canonical.md`（旧 `*.csm.md` 仍兼容）都被视为已经纠错的 Canonical；程序输出每份 Render.md、每份回环报告及 `roundtrip-summary.json`，任意失败时返回 `3`：
 
 ```text
 PYTHONPATH=src python3 tools/verify_markdown_roundtrip.py \
@@ -696,17 +696,17 @@ PYTHONPATH=src python3 tools/verify_markdown_roundtrip.py \
 ### 12.2 测试方法
 
 ```
-Std₀
+Canonical
   ↓
-SSIR₁
+SSIR
   ↓
-Std₁
+Render.md
   ↓
-SSIR₂
+Verify
   ↓
-Std₂
+Render.md₂
   ↓
-SSIR₃
+Verify₂
   ↓
 ...
 ```
@@ -714,13 +714,13 @@ SSIR₃
 验证：
 
 ```
-SSIR₁ ≡ SSIR₂ ≡ SSIR₃ ≡ ... ≡ SSIRₙ
+SSIR ≡ Verify ≡ Verify₂ ≡ ... ≡ Verifyₙ
 ```
 
 且：
 
 ```
-Std₁ ≈ Std₂ ≈ Std₃ ≈ ... ≈ Stdₙ
+Render.md ≈ Render.md₂ ≈ Render.md₃ ≈ ... ≈ Render.mdₙ
 ```
 
 ### 12.3 Normalization Fixed Point
@@ -728,7 +728,7 @@ Std₁ ≈ Std₂ ≈ Std₃ ≈ ... ≈ Stdₙ
 当满足以下条件时，系统达到 **Normalization Fixed Point（规范化固定点）**：
 
 ```
-SSIRₙ₋₁ ≡ SSIRₙ
+Verifyₙ₋₁ ≡ Verifyₙ
 ```
 
 后续循环不再产生变化。
@@ -1096,10 +1096,10 @@ Phase 1 必须通过的 8 道 Gate：
 | 版本 | 日期 | 变更说明 |
 |------|------|----------|
 | 0.1 | 2026-08-15 | 初始版本 |
-| 0.2 | 2026-08-15 | 确立 Round-trip 核心定义（Std₀→SSIR₁→Std₁→SSIR₂，验证 SSIR₁≈SSIR₂）；新增 Conformance Model；新增 SSIR Equivalence Model；新增 Information Preservation Contract；拆分为四柱测试体系；取消单一 Match Rate；新增 Critical Information Loss/Zero Critical Loss；新增 Schema Conformance & Negative Test；新增 Normalization Stability Test；重新设计 Conformance Gates（8 Gates） |
+| 0.2 | 2026-08-15 | 确立 Round-trip 核心定义（Canonical→SSIR→Render.md→Verify，验证 SSIR≈Verify）；新增 Conformance Model；新增 SSIR Equivalence Model；新增 Information Preservation Contract；拆分为四柱测试体系；取消单一 Match Rate；新增 Critical Information Loss/Zero Critical Loss；新增 Schema Conformance & Negative Test；新增 Normalization Stability Test；重新设计 Conformance Gates（8 Gates） |
 | 0.3 | 2026-08-15 | 与 Data Model v0.4 和 JSON Schema v0.3 对齐；§2 增加 JSON Schema v0.3 引用；§4 Conformance Model 增加 Normative Rendering 支持声明和 FORBIDDEN_CHANGES 合规性要求；§5 增加 Critical Information Loss 检查项清单（12 项）；§6 明确 ALLOWED_NORMALIZATIONS 与 FORBIDDEN_CHANGES 边界；§10 重命名为 Normative Rendering Conformance Test，增加 Profile 验证和 Negative Test；§14 增加 v0.3 新字段验证；§8 增加 Dataset E（Normative Rendering 测试文档）；§22 新增 NR-001～NR-004、RT-009 测试用例 |
-| 0.4 | 2026-08-17 | 将 M1 Round-trip 具体化为 CSM Markdown `Std0 → SSIR1 → Std1 → SSIR2`；增加 CLI、报告返回码、M1 可比较/不可比较属性和 CSM 渲染验收要求；DOCX/PDF 视觉渲染移至 M2 |
-| 0.5 | 2026-08-17 | 明确 `Std0` 为原始 Markdown 经基础纠错后冻结的 CSM 基线；增加 `normalize` 命令、批量回环验证程序及原始输入与回环基准的职责边界 |
+| 0.4 | 2026-08-17 | 将 M1 Round-trip 具体化为 CSM Markdown `Canonical → SSIR → Render.md → Verify`；增加 CLI、报告返回码、M1 可比较/不可比较属性和 CSM 渲染验收要求；DOCX/PDF 视觉渲染移至 M2 |
+| 0.5 | 2026-08-17 | 明确 `Canonical` 为原始 Markdown 经基础纠错后冻结的 CSM 基线；增加 `normalize` 命令、批量回环验证程序及原始输入与回环基准的职责边界 |
 
 
 ## 24. Next Steps

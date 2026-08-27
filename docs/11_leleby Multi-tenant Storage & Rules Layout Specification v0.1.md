@@ -25,7 +25,7 @@ lookwhy/
 │   │   ├── requirements.yaml     # 结构化规则要求（GBT-xxx + source 章节追溯）
 │   │   ├── extraction-rules.yaml # 抽取/合成通用规则（GEN-xxx + gbt11-ref）
 │   │   ├── audit.yaml            # 审核准则
-│   │   └── source.{csm.md,ssir.json,conversion-report.json}
+│   │   └── source.{csm.md,ssir.json,parse-report.json}
 │   ├── industries/{code}/        # 行业规则（场景 b）
 │   │   ├── pending/  approved/  rejected/
 │   ├── ontology/                 # 本体文件（分类树、术语库）
@@ -36,7 +36,7 @@ lookwhy/
 ├── storage/tenants/{tenant_id}/  # ★ 租户运行时存储（gitignore）
 │   ├── uploads/{yyyy}/{mm}/{batch_id}/   # 原始上传
 │   ├── work/                     # MinerU parts、assets、content_list 等中间产物
-│   ├── outputs/                  # csm/std0/std1/ssir.json/pdf/各类报告
+│   ├── outputs/                  # csm/canonical/render.md/ssir.json/verify.json/pdf/各类报告
 │   └── profile/                  # 本企业编排格式规则（审核通过后生效）
 └── docs/                         # 项目文档（本文档所在）
 ```

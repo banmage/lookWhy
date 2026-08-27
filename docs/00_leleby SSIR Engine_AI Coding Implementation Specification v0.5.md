@@ -14,12 +14,12 @@
 >
 > **核心指令**：本规范是 Phase 1 开发的唯一编码依据。所有代码实现必须严格遵循本规范的定义，不得偏离。
 
-> **当前迭代边界（M1：CSM Markdown Round-trip）**：本项目接收用户 Markdown，先进行宽容校验和无语义损失的基础纠错并冻结为 `CSM Std0`，再执行 `Std0 → SSIR1 → CSM Std1 → SSIR2` 回环验证。原始输入不是回环比较基准，修复项必须记录在转换报告。PDF/DOCX 接入、MinerU、OCR 和“PDF → CSM”属于后续 M2，不得成为 M1 的运行时依赖或验收条件。
+> **当前迭代边界（M1：CSM Markdown Round-trip）**：本项目接收用户 Markdown，先进行宽容校验和无语义损失的基础纠错并冻结为 `Canonical`，再执行 `Canonical → SSIR → Render.md → Verify` 回环验证。原始输入不是回环比较基准，修复项必须记录在转换报告。PDF/DOCX 接入、MinerU、OCR 和“PDF → CSM”属于后续 M2，不得成为 M1 的运行时依赖或验收条件。
 >
-> - M1 回环输入：已纠错的 `examples/csm/*.csm.md`（Std0）；用户 Markdown 必须先经过 CSM 校验/纠错阶段。`examples/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md` 定义该阶段的目标格式。
+> - M1 回环输入：已纠错的 `corpus/golden/csm/*.canonical.md`（Canonical）；用户 Markdown 必须先经过 CSM 校验/纠错阶段。`corpus/golden/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md` 定义该阶段的目标格式。
 > - M1 主输出：符合 JSON Schema v0.3 的 `.ssir.json`；Turtle（`.ttl`）仅作为从已验证 SSIR JSON 派生的可选导出，不得替代 JSON 作为权威交换格式。
 > - M1 溯源：`source.mode=user-markdown`、`mimeType=text/markdown`、SHA-256，以及 Markdown 行/列和 AST block 定位；不得伪造 PDF 页码或 bbox。
-> - M1 回环：确定性 CSM Renderer 输出 `Std1`，使用同一 CSMParser 重提取 `SSIR2`，并比较身份、结构、内容、语义视图及关键损失；来源锚点、运行记录和质量评估不参与等价比较。
+> - M1 回环：确定性 CSM Renderer 输出 `Render.md`，使用同一 CSMParser 重提取 `Verify`，并比较身份、结构、内容、语义视图及关键损失；来源锚点、运行记录和质量评估不参与等价比较。
 > - M1 不实现：PDF 上传/解析、MinerU/OCR、DOCX 解析、规范性 DOCX/PDF 渲染、PDF/DOCX 视觉保真、L4 语义推理。
 > - 本框中的约束优先于本文件后文仍保留的完整 Phase 1 任务清单；后文任务作为 M2+ 路线图保留。
 
@@ -42,10 +42,10 @@ M1 的可执行模块契约和验收标准见 `docs/08_leleby CSM-to-SSIR Implem
 
 ### 1.2 核心目标（Phase 1）
 开发一个 **SSIR Round-trip Digitalization Engine**，能够：
-- 将传统规范文档（PDF/扫描 PDF/DOCX）转换为符合 SSIR v0.4 的结构化 JSON（`Std₀ → SSIR₁`）
-- 从 SSIR 按规范化规则生成符合 GB/T 1.1-2020 起草规则的标准文档（`SSIR₁ → Std₁`，即 **Normative Rendering**）
-- 从 Std₁ 重新提取生成 SSIR₂（`Std₁ → SSIR₂`）
-- 验证 SSIR₁ 与 SSIR₂ 的语义等价性（`SSIR₁ ≈ SSIR₂`，即 **Round-trip Equivalence**），执行四层比较 + 12 项 Critical Information Loss Check
+- 将传统规范文档（PDF/扫描 PDF/DOCX）转换为符合 SSIR v0.4 的结构化 JSON（`源文档 → SSIR`）
+- 从 SSIR 按规范化规则生成符合 GB/T 1.1-2020 起草规则的标准文档（`SSIR → 渲染文档`，即 **Normative Rendering**）
+- 从渲染文档重新提取生成 Verify（`渲染文档 → Verify`）
+- 验证 SSIR 与 Verify 的语义等价性（`SSIR ≈ Verify`，即 **Round-trip Equivalence**），执行四层比较 + 12 项 Critical Information Loss Check
 - 通过 REST API 提供所有功能的访问接口
 - 通过 Round-trip 测试验证信息完整性
 
@@ -76,28 +76,28 @@ M1 的可执行模块契约和验收标准见 `docs/08_leleby CSM-to-SSIR Implem
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                         Core Pipeline (L0 → L3)                            │
 │                                                                             │
-│  Std₀                                                                      │
+│  源文档                                                                      │ 
 │    │                                                                       │
 │    ▼                                                                       │
 │  Ingestion → Extraction → Extraction IR → CanonicalText → Structure       │
-│  → Content → Provenance → Validation → SSIR₁                              │
+│  → Content → Provenance → Validation → SSIR                              │ 
 │                                                                             │
-│  SSIR₁                                                                     │
+│  SSIR                                                                     │ 
 │    │                                                                       │
 │    ▼                                                                       │
 │  Normative Rendering (GB/T 1.1-2020 Profile)                              │
 │  (ALLOWED_NORMALIZATIONS / FORBIDDEN_CHANGES enforced)                    │
 │    │                                                                       │
 │    ▼                                                                       │
-│  Std₁                                                                      │
+│  渲染文档                                                                      │
 │    │                                                                       │
 │    ▼                                                                       │
-│  Re-Ingestion → Re-Extraction → SSIR₂                                     │
+│  Re-Ingestion → Re-Extraction → Verify                                     │
 │    │                                                                       │
 │    ▼                                                                       │
 │  ┌─────────────────────────────────────────────────────────────────────┐  │
 │  │                    Round-trip Verification                          │  │
-│  │  Four-layer Comparison (SSIR₁ ≈ SSIR₂)                             │  │
+│  │  Four-layer Comparison (SSIR ≈ Verify)                             │  │
 │  │  Critical Loss Check (12项)                                        │  │
 │  │  Rendering Fidelity Test (独立)                                    │  │
 │  └─────────────────────────────────────────────────────────────────────┘  │
@@ -109,24 +109,24 @@ M1 的可执行模块契约和验收标准见 `docs/08_leleby CSM-to-SSIR Implem
 
 ### 1.5 SSIR Semantic Round-trip Property（核心公理）
 
-对于输入标准文档 `Std₀`，第一次转换得到 `SSIR₁`，再依据适用的标准起草规则生成规范化标准文档 `Std₁`（Normative Rendering），然后重新转换得到 `SSIR₂`。
+对于输入标准文档 `源文档`，第一次转换得到 `SSIR`，再依据适用的标准起草规则生成规范化标准文档 `渲染文档`（Normative Rendering），然后重新转换得到 `Verify`。
 
 Engine 应保证：
 
-> **SSIR₁ ≈ SSIR₂**（SSIR Semantic Equivalence — 四层比较）
+> **SSIR ≈ Verify**（SSIR Semantic Equivalence — 四层比较）
 
 其中等价关系允许预先定义的表示规范化、排版变化、文档标识变化和物理版面变化，但不得允许未经授权的结构、规范性内容、数值、关系或引用语义变化（FORBIDDEN_CHANGES）。
 
-因此，Round-trip 的主要验证对象**不是** `Std₀` 与 `Std₁` 的字面一致性，而是 `SSIR₁` 与 `SSIR₂` 的信息和语义等价性。
+因此，Round-trip 的主要验证对象**不是** `源文档` 与 `渲染文档` 的字面一致性，而是 `SSIR` 与 `Verify` 的信息和语义等价性。
 
 **四个验证概念的关系**（来自 Data Model v0.4 §7.8）：
 
 | 概念 | 链路 | 回答的问题 |
 |------|------|-----------|
-| **Source Fidelity** | `Std₀ → SSIR₁` | 有没有正确提取？ |
-| **Rendering Conformance** | `SSIR₁ → Std₁` | 输出是否符合规范且不违反 FORBIDDEN_CHANGES？ |
-| **Round-trip Completeness** | `SSIR₁ → Std₁` | 有没有保存足够的信息重建？ |
-| **Round-trip Equivalence** | `SSIR₁ → Std₁ → SSIR₂` | 重建后信息是否仍然等价？ |
+| **Source Fidelity** | `源文档 → SSIR` | 有没有正确提取？ |
+| **Rendering Conformance** | `SSIR → 渲染文档` | 输出是否符合规范且不违反 FORBIDDEN_CHANGES？ |
+| **Round-trip Completeness** | `SSIR → 渲染文档` | 有没有保存足够的信息重建？ |
+| **Round-trip Equivalence** | `SSIR → 渲染文档 → Verify` | 重建后信息是否仍然等价？ |
 
 **Phase 1 必须同时验证以上四个概念。**
 
@@ -824,13 +824,13 @@ class RoundTripReport(BaseModel):
     timestamp: datetime
     documentId: str
 
-    # 三阶段标识 (Std₀ → SSIR₁ → Std₁ → SSIR₂)
-    ssir1Id: str
-    std1Id: Optional[str] = None
-    ssir2Id: Optional[str] = None
+    # 三阶段标识 (Canonical → SSIR → Render.md → Verify)
+    ssirId: str
+    renderMdId: Optional[str] = None
+    verifyId: Optional[str] = None
     renderingProfile: Optional[str] = None  # 使用的 Rendering Profile
 
-    # 核心等价性结果 (SSIR₁ ≈ SSIR₂)
+    # 核心等价性结果 (SSIR ≈ Verify)
     equivalence: SSIREquivalenceResult
 
     # Rendering Fidelity (独立测试)
@@ -1465,7 +1465,7 @@ class RoundtripVerifier(ABC):
     @abstractmethod
     def verify(
         self,
-        std0: Path,
+        canonical: Path,
         profile: NormativeRenderingProfile,
         options: Optional[dict] = None
     ) -> RoundTripReport:
@@ -1473,12 +1473,12 @@ class RoundtripVerifier(ABC):
         pass
 
     @abstractmethod
-    def compare_ssir(self, ssir1: SSIRDocument, ssir2: SSIRDocument) -> SSIREquivalenceResult:
+    def compare_ssir(self, ssir: SSIRDocument, verify: SSIRDocument) -> SSIREquivalenceResult:
         """四层比较两个 SSIR"""
         pass
 
     @abstractmethod
-    def check_critical_loss(self, ssir1: SSIRDocument, ssir2: SSIRDocument) -> CriticalLossResult:
+    def check_critical_loss(self, ssir: SSIRDocument, verify: SSIRDocument) -> CriticalLossResult:
         """执行 12 项 Critical Loss 检查"""
         pass
 
@@ -1808,50 +1808,50 @@ class ObjectStorage(ABC):
 class SSIRComparator:
     """SSIR 四层等价性比较器 — Data Model v0.4 §7.5/7.6"""
 
-    def compare(self, ssir1: SSIRDocument, ssir2: SSIRDocument) -> SSIREquivalenceResult:
+    def compare(self, ssir: SSIRDocument, verify: SSIRDocument) -> SSIREquivalenceResult:
         result = SSIREquivalenceResult()
 
         # Level 1: Identity Equivalence (STRICT)
-        result.identity = self._compare_identity(ssir1, ssir2)
+        result.identity = self._compare_identity(ssir, verify)
 
         # Level 2: Structural Equivalence (STRICT)
-        result.structure = self._compare_structure(ssir1, ssir2)
+        result.structure = self._compare_structure(ssir, verify)
 
         # Level 3: Content Equivalence (NORMALIZED)
-        result.content = self._compare_content(ssir1, ssir2)
+        result.content = self._compare_content(ssir, verify)
 
         # Level 4: Semantic Equivalence (STRICT) — 如可用
-        result.semantics = self._compare_semantics(ssir1, ssir2)
+        result.semantics = self._compare_semantics(ssir, verify)
 
         # Critical Information Loss Check
         critical_checker = CriticalLossChecker()
-        result.criticalLosses = critical_checker.check(ssir1, ssir2)
+        result.criticalLosses = critical_checker.check(ssir, verify)
         result.hasCriticalLoss = len(result.criticalLosses) > 0
 
         # Track expected normalizations
-        result.expectedNormalizations = self._detect_expected_normalizations(ssir1, ssir2)
+        result.expectedNormalizations = self._detect_expected_normalizations(ssir, verify)
 
         # Overall status
         result.overallStatus = self._determine_overall_status(result)
 
         return result
 
-    def _compare_identity(self, ssir1: SSIRDocument, ssir2: SSIRDocument) -> EquivalenceDimension:
+    def _compare_identity(self, ssir: SSIRDocument, verify: SSIRDocument) -> EquivalenceDimension:
         """比较 Identity 字段 — STRICT 级别"""
         # 比较 standardNumber, title, dates, issuer, etc.
         pass
 
-    def _compare_structure(self, ssir1: SSIRDocument, ssir2: SSIRDocument) -> EquivalenceDimension:
+    def _compare_structure(self, ssir: SSIRDocument, verify: SSIRDocument) -> EquivalenceDimension:
         """比较结构树 — STRICT 级别"""
         # 递归比较节点、层级、编号 (Data Model v0.4 §7.6)
         pass
 
-    def _compare_content(self, ssir1: SSIRDocument, ssir2: SSIRDocument) -> EquivalenceDimension:
+    def _compare_content(self, ssir: SSIRDocument, verify: SSIRDocument) -> EquivalenceDimension:
         """比较内容 — NORMALIZED 级别 (Data Model v0.4 §7.6)"""
         # 应用 ALLOWED_NORMALIZATIONS 后比较
         pass
 
-    def _compare_semantics(self, ssir1: SSIRDocument, ssir2: SSIRDocument) -> Optional[EquivalenceDimension]:
+    def _compare_semantics(self, ssir: SSIRDocument, verify: SSIRDocument) -> Optional[EquivalenceDimension]:
         """比较语义 — STRICT 级别 (Data Model v0.4 §7.6)"""
         # Requirement, Scope, Definition, etc.
         pass
@@ -1863,22 +1863,22 @@ class SSIRComparator:
 class CriticalLossChecker:
     """关键信息丢失检查器 — Data Model v0.4 §7.3 语义保护边界"""
 
-    def check(self, ssir1: SSIRDocument, ssir2: SSIRDocument) -> List[CriticalLossItem]:
+    def check(self, ssir: SSIRDocument, verify: SSIRDocument) -> List[CriticalLossItem]:
         losses = []
 
         # 检查 12 项 Critical Information
-        losses.extend(self._check_normative_wording(ssir1, ssir2))
-        losses.extend(self._check_prohibitions(ssir1, ssir2))
-        losses.extend(self._check_numerical_values(ssir1, ssir2))
-        losses.extend(self._check_units(ssir1, ssir2))
-        losses.extend(self._check_comparison_operators(ssir1, ssir2))
-        losses.extend(self._check_clause_identifiers(ssir1, ssir2))
-        losses.extend(self._check_table_cell_content(ssir1, ssir2))
-        losses.extend(self._check_formula_raw(ssir1, ssir2))
-        losses.extend(self._check_reference_raw(ssir1, ssir2))
-        losses.extend(self._check_scope(ssir1, ssir2))
-        losses.extend(self._check_applicability(ssir1, ssir2))
-        losses.extend(self._check_mandatory_conditions(ssir1, ssir2))
+        losses.extend(self._check_normative_wording(ssir, verify))
+        losses.extend(self._check_prohibitions(ssir, verify))
+        losses.extend(self._check_numerical_values(ssir, verify))
+        losses.extend(self._check_units(ssir, verify))
+        losses.extend(self._check_comparison_operators(ssir, verify))
+        losses.extend(self._check_clause_identifiers(ssir, verify))
+        losses.extend(self._check_table_cell_content(ssir, verify))
+        losses.extend(self._check_formula_raw(ssir, verify))
+        losses.extend(self._check_reference_raw(ssir, verify))
+        losses.extend(self._check_scope(ssir, verify))
+        losses.extend(self._check_applicability(ssir, verify))
+        losses.extend(self._check_mandatory_conditions(ssir, verify))
 
         return losses
 ```
@@ -1891,38 +1891,38 @@ class RoundTripVerifier:
 
     def verify(
         self,
-        std0: Path,
+        canonical: Path,
         renderer: RenderingService,
         extractor: ExtractionAdapter,
         profile: NormativeRenderingProfile = NormativeRenderingProfile.GB_T_1_1_2020
     ) -> RoundTripReport:
-        # Step 1: Std₀ → SSIR₁ (Source Fidelity)
-        ssir1 = extractor.extract(std0)
+        # Step 1: Canonical → SSIR (Source Fidelity)
+        ssir = extractor.extract(canonical)
 
-        # Step 2: SSIR₁ → Std₁ (Normative Rendering)
-        std1 = renderer.render(ssir1, profile=profile)
+        # Step 2: SSIR → Render.md (Normative Rendering)
+        render_md = renderer.render(ssir, profile=profile)
 
-        # Step 3: Std₁ → SSIR₂ (Re-extraction)
-        ssir2 = extractor.extract(std1)
+        # Step 3: Render.md → Verify (Re-extraction)
+        verify = extractor.extract(render_md)
 
-        # Step 4: Compare SSIR₁ ≈ SSIR₂ (SSIR Equivalence — 四层比较)
+        # Step 4: Compare SSIR ≈ Verify (SSIR Equivalence — 四层比较)
         comparator = SSIRComparator()
-        equivalence = comparator.compare(ssir1, ssir2)
+        equivalence = comparator.compare(ssir, verify)
 
         # Step 5: Rendering Fidelity Test (独立)
-        fidelity = self._test_rendering_fidelity(ssir1, renderer, extractor)
+        fidelity = self._test_rendering_fidelity(ssir, renderer, extractor)
 
         # Step 6: Generate Report
         return RoundTripReport(
-            documentId=ssir1.id,
-            ssir1Id=ssir1.id,
-            std1Id=std1.id if hasattr(std1, 'id') else None,
-            ssir2Id=ssir2.id,
+            documentId=ssir.id,
+            ssirId=ssir.id,
+            renderMdId=render_md.id if hasattr(render_md, 'id') else None,
+            verifyId=verify.id,
             renderingProfile=profile.value,
             equivalence=equivalence,
             renderingFidelity=fidelity,
             overallStatus=equivalence.overallStatus,
-            extractionRunId=ssir1.processingRuns[0].id if ssir1.processingRuns else None
+            extractionRunId=ssir.processingRuns[0].id if ssir.processingRuns else None
         )
 ```
 
@@ -2073,7 +2073,7 @@ AI Coding Agent **必须严格遵守**以下规则：
 - `textContent`、`rawText`、`rawTarget` 必须保存原文
 - **绝不允许**改写、摘要、润色原始内容
 - **SSIR 是源文档事实和语义的保存层**
-- `Std₁` 是基于 SSIR 生成的规范化表示，允许依据适用的标准起草规则进行：
+- `渲染文档` 是基于 SSIR 生成的规范化表示，允许依据适用的标准起草规则进行：
   - 格式规范化
   - 标点规范化
   - 编号规范化
@@ -2117,7 +2117,7 @@ AI Coding Agent **必须严格遵守**以下规则：
 
 ### Rule 7: Round-trip 验证独立性（Data Model v0.4 §7.8）
 
-- `RoundTripVerifier` 验证 `SSIR₁ ≈ SSIR₂`（Round-trip Equivalence — 四层比较）
+- `RoundTripVerifier` 验证 `SSIR ≈ Verify`（Round-trip Equivalence — 四层比较）
 - `RenderingFidelityTest` 独立验证 `SSIR → DOCX/PDF → SSIR'`（Rendering Fidelity）
 - `CriticalLossChecker` 独立验证 Data Model v0.4 §7.3 语义保护边界（12 项）
 - 三者不可混淆
@@ -2193,8 +2193,8 @@ AI Coding Agent 现在可以开始编码。**第一个任务**：生成以下文
 | 版本 | 日期 | 变更说明 |
 |------|------|----------|
 | 0.1 | 2026-08-15 | 初始版本 |
-| 0.2 | 2026-08-15 | 重新定义 Round-trip 为 `Std₀ → SSIR₁ → Std₁ → SSIR₂`，验证 `SSIR₁ ≈ SSIR₂`；新增 SSIR Equivalence Model；新增 RoundTripReport；新增四层比较；新增 Critical Information Loss；修改 Rule 1/2；取消单一 matchRate；Pydantic v2 API 规范化 |
+| 0.2 | 2026-08-15 | 重新定义 Round-trip 为 `源文档 → SSIR → 渲染文档 → Verify`，验证 `SSIR ≈ Verify`；新增 SSIR Equivalence Model；新增 RoundTripReport；新增四层比较；新增 Critical Information Loss；修改 Rule 1/2；取消单一 matchRate；Pydantic v2 API 规范化 |
 | 0.3 | 2026-08-15 | 与 Data Model v0.4 和 JSON Schema v0.3 对齐；`ssirVersion` 支持 `"0.4"`；新增 `NormativeRenderingProfile` 枚举；`QualityAssessment` 增加 `renderingProfile`；新增 `transformation.py`；更新 Task 8；更新 Rule 7/8；更新 Acceptance Criteria |
 | 0.4 | 2026-08-15 | 恢复 v0.1 的详细 Task 实现指令；恢复 API Contract 完整 OpenAPI 定义；恢复目录结构文件用途注释；恢复枚举完整 Python 代码实现；恢复验收标准具体数值和 Dataset 分类 |
 | 0.5 | 2026-08-16 | 新增 §5 内部接口契约；增强 Task 9（Storage & API）增加完整 API 实现指令；新增 Task 10（API Integration Testing）；更新目录结构增加 API 模型文件；更新 §1.4 管线图增加 API 层；更新 Acceptance Criteria 增加 API Conformance Gate（G9）；更新前置文档列表 |
-| 0.6 | 2026-08-17 | 更新 M1 边界为 CSM Markdown Round-trip：原始 Markdown 先经基础纠错冻结为 `Std0`，再执行 `Std0 → SSIR1 → Std1 → SSIR2`、四层比较和关键损失检查；DOCX/PDF 渲染与视觉保真仍属于 M2 |
+| 0.6 | 2026-08-17 | 更新 M1 边界为 CSM Markdown Round-trip：原始 Markdown 先经基础纠错冻结为 `Canonical`，再执行 `Canonical → SSIR → Render.md → Verify`、四层比较和关键损失检查；DOCX/PDF 渲染与视觉保真仍属于 M2 |

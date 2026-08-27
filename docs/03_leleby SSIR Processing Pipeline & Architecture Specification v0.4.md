@@ -21,7 +21,7 @@
 
 **Phase 1 的核心链路**：
 
-> **当前 M1 实现链路覆盖范围**：`用户原始 Markdown → CSM Validator/Normalizer → CSM Markdown Std0 → Markdown AST → Extraction IR → SSIR1 → CSM Renderer → CSM Markdown Std1 → CSMParser → SSIR2 → Four-layer Comparator → Round-trip Report`；`Std0` 是完成基础纠错后的回环起点，原始输入的修复项进入转换报告。Turtle 是从 SSIR JSON 派生的可选导出。下文的 PDF/MinerU/OCR/DOCX 链路是 M2 的预留架构，不得在 M1 启动时强制安装或调用。
+> **当前 M1 实现链路覆盖范围**：`用户原始 Markdown → CSM Validator/Normalizer → Canonical CSM Markdown → Markdown AST → Extraction IR → SSIR → CSM Renderer → Render.md CSM Markdown → CSMParser → Verify → Four-layer Comparator → Round-trip Report`；`Canonical` 是完成基础纠错后的回环起点，原始输入的修复项进入转换报告。Turtle 是从 SSIR JSON 派生的可选导出。下文的 PDF/MinerU/OCR/DOCX 链路是 M2 的预留架构，不得在 M1 启动时强制安装或调用。
 >
 > M1 必须保存 Markdown 源文件和行/列/AST 溯源；无 PDF 输入时，`pdfPageIndex`、`bbox` 等字段保持缺省，不得用虚拟值填充。
 
@@ -87,7 +87,7 @@ Source Document → Ingestion → Extraction → Extraction IR → SSIR Builder 
 | Pipeline | 模块 | Preservation Level | Round-trip 必要条件 |
 |----------|------|-------------------|-------------------|
 | **Core Pipeline** | Ingestion → Extraction → CanonicalText → Structure → Content → Provenance → Validation | L0-L3 | **是** |
-| **Normative Rendering Pipeline** | SSIR → Rendering IR → DOCX/PDF (with Profile) | L3 → Std₁ | **是** |
+| **Normative Rendering Pipeline** | SSIR → Rendering IR → DOCX/PDF (with Profile) | L3 → 渲染文档 | **是** |
 | **Enrichment Pipeline** | Reference → Entity → Relation | L4 | **否**（Phase 1 可选） |
 
 **架构原则**：L0-L3 不依赖任何 L4 能力。L4 是可选的增强层，不能阻塞 Round-trip。
@@ -97,19 +97,19 @@ Source Document → Ingestion → Extraction → Extraction IR → SSIR Builder 
 SSIR Round-trip Digitalization Engine 的验证目标为：
 
 ```
-Std₀ → SSIR₁ → Std₁ → SSIR₂
+源文档 → SSIR → 渲染文档 → Verify
 
-验证目标：SSIR₁ ≈ SSIR₂（SSIR Semantic Equivalence — 四层比较）
-而非：Std₀ ≈ Std₁（文档外观等价）
+验证目标：SSIR ≈ Verify（SSIR Semantic Equivalence — 四层比较）
+而非：源文档 ≈ 渲染文档（文档外观等价）
 ```
 
 其中：
-- `Std₀`：原始源文档
-- `SSIR₁`：从 Std₀ 提取的信息基准状态
-- `Std₁`：从 SSIR₁ 渲染生成的规范化文档（**Normative Rendering**，依据 GB/T 1.1-2020 等 Rendering Profile）
-- `SSIR₂`：从 Std₁ 再次提取的恢复状态
+- `源文档`：原始输入文档
+- `SSIR`：从 源文档 提取的信息基准状态
+- `渲染文档`：从 SSIR 渲染生成的规范化文档（**Normative Rendering**，依据 GB/T 1.1-2020 等 Rendering Profile）
+- `Verify`：从 渲染文档 再次提取的恢复状态
 
-**关键原则**：传统文档是可变的表现层（Document Representation），SSIR 才是需要保持稳定的信息层（Information Representation）。因此 `Std₀` 与 `Std₁` 的差异不必然表示 Round-trip 失败。
+**关键原则**：传统文档是可变的表现层（Document Representation），SSIR 才是需要保持稳定的信息层（Information Representation）。因此 `源文档` 与 `渲染文档` 的差异不必然表示 Round-trip 失败。
 
 
 ## 3. Preservation Levels & Contract
@@ -264,7 +264,7 @@ Std₀ → SSIR₁ → Std₁ → SSIR₂
 │  └──────────────────┘        ▼                                           │
 │                        ┌──────────────┐                                   │
 │                        │  DOCX / PDF  │                                   │
-│                        │   (Std₁)     │                                   │
+│                        │   (渲染文档)     │                                   │
 │                        └──────┬───────┘                                   │
 │                               ▼                                           │
 │                        ┌──────────────┐                                   │
@@ -272,14 +272,14 @@ Std₀ → SSIR₁ → Std₁ → SSIR₂
 │                        └──────┬───────┘                                   │
 │                               ▼                                           │
 │                        ┌──────────────┐                                   │
-│                        │   SSIR₂      │                                   │
+│                        │   Verify      │                                   │
 │                        └──────┬───────┘                                   │
 │                               ▼                                           │
 │                        ┌──────────────────────────────────────────────┐  │
 │                        │         Round-trip Verification              │  │
 │                        │                                              │  │
 │                        │  ┌────────────────────────────────────────┐ │  │
-│                        │  │  Four-layer SSIR₁ ≈ SSIR₂ Compare     │ │  │
+│                        │  │  Four-layer SSIR ≈ Verify Compare     │ │  │
 │                        │  │                                        │ │  │
 │                        │  │ Level 1: Identity (STRICT)            │ │  │
 │                        │  │ Level 2: Structural (STRICT)          │ │  │
@@ -655,7 +655,7 @@ Object Storage:
 
 ### 5.7 P7: Normative Rendering Service
 
-**职责**：从 SSIR 生成规范性传统格式文档（`SSIR₁ → Std₁`），遵循 ALLOWED_NORMALIZATIONS 规则，禁止 FORBIDDEN_CHANGES。
+**职责**：从 SSIR 生成规范性传统格式文档（`SSIR → 渲染文档`），遵循 ALLOWED_NORMALIZATIONS 规则，禁止 FORBIDDEN_CHANGES。
 
 **输入**：
 - `SSIRDocument`（L3）
@@ -663,7 +663,7 @@ Object Storage:
 
 **输出**：
 - `RenderingIR`
-- DOCX/HTML/PDF（`Std₁`）
+- DOCX/HTML/PDF（`渲染文档`）
 - `QualityAssessment.renderingProfile` 填充
 
 **Normative Rendering Pipeline**：
@@ -707,7 +707,7 @@ Rendering IR
 DOCX Renderer / PDF Converter
       │
       ▼
-Rendered Document (Std₁)
+Rendered Document (渲染文档)
 ```
 
 **RenderingProfile 结构**（对齐 JSON Schema v0.3 NormativeRenderingProfile）：
@@ -747,11 +747,11 @@ Rendered Document (Std₁)
 
 ### 5.8 P8: Round-trip Verification Service
 
-**职责**：验证 SSIR 的往返完整性。验证目标为 `SSIR₁ ≈ SSIR₂`（四层比较 + Critical Loss Check）。
+**职责**：验证 SSIR 的往返完整性。验证目标为 `SSIR ≈ Verify`（四层比较 + Critical Loss Check）。
 
 **输入**：
-- `SSIRDocument`（L3）- 作为 `SSIR₁`
-- `SourceFile` - 作为 `Std₀`
+- `SSIRDocument`（L3）- 作为 `SSIR`
+- `SourceFile` - 作为 `源文档`
 - `NormativeRenderingProfile` - 渲染使用的 Profile
 
 **输出**：
@@ -761,14 +761,14 @@ Rendered Document (Std₁)
 
 ```
                     ┌───────────────┐
-                    │     Std₀      │
+                    │     源文档      │ 
                     └───────┬───────┘
                             │
                      Extraction
                             │
                             ▼
                     ┌───────────────┐
-                    │    SSIR₁      │  ← Round-trip Reference State
+                    │    SSIR      │  ← Round-trip Reference State 
                     └───────┬───────┘
                             │
                   ┌─────────┴─────────┐
@@ -777,7 +777,7 @@ Rendered Document (Std₁)
          ┌─────────────────┐ ┌─────────────────┐
          │ Rendering       │ │ Critical Loss   │
          │ Fidelity Test   │ │ Check (12项)    │
-         │ (独立)          │ │ (SSIR₁ 基准)    │
+         │ (独立)          │ │ (SSIR 基准)    │ 
          └─────────────────┘ └─────────────────┘
                   │                   │
                   └─────────┬─────────┘
@@ -787,20 +787,20 @@ Rendered Document (Std₁)
                             │
                             ▼
                     ┌───────────────┐
-                    │     Std₁      │  ← 规范化输出
+                    │     渲染文档      │  ← 规范化输出
                     └───────┬───────┘
                             │
                      Re-Extraction
                             │
                             ▼
                     ┌───────────────┐
-                    │    SSIR₂      │  ← 恢复状态
+                    │    Verify      │  ← 恢复状态
                     └───────┬───────┘
                             │
                             ▼
                   ┌─────────────────────────────┐
                   │    Four-layer Comparison    │
-                  │    SSIR₁ ≈ SSIR₂            │
+                  │    SSIR ≈ Verify            │
                   │                             │
                   │ Level 1: Identity (STRICT)  │
                   │ Level 2: Structural (STRICT)│
@@ -812,7 +812,7 @@ Rendered Document (Std₁)
                   ┌─────────────────────────────┐
                   │    Critical Information     │
                   │    Loss Check (12项)        │
-                  │    SSIR₁ vs SSIR₂           │
+                  │    SSIR vs Verify           │
                   └─────────────────────────────┘
                             │
                             ▼
@@ -858,8 +858,8 @@ Rendered Document (Std₁)
 **职责**：执行 Data Model v0.4 §7.3 定义的 12 项 Critical Information Loss 检查。
 
 **输入**：
-- `SSIR₁`（基准状态）
-- `SSIR₂`（恢复状态）
+- `SSIR`（基准状态）
+- `Verify`（恢复状态）
 
 **输出**：
 - `CriticalLossResult`（包含所有检查项状态和违规列表）
@@ -921,7 +921,7 @@ Rendered Document (Std₁)
 **测试链路**：
 
 ```
-SSIR₁
+SSIR
   │
   ▼
 Normative Rendering
@@ -936,7 +936,7 @@ Re-Extraction
 SSIR'
   │
   ▼
-Compare SSIR₁ ≈ SSIR'
+Compare SSIR ≈ SSIR'
 ```
 
 **关键原则**：
@@ -1244,7 +1244,7 @@ Phase 1 必须通过的验收标准：
 1. 实现 Source Coverage 报告
 2. 实现 SSIR Comparator（四层比较）
 3. 实现 CriticalLossChecker（12 项检查）
-4. 实现 Round-trip Pipeline（`Std₀ → SSIR₁ → Std₁ → SSIR₂`）
+4. 实现 Round-trip Pipeline（`源文档 → SSIR → 渲染文档 → Verify`）
 5. 实现 Rendering Fidelity Test（独立）
 6. 实现 RoundTripReport 生成
 7. 实现 Golden Test 套件（含 Normative Rendering 测试）
@@ -1264,9 +1264,9 @@ Phase 1 必须通过的验收标准：
 |------|------|----------|
 | 0.1 | 2026-08-15 | 初始版本 |
 | 0.2 | 2026-08-15 | 新增 Preservation Levels & Contract；Reference/Entity/Relation 从 SSIR Builder 拆分；增强 SourceAnchor/ProcessingRun/QualityAssessment；版本化 Repository |
-| 0.3 | 2026-08-15 | 调整 Round-trip 核心定义为 `SSIR₁ ≈ SSIR₂`；重构 Round-trip Verification Service 为三层比较；删除 matchRate 单一指标；新增 Critical Information Loss Check；验收指标与 v0.2 测试规范 Gate 体系对齐 |
+| 0.3 | 2026-08-15 | 调整 Round-trip 核心定义为 `SSIR ≈ Verify`；重构 Round-trip Verification Service 为三层比较；删除 matchRate 单一指标；新增 Critical Information Loss Check；验收指标与 v0.2 测试规范 Gate 体系对齐 |
 | 0.4 | 2026-08-15 | 与 Data Model v0.4 和 JSON Schema v0.3 对齐；Round-trip 比较升级为四层（Identity/Structural/Content/Semantic）；新增 CriticalLossChecker 子模块（12 项检查）；Rendering Service 升级为 Normative Rendering Service；明确 ALLOWED_NORMALIZATIONS / FORBIDDEN_CHANGES 边界；QualityAssessment 增加 renderingProfile 字段；更新数据流图；更新 Acceptance Criteria（增加 Critical Gate 和 Normative Rendering Gate） |
-| 0.5 | 2026-08-17 | 明确 M1 将原始 Markdown 基础纠错为 CSM `Std0` 后完成 `Std0 → SSIR1 → Std1 → SSIR2` 回环；CSM Renderer、重提取、四层比较与报告属于 M1，PDF/MinerU/OCR/DOCX 保持 M2 预留 |
+| 0.5 | 2026-08-17 | 明确 M1 将原始 Markdown 基础纠错为 `Canonical` 后完成 `Canonical → SSIR → Render.md → Verify` 回环；CSM Renderer、重提取、四层比较与报告属于 M1，PDF/MinerU/OCR/DOCX 保持 M2 预留 |
 
 
 ## 11. Next Steps

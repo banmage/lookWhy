@@ -22,8 +22,8 @@ class EquivalenceDifference:
 class RoundTripReport:
     input_file: str
     render_md_file: str
-    ssir1_id: str
-    ssir2_id: str
+    ssir_id: str
+    verify_id: str
     passed: bool
     layer_status: dict[str, str]
     critical_information_loss: list[str] = field(default_factory=list)
@@ -33,8 +33,8 @@ class RoundTripReport:
         return {
             "inputFile": self.input_file,
             "renderMdFile": self.render_md_file,
-            "ssir1Id": self.ssir1_id,
-            "ssir2Id": self.ssir2_id,
+            "ssirId": self.ssir_id,
+            "verifyId": self.verify_id,
             "passed": self.passed,
             "overallStatus": "pass" if self.passed else "fail",
             "layerStatus": self.layer_status,
@@ -51,10 +51,10 @@ class RoundTripReport:
         )
 
 
-def compare_ssir(ssir1: dict[str, Any], ssir2: dict[str, Any], input_file: str = "", render_md_file: str = "") -> RoundTripReport:
+def compare_ssir(ssir: dict[str, Any], verify: dict[str, Any], input_file: str = "", render_md_file: str = "") -> RoundTripReport:
     """Compare semantic views, explicitly excluding derived IDs, anchors, runs and quality data."""
-    first = _semantic_views(ssir1)
-    second = _semantic_views(ssir2)
+    first = _semantic_views(ssir)
+    second = _semantic_views(verify)
     differences: list[EquivalenceDifference] = []
     layer_status: dict[str, str] = {}
     for layer in ("identity", "structure", "content", "semantic"):
@@ -77,8 +77,8 @@ def compare_ssir(ssir1: dict[str, Any], ssir2: dict[str, Any], input_file: str =
     return RoundTripReport(
         input_file=input_file,
         render_md_file=render_md_file,
-        ssir1_id=ssir1["id"],
-        ssir2_id=ssir2["id"],
+        ssir_id=ssir["id"],
+        verify_id=verify["id"],
         passed=not differences,
         layer_status=layer_status,
         critical_information_loss=critical,

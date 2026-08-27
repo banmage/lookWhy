@@ -71,23 +71,23 @@ class CSMToSSIRTests(unittest.TestCase):
             for path in paths:
                 with self.subTest(path=path.name):
                     render_md = Path(directory) / f"{path.stem}.render.md"
-                    ssir1, ssir2, report = round_trip_csm(path, render_md)
+                    ssir, verify, report = round_trip_csm(path, render_md)
                     self.assertTrue(render_md.exists())
                     self.assertTrue(report.passed, report.to_dict())
-                    self.assertEqual(ssir1["metadata"]["common"], ssir2["metadata"]["common"])
+                    self.assertEqual(ssir["metadata"]["common"], verify["metadata"]["common"])
 
     def test_comparator_reports_critical_normative_and_table_changes(self) -> None:
-        ssir1 = parse_csm(ROOT / "corpus/golden/csm/Q_HKT_16016-2026.canonical.md")
-        ssir2 = deepcopy(ssir1)
-        ssir2["tables"][0]["rows"][1]["cells"][0]["text"] = "999"
+        ssir = parse_csm(ROOT / "corpus/golden/csm/Q_HKT_16016-2026.canonical.md")
+        verify = deepcopy(ssir)
+        verify["tables"][0]["rows"][1]["cells"][0]["text"] = "999"
         content = next(
             element
-            for node in self._nodes(ssir2["structuralRoot"])
+            for node in self._nodes(verify["structuralRoot"])
             for element in node.get("contentElements", [])
             if element.get("textContent") and "应符合" in element["textContent"]
         )
         content["textContent"] = content["textContent"].replace("应符合", "宜符合", 1)
-        report = compare_ssir(ssir1, ssir2)
+        report = compare_ssir(ssir, verify)
         self.assertFalse(report.passed)
         self.assertIn("C1-normativeWording", report.critical_information_loss)
         self.assertIn("C8-tableCellContent", report.critical_information_loss)
@@ -106,9 +106,9 @@ class CSMToSSIRTests(unittest.TestCase):
     def test_round_trip_preserves_annex_kind_and_identifier(self) -> None:
         path = ROOT / "corpus/golden/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md"
         with tempfile.TemporaryDirectory() as directory:
-            ssir1, ssir2, report = round_trip_csm(path, Path(directory) / "render.md")
-        annex1 = next(node for node in self._nodes(ssir1["structuralRoot"]) if node["nodeType"] == "annex")
-        annex2 = next(node for node in self._nodes(ssir2["structuralRoot"]) if node["nodeType"] == "annex")
+            ssir, verify, report = round_trip_csm(path, Path(directory) / "render.md")
+        annex1 = next(node for node in self._nodes(ssir["structuralRoot"]) if node["nodeType"] == "annex")
+        annex2 = next(node for node in self._nodes(verify["structuralRoot"]) if node["nodeType"] == "annex")
         self.assertTrue(report.passed, report.to_dict())
         self.assertEqual((annex1["number"], annex1["title"]), (annex2["number"], annex2["title"]))
 
@@ -118,10 +118,10 @@ class CSMToSSIRTests(unittest.TestCase):
             b'document-type: standard\r\n'
             b'document-identifier: "Q/TEST 003\xe2\x80\x942026"\r\n'
             b'standard-number: "Q/TEST 003\xe2\x80\x942026"\r\n'
-            b'title: "Std0 \xe5\x9f\xba\xe7\xba\xbf"\r\n'
+            b'title: "Canonical \xe5\x9f\xba\xe7\xba\xbf"\r\n'
             b'language: zh-CN\r\n'
             b'---\r\n\r\n'
-            b'# Std0 \xe5\x9f\xba\xe7\xba\xbf\r\n\r\n'
+            b'# Canonical \xe5\x9f\xba\xe7\xba\xbf\r\n\r\n'
             b'## \xe5\x89\x8d\xe8\xa8\x80\r\n\r\n'
             b'\xe6\x9c\xac\xe6\x96\x87\xe4\xbb\xb6\xe6\x8c\x89\xe7\x85\xa7 GB/T 1.1\xe2\x80\x942020 \xe8\xb5\xb7\xe8\x8d\x89\xe3\x80\x82\r\n\r\n'
             b'## 1 \xe8\x8c\x83\xe5\x9b\xb4\r\n\r\n'

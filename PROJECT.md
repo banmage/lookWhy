@@ -86,7 +86,7 @@ lookWhy/
 │   └── ssir.schema.json        # SSIR JSON Schema（元数据键必须在此登记）
 ├── tools/
 │   ├── mineru_full_standard.py # ★ PDF 全流程工具（分块抽取→合并→normalize→parse→roundtrip→render）
-│   ├── verify_markdown_roundtrip.py  # 批量 roundtrip 回归（examples/csm）
+│   ├── verify_markdown_roundtrip.py  # 批量 roundtrip 回归（corpus/golden/csm）
 │   └── extract_schema.py       # schema 工具
 ├── config/
 │   ├── rendering/gb-t-1-1-2020.yaml   # 渲染 profile：字体/字号/边距/emblems 徽标映射

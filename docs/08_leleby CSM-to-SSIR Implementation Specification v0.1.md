@@ -15,13 +15,13 @@
 本迭代（M1）实现下列确定链路：
 
 ```text
-Raw user Markdown -> CSMValidator/CSMNormalizer -> CSM Markdown (Std0)
--> Markdown AST -> Extraction IR -> SSIR Builder -> SSIR Validator -> SSIR1 JSON
--> CSM Renderer -> CSM Markdown (Std1) -> CSMParser -> SSIR2 JSON
+Raw user Markdown -> CSMValidator/CSMNormalizer -> CSM Markdown (Canonical)
+-> Markdown AST -> Extraction IR -> SSIR Builder -> SSIR Validator -> SSIR JSON
+-> CSM Renderer -> CSM Markdown (Render.md) -> CSMParser -> Verify JSON
 -> Four-layer Comparator -> Round-trip Report
 ```
 
-M1 的目标是让用户直接提交 Markdown 标准文件；系统先宽容校验并只作无语义损失的基础纠错，产出 `Std0` CSM 基线，再得到可校验、可追溯的 SSIR 文档。权威输出格式为 SSIR JSON；Turtle 是从已通过 JSON Schema 与语义校验的 JSON 派生的可选 RDF 视图。
+M1 的目标是让用户直接提交 Markdown 标准文件；系统先宽容校验并只作无语义损失的基础纠错，产出 `Canonical` CSM 基线，再得到可校验、可追溯的 SSIR 文档。权威输出格式为 SSIR JSON；Turtle 是从已通过 JSON Schema 与语义校验的 JSON 派生的可选 RDF 视图。
 
 M1 明确不实现下列能力：
 
@@ -72,7 +72,7 @@ M1 的目标输入是符合 CSM 1.0 的 UTF-8、LF 换行 `.md` 文件。用户�
 - 完整保留 CSM 中的表格单元格、图题/图占位、公式原文和编号、列表 marker、注/示例/警示、UnknownContent 和出现顺序；
 - 在 `QualityAssessment` 中汇总 CSM 保真警告和产品标准 `quality-notices`；完整、逐项、带修复动作的诊断放在独立转换报告中，避免扩张冻结的 SSIR Schema。
 
-每次成功解析还生成 `<output>.conversion-report.json`（或 CLI `--report` 指定的路径）。它至少包含输入 SHA-256、解析器版本、是否转换成功、整体状态、输出文档 ID，以及每个问题的 `code`、`severity`、行号、消息、`repaired` 与 `repairAction`。`ProcessingRun.outputSummary` 可在后续版本保存其摘要；本 M1 不把未定义字段塞入 `QualityAssessment`。
+每次成功解析还生成 `<output>.parse-report.json`（或 CLI `--report` 指定的路径）。它至少包含输入 SHA-256、解析器版本、是否转换成功、整体状态、输出文档 ID，以及每个问题的 `code`、`severity`、行号、消息、`repaired` 与 `repairAction`。`ProcessingRun.outputSummary` 可在后续版本保存其摘要；本 M1 不把未定义字段塞入 `QualityAssessment`。
 
 M1 的最低目标是 Markdown 可追溯的 Level 3 SSIR；“Level 3”仅表示源锚点完整，不表示具备 PDF 页面或坐标溯源。
 
@@ -87,9 +87,9 @@ M1 的最低目标是 Markdown 可追溯的 Level 3 SSIR；“Level 3”仅表�
 
 ### 2.4 Markdown Round-trip 输出
 
-`Std0` 是原始用户 Markdown 经基础校验、无语义损失纠错和格式冻结后的 CSM 文件；原始输入及其修复项写入转换报告。`ssir csm roundtrip` 仅执行 `Std0(CSM) -> SSIR1 -> Std1(CSM) -> SSIR2`。Std1 是由 SSIR1 生成的确定性 CSM 文件，而不是 DOCX/PDF；它可以直接审阅、再编辑或再次作为 `csm parse` 输入。
+`Canonical` 是原始用户 Markdown 经基础校验、无语义损失纠错和格式冻结后的 CSM 文件；原始输入及其修复项写入转换报告。`ssir csm roundtrip` 仅执行 `Canonical(CSM) -> SSIR -> Render.md(CSM) -> Verify`。Render.md 是由 SSIR 生成的确定性 CSM 文件，而不是 DOCX/PDF；它可以直接审阅、再编辑或再次作为 `csm parse` 输入。
 
-Round-trip 报告包含 SSIR1/SSIR2 文档 ID、四层状态、关键损失清单和差异项。身份层比较文档类型、标识、标题、语言和标准号；结构层比较节点类型、层级、编号和顺序；内容层比较文本、列表、表、图、公式与 UnknownContent；语义层比较范围及已标注的 scope、testMethod、inspectionRule 等语义类型。ID、Markdown 行号/锚点、输入哈希、处理运行和质量评估属于派生信息，不参与等价性判断。
+Round-trip 报告包含 SSIR/Verify 文档 ID、四层状态、关键损失清单和差异项。身份层比较文档类型、标识、标题、语言和标准号；结构层比较节点类型、层级、编号和顺序；内容层比较文本、列表、表、图、公式与 UnknownContent；语义层比较范围及已标注的 scope、testMethod、inspectionRule 等语义类型。ID、Markdown 行号/锚点、输入哈希、处理运行和质量评估属于派生信息，不参与等价性判断。
 
 任何关键损失均失败：规范性动词、禁止性表述、强制条件、数值、单位、比较符、条款编号、表格单元格、公式原文、可识别引用目标或范围/适用性文本发生变化。M1 在 Markdown 可表达边界内执行这些检查；PDF 坐标、版式和 DOCX/PDF 视觉保真仍是 M2 工作。
 
@@ -99,11 +99,11 @@ Round-trip 报告包含 SSIR1/SSIR2 文档 ID、四层状态、关键损失清�
 |------|------|------|----------------|
 | M1-1 CSM 预检 | 原始 Markdown 字节流 | 文件诊断 | UTF-8、front matter、扩展名、文件哈希、大小限制；BOM/LF 问题可在内存修复 |
 | M1-2 语法与结构校验 | 原始 Markdown | CSM AST + 分级诊断 | CommonMark/GFM 解析、H1、编号/层级、指令、表格列数、唯一 ID |
-| M1-3 基础纠错与冻结 | 可恢复 AST | CSM Markdown Std0 + 修复记录 | 仅执行 CSM 允许的无语义损失规范化；不得改动正文、标准编号原文、规范性动词、数值、单位或编号 |
-| M1-4 Extraction IR | Std0 AST | parser-neutral IR | 生成按文档顺序排列的 heading、paragraph、table、figure、formula、list、note、unknown block |
+| M1-3 基础纠错与冻结 | 可恢复 AST | Canonical CSM Markdown + 修复记录 | 仅执行 CSM 允许的无语义损失规范化；不得改动正文、标准编号原文、规范性动词、数值、单位或编号 |
+| M1-4 Extraction IR | Canonical AST | parser-neutral IR | 生成按文档顺序排列的 heading、paragraph、table、figure、formula、list、note、unknown block |
 | M1-5 SSIR 构建 | Extraction IR | SSIR 对象图 | 构建元数据、结构树、内容注册表、CanonicalText、TextSpan、Markdown SourceAnchor |
 | M1-6 验证与导出 | SSIR 对象图 | JSON / 可选 TTL | Schema、引用完整性、语义约束、质量评估、确定性序列化 |
-| M1-7 Markdown 回环 | SSIR1 | CSM Std1、SSIR2、Round-trip Report | 确定性 CSM 渲染、重提取、四层比较和关键损失检查 |
+| M1-7 Markdown 回环 | SSIR | Render.md、Verify、Round-trip Report | 确定性 CSM 渲染、重提取、四层比较和关键损失检查 |
 
 只有不可恢复的结构性错误必须停止并返回错误：非 UTF-8、无法解析的 front matter、未闭合围栏、重复显式 ID、无法安全修复的表格以及生成后的 SSIR 校验失败。可修复格式偏差、GB/T 1.1 的章节/标题问题和 GB/T 20001.10 的产品标准质量问题应继续生成 JSON，并令 `QualityAssessment` 为 `partial`。
 
@@ -158,22 +158,22 @@ tests/
 ### 6.1 CLI（M1 必需）
 
 ```text
-ssir csm validate --input examples/csm/Q_TQDZ_004-2026.csm.md
-ssir csm validate --input examples/csm/Q_TQDZ_004-2026.csm.md --strict
-ssir csm normalize --input incoming/user-standard.md --std0-output out/user-standard.std0.csm.md --report out/user-standard.std0.conversion-report.json
-ssir csm parse --input examples/csm/Q_TQDZ_004-2026.csm.md --output out/Q_TQDZ_004-2026.ssir.json --format json --report out/Q_TQDZ_004-2026.conversion-report.json
-ssir csm parse --input examples/csm/Q_TQDZ_004-2026.csm.md --output out/Q_TQDZ_004-2026.ttl --format ttl
-ssir csm roundtrip --input examples/csm/Q_TQDZ_004-2026.csm.md --std1-output out/Q_TQDZ_004-2026.std1.csm.md --report out/Q_TQDZ_004-2026.roundtrip-report.json
+ssir csm validate --input corpus/golden/csm/Q_TQDZ_004-2026.canonical.md
+ssir csm validate --input corpus/golden/csm/Q_TQDZ_004-2026.canonical.md --strict
+ssir csm normalize --input incoming/user-standard.md --canonical-output out/user-standard.canonical.md --report out/user-standard.normalize-report.json
+ssir csm parse --input corpus/golden/csm/Q_TQDZ_004-2026.canonical.md --output out/Q_TQDZ_004-2026.ssir.json --format json --report out/Q_TQDZ_004-2026.parse-report.json
+ssir csm parse --input corpus/golden/csm/Q_TQDZ_004-2026.canonical.md --output out/Q_TQDZ_004-2026.ttl --format ttl
+ssir csm roundtrip --input corpus/golden/csm/Q_TQDZ_004-2026.canonical.md --render-md-output out/Q_TQDZ_004-2026.render.md --report out/Q_TQDZ_004-2026.roundtrip.json
 ```
 
-`validate`、`normalize` 和 `parse` 默认在可转换时返回 0，有质量警告时仍输出诊断。`normalize` 将原始用户 Markdown 的安全修复写成 `Std0`，并生成对应转换报告；`--strict` 将任何警告提升为失败。`parse` 只有在 JSON 验证通过后才写入 SSIR 和转换报告，避免留下半成品。
+`validate`、`normalize` 和 `parse` 默认在可转换时返回 0，有质量警告时仍输出诊断。`normalize` 将原始用户 Markdown 的安全修复写成 `Canonical`，并生成对应转换报告；`--strict` 将任何警告提升为失败。`parse` 只有在 JSON 验证通过后才写入 SSIR 和转换报告，避免留下半成品。
 
-`roundtrip` 在 Std1 写入后生成 SSIR2 与回环报告；等价时返回 0，语义比较失败时返回 3，结构性输入错误返回 2。Std1 只规范化 Markdown 表现和生成机器 ID，不得改变正文技术语义。
+`roundtrip` 在 Render.md 写入后生成 Verify 与回环报告；等价时返回 0，语义比较失败时返回 3，结构性输入错误返回 2。Render.md 只规范化 Markdown 表现和生成机器 ID，不得改变正文技术语义。
 
-批量验证程序为 `tools/verify_markdown_roundtrip.py`。它针对一个或多个 `Std0` 文件写出各自的 Std1、回环报告和汇总 JSON：
+批量验证程序为 `tools/verify_markdown_roundtrip.py`。它针对一个或多个 `Canonical` 文件写出各自的 Render.md、回环报告和汇总 JSON：
 
 ```text
-PYTHONPATH=src python3 tools/verify_markdown_roundtrip.py --examples-dir examples/csm --output-dir out/roundtrip
+PYTHONPATH=src python3 tools/verify_markdown_roundtrip.py --examples-dir corpus/golden/csm --output-dir out/roundtrip
 ```
 
 ### 6.2 HTTP API（M1 可选）
@@ -194,12 +194,12 @@ M1 初始 Golden 输入集如下：
 
 | 输入 | 必测特征 |
 |------|----------|
-| `examples/csm/Q_PMRZ_9-2024.csm.md` | 前言、术语、图占位、表格、字母列项、产品标准质量提示 |
-| `examples/csm/Q_TQDZ_004-2026.csm.md` | 目次、参数/试验方法对应表、多类列表、检验规则、标签和随行文件、产品标准质量提示 |
-| `examples/csm/Q_YYJD_001-2024.csm.md` | 企业产品标准、参数表、图占位、ASCII 标准号提示和完整的出厂检验链路 |
-| `examples/csm/Q_HKT_16016-2026.csm.md` | 力矩电动机、技术参数表、公式、试验方法、检验规则和包装 |
-| `examples/csm/T_ZZB_1064-2019.csm.md` | 团体产品标准、效率表、抽样检验质量提示和规范性附录 |
-| `examples/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md` | CSM 输入契约、公式、附录和参考文献；仅做结构测试 |
+| `corpus/golden/csm/Q_PMRZ_9-2024.canonical.md` | 前言、术语、图占位、表格、字母列项、产品标准质量提示 |
+| `corpus/golden/csm/Q_TQDZ_004-2026.canonical.md` | 目次、参数/试验方法对应表、多类列表、检验规则、标签和随行文件、产品标准质量提示 |
+| `corpus/golden/csm/Q_YYJD_001-2024.canonical.md` | 企业产品标准、参数表、图占位、ASCII 标准号提示和完整的出厂检验链路 |
+| `corpus/golden/csm/Q_HKT_16016-2026.canonical.md` | 力矩电动机、技术参数表、公式、试验方法、检验规则和包装 |
+| `corpus/golden/csm/T_ZZB_1064-2019.canonical.md` | 团体产品标准、效率表、抽样检验质量提示和规范性附录 |
+| `corpus/golden/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md` | CSM 输入契约、公式、附录和参考文献；仅做结构测试 |
 
 验收门槛：
 
@@ -210,7 +210,7 @@ M1 初始 Golden 输入集如下：
 5. 同一输入连续运行两次，稳定对象 ID、排序和确定性 JSON 输出必须完全一致。
 6. 畸形 front matter、未闭合围栏、重复 SSIR ID、无法安全修复的表格必须有明确的失败测试；章节跳号、短表格行、未知指令和缺失可修复元数据必须有“转换成功并报告”的测试。
 7. `format=ttl` 时，先完成 JSON Schema 验证；TTL 中必须可反查文档 ID 和 JSON SHA-256。
-8. 每份 `examples/csm/*.csm.md` 均必须通过 `Std0 -> SSIR1 -> Std1 -> SSIR2`，四层比较全部通过且关键损失为 0；包含的变异测试必须能检出“应→宜”和表格数值变化。
+8. 每份 `corpus/golden/csm/*.canonical.md` 均必须通过 `Canonical -> SSIR -> Render.md -> Verify`，四层比较全部通过且关键损失为 0；包含的变异测试必须能检出“应→宜”和表格数值变化。
 
 Golden JSON 只能由人工审阅后冻结到 `fixtures/golden/csm/`。系统首次输出只能称为 candidate，不得直接提交为 golden baseline。
 

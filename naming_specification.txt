@@ -135,7 +135,7 @@ lookwhy/
 ├── config/                  # 渲染 profile、徽标、审核 profile
 ├── rules/                   # 合规规则库（GEN/GBT/P10）
 ├── corpus/                  # ★ 金标准测试夹具（回归验证），保留不迁移
-│   ├── golden/              #   <ID>.pdf 源件 + csm/ 手写 *.canonical.md
+│   ├── golden/              #   <ID>.pdf 源件 + csm/ 手写 *.canonical.md + CSM 模板
 │   └── reference-standards/ #   参考标准 Markdown
 ├── docs/                    # 项目文档
 ├── storage/                 # ★ 多租户运行时存储（gitignored，未来发布区）

@@ -64,15 +64,15 @@ def round_trip_csm(
     """
     source = Path(path)
     target = Path(render_md_output)
-    ssir1 = parse_csm(source, strict=strict)
-    write_csm(ssir1, target)
-    ssir2 = parse_csm(target, strict=strict)
+    ssir = parse_csm(source, strict=strict)
+    write_csm(ssir, target)
+    verify = parse_csm(target, strict=strict)
     if verify_output is not None:
         verify_target = Path(verify_output)
         verify_target.parent.mkdir(parents=True, exist_ok=True)
-        verify_target.write_bytes(json_bytes(ssir2))
-    report = compare_ssir(ssir1, ssir2, str(source), str(target))
-    return ssir1, ssir2, report
+        verify_target.write_bytes(json_bytes(verify))
+    report = compare_ssir(ssir, verify, str(source), str(target))
+    return ssir, verify, report
 
 
 def write_output(

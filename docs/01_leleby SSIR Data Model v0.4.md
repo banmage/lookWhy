@@ -3,7 +3,7 @@
 > **文档状态**：正式发布 | **版本**：0.4 | **日期**：2026-08-15
 >
 > **v0.4 主要修订**（基于 v0.3 的 Round-trip 语义增强，不推翻核心对象模型）：
-> - **重新定义 Round-trip 闭环**：明确 `Std₀ → SSIR₁ → Std₁ → SSIR₂` 为 Round-trip 核心链路，验证目标为 `SSIR₁ ≈ SSIR₂`，而非 `Std₀ ≈ Std₁`
+> - **重新定义 Round-trip 闭环**：明确 `源文档 → SSIR → 渲染文档 → Verify` 为 Round-trip 核心链路，验证目标为 `SSIR ≈ Verify`，而非 `源文档 ≈ 渲染文档`
 > - **新增 §3 术语**：`Round-trip Equivalence`、`Normative Rendering`
 > - **§4 设计原则**：将原第 12 条拆分为第 12 条（Completeness）和第 13 条（Equivalence）
 > - **§7 Round-trip Requirements**：完全重写，包含 Source Fidelity、Normative Rendering、Re-extraction、SSIR Equivalence、Rendering Conformance 五个子节
@@ -81,7 +81,7 @@ SSIR 数据模型遵循以下设计原则：
 | 10 | **Serialization Independence（序列化无关）** | SSIR 数据模型与 JSON/XML/RDF 等具体序列化格式解耦 |
 | 11 | **Graph Awareness（图感知）** | SSIR 不是单一树，而是树 + 引用图 + 关系图 + 溯源图的组合 |
 | 12 | **Round-trip Completeness（往返完整性）** | SSIR 必须保存足以重新构造源规范文件全部逻辑结构、内容元素、文本内容、表格数据、图、公式、列表、注、脚注、引用、附录及其顺序关系的信息。反向生成的文档不要求完全复现源文件的版式、字体、分页和视觉细节，但不得丢失原文件中任何具有文档语义或内容意义的元素 |
-| 13 | **Round-trip Equivalence（往返等价性）** | SSIR 经 `SSIR → 传统文档渲染 → 重新提取` 循环后，其结构、内容和语义应保持等价。Round-trip 的判定应以 `SSIR₁ ≈ SSIR₂` 为核心依据，而非以源文档与重建文档的字节级、字符级或版式级一致为依据 |
+| 13 | **Round-trip Equivalence（往返等价性）** | SSIR 经 `SSIR → 传统文档渲染 → 重新提取` 循环后，其结构、内容和语义应保持等价。Round-trip 的判定应以 `SSIR ≈ Verify` 为核心依据，而非以源文档与重建文档的字节级、字符级或版式级一致为依据 |
 
 **原则 12 的补充说明**：
 - Semantic extraction failure shall never cause source content loss（语义识别失败不应导致内容丢失）
@@ -700,25 +700,25 @@ SSIR 必须支持从源文档到 SSIR、再从 SSIR 到传统文档表示的完�
 SSIR Round-trip 由以下转换链构成：
 
 ```
-Std₀ → SSIR₁ → Std₁ → SSIR₂
+源文档 → SSIR → 渲染文档 → Verify
 ```
 
 其中：
-- `Std₀` = 原始源文档（PDF/扫描 PDF/DOCX 等）
-- `SSIR₁` = 从 Std₀ 提取的 SSIR（信息基准状态）
-- `Std₁` = 从 SSIR₁ 渲染生成的规范化传统文档
-- `SSIR₂` = 从 Std₁ 再次提取的 SSIR（恢复状态）
+- `源文档` = 原始输入文档（PDF/扫描 PDF/DOCX 等）
+- `SSIR` = 从 源文档 提取的 SSIR（信息基准状态）
+- `渲染文档` = 从 SSIR 渲染生成的规范化传统文档
+- `Verify` = 从 渲染文档 再次提取的 SSIR（恢复状态）
 
-**Round-trip 正确性的主要判定依据是 `SSIR₁ ≈ SSIR₂`（SSIR 语义等价性），而非 `Std₀ ≈ Std₁`（文档外观等价性）。**
+**Round-trip 正确性的主要判定依据是 `SSIR ≈ Verify`（SSIR 语义等价性），而非 `源文档 ≈ 渲染文档`（文档外观等价性）。**
 
-**理由**：`Std₀` 和 `Std₁` 不要求形式完全相同。`Std₀` 可能存在排版不规范、标题层级格式不规范、标点/编号/空格等可规范化问题。`Std₁` 可能经过 Rendering Profile（如 GB/T 1.1-2020）的规范化处理而产生形式差异。因此 `Std₀ ≠ Std₁` 不必然表示 SSIR 转换失败。
+**理由**：`源文档` 和 `渲染文档` 不要求形式完全相同。`源文档` 可能存在排版不规范、标题层级格式不规范、标点/编号/空格等可规范化问题。`渲染文档` 可能经过 Rendering Profile（如 GB/T 1.1-2020）的规范化处理而产生形式差异。因此 `源文档 ≠ 渲染文档` 不必然表示 SSIR 转换失败。
 
 ### 7.2 Source Fidelity（源保真）
 
-**阶段**：`Std₀ → SSIR₁`
+**阶段**：`源文档 → SSIR`
 
 **要求**：
-- SSIR₁ 必须完整保存 Std₀ 中应被保存的原始信息，包括：
+- SSIR 必须完整保存 源文档 中应被保存的原始信息，包括：
   - 文档身份与元数据
   - 逻辑层次结构（章、条、款、项、附录）
   - 章节编号与标题
@@ -739,7 +739,7 @@ Std₀ → SSIR₁ → Std₁ → SSIR₂
 
 ### 7.3 Normative Rendering（规范化渲染）
 
-**阶段**：`SSIR₁ → Std₁`
+**阶段**：`SSIR → 渲染文档`
 
 **要求**：
 - Rendering Engine 可以依据指定的 Rendering Profile（如 GB/T 1.1-2020）对文档进行规范化、格式化和必要的表达形式调整
@@ -769,19 +769,19 @@ Std₀ → SSIR₁ → Std₁ → SSIR₂
 
 ### 7.4 Re-extraction（重新提取）
 
-**阶段**：`Std₁ → SSIR₂`
+**阶段**：`渲染文档 → Verify`
 
 **要求**：
-- 从 Std₁ 提取 SSIR₂ 应使用与 SSIR₁ 相同的提取流程和 Schema
-- SSIR₂ 的 `sourceFiles` 和 `processingRuns` 会与 SSIR₁ 不同（因为源文件变为 Std₁）
-- SSIR₂ 的 `SourceAnchor`（页码、bbox、blockId）必然与 SSIR₁ 不同
+- 从 渲染文档 提取 Verify 应使用与 SSIR 相同的提取流程和 Schema
+- Verify 的 `sourceFiles` 和 `processingRuns` 会与 SSIR 不同（因为源文件变为 渲染文档）
+- Verify 的 `SourceAnchor`（页码、bbox、blockId）必然与 SSIR 不同
 
 ### 7.5 SSIR Equivalence（SSIR 等价性）
 
-**阶段**：`SSIR₁ ≈ SSIR₂` 比较
+**阶段**：`SSIR ≈ Verify` 比较
 
 **要求**：
-- Round-trip 正确性的核心判定依据是 SSIR₁ 与 SSIR₂ 的等价性
+- Round-trip 正确性的核心判定依据是 SSIR 与 Verify 的等价性
 - 等价性比较应采用 **Canonical Comparison** 方法：
   - 对两个 SSIR 实例进行标准化的规范化处理（去除 ID、时间戳、processingRun 差异）
   - 比较 Identity、Structure、Content、Tables、Figures、Formulas、Lists、References 等维度
@@ -817,7 +817,7 @@ Std₀ → SSIR₁ → Std₁ → SSIR₂
 **独立维度**：与 Round-trip Equivalence 并行
 
 **要求**：
-- `Std₁` 应符合指定的 Rendering Profile（如 GB/T 1.1-2020）
+- `渲染文档` 应符合指定的 Rendering Profile（如 GB/T 1.1-2020）
 - 这是对输出文档质量的独立评估
 - 与 Round-trip Equivalence 是不同的验证维度
 
@@ -825,10 +825,10 @@ Std₀ → SSIR₁ → Std₁ → SSIR₂
 
 | 概念 | 链路 | 回答的问题 |
 |------|------|-----------|
-| **Source Fidelity** | `Std₀ → SSIR₁` | 有没有正确提取？ |
-| **Rendering Conformance** | `SSIR₁ → Std₁` | 输出是否符合规范？ |
-| **Round-trip Completeness** | `SSIR₁ → Std₁` | 有没有保存足够的信息重建？ |
-| **Round-trip Equivalence** | `SSIR₁ → Std₁ → SSIR₂` | 重建后信息是否仍然等价？ |
+| **Source Fidelity** | `源文档 → SSIR` | 有没有正确提取？ |
+| **Rendering Conformance** | `SSIR → 渲染文档` | 输出是否符合规范？ |
+| **Round-trip Completeness** | `SSIR → 渲染文档` | 有没有保存足够的信息重建？ |
+| **Round-trip Equivalence** | `SSIR → 渲染文档 → Verify` | 重建后信息是否仍然等价？ |
 
 
 ## 8. Object Relationship Summary
@@ -1102,5 +1102,5 @@ SSIR 与 leleby Semantic Layer 之间的转换遵循以下映射关系。
 | 0.1 | 2026-08-15 | 初始版本，定义 10 个核心对象 |
 | 0.2 | 2026-08-15 | 结构/内容分离；新增 SourceFile/TextSpan/ProcessingRun/QualityAssessment/DocumentRelationship；Reference/RelationMention 职责分离；元数据通用化；表格模型增强；明确"树+图+溯源"架构 |
 | 0.3 | 2026-08-15 | 新增 Round-trip Completeness 原则；新增 CanonicalText/Figure/Formula/UnknownContent；增强 TableCell（richText）和 ListItem（marker）；新增 Preservation Levels；修正 Mapping Contract 表述；EntityMention 增加 sourceElementId；RelationMention 支持 SSIRObjectRef；SourceAnchor 增加 assetRef |
-| 0.4 | 2026-08-15 | 重新定义 Round-trip 闭环为 `Std₀ → SSIR₁ → Std₁ → SSIR₂`；新增 Round-trip Equivalence 概念；新增 §7 Round-trip Requirements（完全重写）；新增 Equivalence Classification Table；明确 Rendering Normalization 边界；区分 Preservation Level、Completeness、Equivalence 三个正交概念；新增 GB/T 1.1-2020 引用 |
+| 0.4 | 2026-08-15 | 重新定义 Round-trip 闭环为 `源文档 → SSIR → 渲染文档 → Verify`；新增 Round-trip Equivalence 概念；新增 §7 Round-trip Requirements（完全重写）；新增 Equivalence Classification Table；明确 Rendering Normalization 边界；区分 Preservation Level、Completeness、Equivalence 三个正交概念；新增 GB/T 1.1-2020 引用 |
 | 0.4-M1 | 2026-08-17 | 增加 CSM Markdown SourceFile、Markdown SourceAnchor 及 M1 的 Markdown-only 溯源约束 |

@@ -1126,19 +1126,19 @@ class RoundtripVerifier(ABC):
     @abstractmethod
     def verify(
         self,
-        std0: Path,
+        canonical: Path,
         profile: NormativeRenderingProfile
     ) -> RoundTripReport:
         """执行完整的往返测试"""
         pass
 
     @abstractmethod
-    def compare_ssir(self, ssir1: SSIRDocument, ssir2: SSIRDocument) -> SSIREquivalenceResult:
+    def compare_ssir(self, ssir: SSIRDocument, verify: SSIRDocument) -> SSIREquivalenceResult:
         """四层比较两个 SSIR"""
         pass
 
     @abstractmethod
-    def check_critical_loss(self, ssir1: SSIRDocument, ssir2: SSIRDocument) -> CriticalLossResult:
+    def check_critical_loss(self, ssir: SSIRDocument, verify: SSIRDocument) -> CriticalLossResult:
         """执行 12 项 Critical Loss 检查"""
         pass
 

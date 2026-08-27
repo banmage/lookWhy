@@ -6,7 +6,7 @@
 > - **更新 Data Model 引用**：从 v0.3 升级至 v0.4（基于 Round-trip 语义增强）
 > - **新增 `ssirVersion` 枚举值**：增加 `"0.4"` 支持新版 Data Model
 > - **新增 `NormativeRenderingProfile` 枚举**：用于标识渲染时使用的规范性配置文件
-> - **更新 Scope 描述**：明确 Round-trip 验证目标为 `SSIR₁ ≈ SSIR₂`（SSIR 语义等价性），而非 `Std₀ ≈ Std₁`
+> - **更新 Scope 描述**：明确 Round-trip 验证目标为 `SSIR ≈ Verify`（SSIR 语义等价性），而非 `源文档 ≈ 渲染文档`
 > - **更新 Validation Layers 说明**：与 Data Model v0.4 的四个验证概念（Source Fidelity、Rendering Conformance、Round-trip Completeness、Round-trip Equivalence）对齐
 > - **新增 `RenderingProfile` 字段**：在 QualityAssessment 中记录渲染使用的 Profile，支持 Rendering Conformance 验证
 > - **更新示例中的 `ssirVersion`**：从 `"0.3"` 改为 `"0.4"`
@@ -24,7 +24,7 @@
 |------|------|----------|
 | **JSON Schema Validation** | 类型、必填、枚举、基本格式、数组结构、条件存在 | 本 Schema（机器可执行） |
 | **Semantic Validation** | ID 引用存在性、parent 关系、TextSpan 边界、表格行列匹配 | 独立 Semantic Validator |
-| **Round-trip Validation** | `SSIR₁ → 渲染 → 重新提取 → SSIR₂`，验证 `SSIR₁ ≈ SSIR₂` | 独立 Round-trip Validator |
+| **Round-trip Validation** | `SSIR → 渲染 → 重新提取 → Verify`，验证 `SSIR ≈ Verify` | 独立 Round-trip Validator |
 
 本 Schema 仅覆盖第一层（JSON Schema Validation）。第二层和第三层由独立规范定义。
 
@@ -1171,9 +1171,9 @@
 | 验证概念（Data Model v0.4） | 对应层级 | 验证内容 | 实施方式 |
 |----|------|----------|----------|
 | **Source Fidelity** | Layer 1 + 2 | 类型、必填、枚举、ID 引用、parent 关系、边界约束 | 本 Schema + Semantic Validator |
-| **Rendering Conformance** | 独立验证 | `Std₁` 是否符合 Rendering Profile（如 GB/T 1.1-2020） | 独立 Rendering Validator |
+| **Rendering Conformance** | 独立验证 | `渲染文档` 是否符合 Rendering Profile（如 GB/T 1.1-2020） | 独立 Rendering Validator |
 | **Round-trip Completeness** | Layer 2 | SSIR 是否保存了重建所需的信息 | Semantic Validator |
-| **Round-trip Equivalence** | Layer 3 | `SSIR₁ → 渲染 → 重新提取 → SSIR₂`，验证 `SSIR₁ ≈ SSIR₂` | 独立 Round-trip Validator |
+| **Round-trip Equivalence** | Layer 3 | `SSIR → 渲染 → 重新提取 → Verify`，验证 `SSIR ≈ Verify` | 独立 Round-trip Validator |
 
 **Layer 1 无法表达的约束**（须由 Layer 2 保证）：
 - `TextSpan.startChar < TextSpan.endChar`
