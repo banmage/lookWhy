@@ -290,9 +290,16 @@ def _cover_metadata(part_dir: Path, markdown_text: str) -> dict[str, str]:
     later occurrences in the body (e.g. 前言) do not shadow the cover values.
     """
     result: dict[str, str] = {}
-    # Replaced standard ("代替 GB/T ...—....") from the cover text.
-    for line in markdown_text.splitlines():
-        match = re.match(r"^代替\s+(.+)$", line.strip())
+    # Replaced standard ("代替 GB/T ...—....") from the cover text.  OCR/文本层
+    # 可能不带空格（"代替GB/T23132—2008"），所以 \s* 而非 \s+；只扫描封面块
+    # （第一个 heading 之前），避免正文以"代替…"开头的行（如"代替了…"）误命中。
+    cover_lines = markdown_text.splitlines()
+    for idx, line in enumerate(cover_lines):
+        if line.lstrip().startswith("#"):
+            cover_lines = cover_lines[:idx]
+            break
+    for line in cover_lines:
+        match = re.match(r"^代替\s*(.+)$", line.strip())
         if match:
             result.setdefault("replaces", match.group(1).strip())
             break
@@ -328,7 +335,10 @@ def _cover_metadata(part_dir: Path, markdown_text: str) -> dict[str, str]:
         (item for item in entries if item.get("page_idx") in (0, None)),
         key=lambda item: float((item.get("bbox") or [0, 0, 0, 0])[1]),
     ):
-        text = str(item.get("text") or item.get("content") or "").strip()
+        # 文本层 PDF 的机构行常被 MinerU 表示为逐字 <sup>…</sup> span
+        # （如 "<sup>国</sup> <sup>家</sup> <sup>市</sup>…"），先去标签再
+        # 处理，否则机构名录/日期/英文标题的连续子串匹配全被打断。
+        text = re.sub(r"<[^>]+>", "", str(item.get("text") or item.get("content") or "").strip())
         if not text or re.match(r"^\d{4}-\d{2}-\d{2}", text):
             continue
         if re.search(r"[\u3400-\u9fff]", text):
@@ -364,7 +374,7 @@ def _cover_metadata(part_dir: Path, markdown_text: str) -> dict[str, str]:
     )
     prev_footer: str = ""
     for item in page0:
-        text = str(item.get("text") or item.get("content") or "").strip()
+        text = re.sub(r"<[^>]+>", "", str(item.get("text") or item.get("content") or "").strip())
         # OCR may split the word ("发 布") and fuse both bodies into one footer
         # line, so compare on whitespace-stripped text.
         compact_line = re.sub(r"\s+", "", text)
@@ -395,6 +405,13 @@ def _cover_metadata(part_dir: Path, markdown_text: str) -> dict[str, str]:
             and not _is_cover_banner(compact_line)
         ):
             prev_footer = compact_line
+    # 机构行兜底：content_list 的 issuer 若只命中通用回退（OCR 常把机构名
+    # 识别错，如"国家督管理委员 局会 发 布"），用原 PDF 文本层重取——文本层
+    # 对封面字段可靠，命中机构名录才覆盖。
+    if result.get("issuer") and not _canonical_issuer_known(result["issuer"]):
+        pdf_issuer = _cover_issuer_from_pdf(part_dir)
+        if pdf_issuer:
+            result["issuer"] = pdf_issuer
     return result
 
 
@@ -547,6 +564,47 @@ def _canonical_issuer(text: str) -> str:
     return ""
 
 
+def _canonical_issuer_known(text: str) -> str:
+    """Canonical issuer only when a known fragment matches; '' for the
+    generic verbatim fallback (which may be OCR-garbled)."""
+    compact = re.sub(r"\s+", "", text)
+    for fragments, canonical in _ISSUER_FRAGMENTS:
+        if any(fragment in compact for fragment in fragments):
+            return canonical
+    return ""
+
+
+def _cover_issuer_from_pdf(part_dir: Path) -> str:
+    """Recover the cover issuer from the PDF raw text layer (GEN-014 兜底).
+
+    OCR 常把机构行识别错（"国家督管理委员 局会 发 布"），而原 PDF 文本层
+    对封面字段可靠。pymupdf 会把 "<机构A>\\n<机构B>\\n发布" 拆成多行，
+    从"发布"行向上合并相邻机构行再查机构名录。
+    """
+    pdf_candidates = sorted(part_dir.rglob("*.pdf"))
+    if not pdf_candidates:
+        return ""
+    try:
+        import pymupdf
+
+        with pymupdf.open(pdf_candidates[0]) as doc:
+            page0_text = doc[0].get_text()
+    except Exception:
+        return ""
+    lines = [re.sub(r"\s+", "", line) for line in page0_text.splitlines() if line.strip()]
+    for i, line in enumerate(lines):
+        if "发布" in line and not re.match(r"^\d{4}-\d{2}-\d{2}", line):
+            parts = [line]
+            j = i - 1
+            while j >= 0 and not re.search(r"发布|实施|^20\d\d-\d\d-\d\d|标准$", lines[j]):
+                parts.insert(0, lines[j])
+                j -= 1
+            issuer = _canonical_issuer_known("".join(parts))
+            if issuer:
+                return issuer
+    return ""
+
+
 def _recover_annex_headings(markdown: str) -> str:
     """Rebuild annex headings that MinerU split into bare paragraphs.
 
@@ -674,6 +732,52 @@ def _is_cover_banner(compact: str) -> bool:
     return bool(_COVER_BANNER_RE.fullmatch(compact))
 
 
+# OCR 会把带徽标页的横幅拆成两段（图前 "# 中华人民共和国" + 图后
+# "国家标准"）。单独一段不是完整横幅，但拼起来才是；这些片段绝不能
+# 当作文档标题（GBT-C01 文件名称）。
+_BANNER_FRAGMENTS = ("中华人民共和国", "国家标准")
+
+
+def _is_cover_banner_fragment(compact: str) -> bool:
+    """True when the whitespace-stripped line is only a fragment of a banner."""
+    return compact in _BANNER_FRAGMENTS
+
+
+def _demote_banner_fragments(markdown: str) -> str:
+    """Demote OCR-split cover-banner headings back to plain paragraphs.
+
+    MinerU 常把封底/封面横幅在徽标图处拆成 "# 中华人民共和国" + "国家标准"
+    两行（GB 标准封底版式）。前半段是 H1 时会污染标题推导并给正文引入
+    孤立大标题；若它与其后首个非空行拼起来恰是完整横幅，就降级为普通
+    段落。仅处理"拼成横幅"的情形，避免误伤正文标题。
+
+    规则对应: GBT-L03（横幅）+ GBT-C01（文件名称）。
+    """
+    lines = markdown.splitlines()
+    out: list[str] = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i]
+        match = re.match(r"^#\s+(.+?)\s*$", line)
+        demoted = False
+        if match:
+            compact = re.sub(r"\s+", "", match.group(1))
+            if compact in _BANNER_FRAGMENTS:
+                j = i + 1
+                while j < n and not lines[j].strip():
+                    j += 1
+                if j < n:
+                    nxt = re.sub(r"^#+\s*", "", lines[j].strip())
+                    if _is_cover_banner(compact + re.sub(r"\s+", "", nxt)):
+                        out.append(match.group(1))  # demote: drop the H1 marker
+                        demoted = True
+        if not demoted:
+            out.append(line)
+        i += 1
+    return "\n".join(out)
+
+
 def _demote_cover_headings(markdown: str) -> str:
     """Demote cover-block H1 lines that are not the document title.
 
@@ -743,13 +847,13 @@ def extract(args: argparse.Namespace, state: dict[str, Any]) -> None:
     command = _mineru_command()
     total_pages = _page_count(args.input)
     _log(f"Extraction plan: {total_pages} pages, {args.chunk_size} pages per MinerU invocation")
-    _log("Backend: pipeline; method: auto; language: ch; formulas: enabled; tables: enabled")
+    _log(f"Backend: pipeline; method: {args.method}; language: ch; formulas: enabled; tables: enabled")
     state["input"] = str(args.input.resolve())
     state["sourceSha256"] = hashlib.sha256(args.input.read_bytes()).hexdigest()
     state["pageCount"] = total_pages
     state["chunkSize"] = args.chunk_size
     state["backend"] = "mineru pipeline"
-    state["parameters"] = {"method": "auto", "language": "ch", "formula": True, "table": True}
+    state["parameters"] = {"method": args.method, "language": "ch", "formula": True, "table": True}
     state.setdefault("parts", [])
 
     completed = {item["start"]: item for item in state["parts"] if item.get("status") == "complete"}
@@ -769,7 +873,7 @@ def extract(args: argparse.Namespace, state: dict[str, Any]) -> None:
 
         part_dir.mkdir(parents=True, exist_ok=True)
         invocation = [
-            command, "-p", str(args.input), "-o", str(part_dir), "-b", "pipeline", "-m", "auto", "-l", "ch",
+            command, "-p", str(args.input), "-o", str(part_dir), "-b", "pipeline", "-m", args.method, "-l", "ch",
             "-f", "true", "-t", "true", "-s", str(start), "-e", str(end),
         ]
         _log(f"Starting full MinerU pipeline for pages {start + 1}-{end + 1} of {total_pages}")
@@ -816,6 +920,7 @@ def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
             gbt_1_1_quirks=_is_gbt_1_1_2020(args.input),
         )
         raw = _recover_annex_headings(raw)
+        raw = _demote_banner_fragments(raw)
         if part["start"] == 0:
             raw = _demote_cover_headings(raw)
         image_source = source.parent / "images"
@@ -875,6 +980,7 @@ def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
             for heading in heading_candidates
             if not _is_cover_banner(re.sub(r"\s+", "", heading))
             and not re.fullmatch(r"[A-Za-z][A-Za-z0-9 ,.:;()\-']+", heading)
+            and not _is_cover_banner_fragment(re.sub(r"\s+", "", heading))
         ),
         "",
     )
@@ -1014,6 +1120,7 @@ def main() -> int:
     parser.add_argument("--standard-number", type=str, help="standard number written into the CSM front matter (default: inferred from the extraction, e.g. GB/T 10401-2023)")
     parser.add_argument("--title", type=str, help="standard title written into the CSM front matter (default: first H1 from the extraction)")
     parser.add_argument("--chunk-size", type=int, default=18, help="Pages per restartable MinerU invocation (default: 18).")
+    parser.add_argument("--method", choices=("auto", "ocr", "txt"), default="auto", help="MinerU extraction method (default: auto). Use ocr when the PDF text layer loses Latin/digit runs (MinerU's txt extraction can drop them while pymupdf reads them fine).")
     parser.add_argument("--stage", choices=("extract", "merge", "finalize", "all"), default="all")
     parser.add_argument("--roundtrip", action="store_true", help="Run CSM canonical -> SSIR -> CSM render.md -> verify round-trip verification after parsing.")
     parser.add_argument("--render", action="store_true", help="Render parsed SSIR to PDF and write a comparison report.")
@@ -1025,7 +1132,11 @@ def main() -> int:
         parser.error(f"input must be an existing PDF: {args.input}")
     if args.chunk_size < 1:
         parser.error("--chunk-size must be positive")
-    args.output_dir = args.output_dir or ROOT / "out" / "mineru" / re.sub(r"\W+", "-", args.input.stem).strip("-")
+    # 文档根目录（naming_specification.txt §4.2 out/mineru/{input}/）：默认用
+    # 源文件名主干（corpus 已是规范 ID 形如 GBT_23132-2008，保留下划线）；
+    # 仅当主干含空白（如 "GBT 20001.10-2014"）才把 \W+ 折叠为连字符。
+    stem_dir = args.input.stem if not re.search(r"\s", args.input.stem) else re.sub(r"\W+", "-", args.input.stem).strip("-")
+    args.output_dir = args.output_dir or ROOT / "out" / "mineru" / stem_dir
     args.output_dir.mkdir(parents=True, exist_ok=True)
     args.state_file = args.output_dir / "pipeline-state.json"
     state = _load_json(args.state_file, {})

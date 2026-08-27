@@ -174,11 +174,21 @@ def render_pdf(
             )
             # 封面徽标按标准类型从固定位置读取（GEN-018/GBT-L02），不再使用
             # 从 PDF 提取的 coverBadge 图块。徽标位于封面右上角、编号区块
-            # 之上，避开横幅文字。
+            # 之上，避开横幅文字。尺寸/位置对齐官方封面模板（GBT_23132-2024
+            # 原稿实测：徽章 113.7x56.9pt、上边距 31.5pt≈11.1mm、右缘贴版心
+            # 右边距；图像 2:1 全填充）。
             emblem_path = _cover_emblem_path(str(standard_no), profile, profile_file)
             if emblem_path:
                 canvas.saveState()
-                canvas.drawImage(str(emblem_path), A4[0] - float(margins["right"]) * mm - 100, A4[1] - 42 * mm, width=100, height=42, preserveAspectRatio=True, mask="auto")
+                canvas.drawImage(
+                    str(emblem_path),
+                    A4[0] - float(margins["right"]) * mm - 114,
+                    A4[1] - 11.1 * mm - 57,
+                    width=114,
+                    height=57,
+                    preserveAspectRatio=True,
+                    mask="auto",
+                )
                 canvas.restoreState()
         canvas.restoreState()
 
