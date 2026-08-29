@@ -71,6 +71,14 @@ HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 TABLE_SEPARATOR_RE = re.compile(r"^\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$")
 IMAGE_RE = re.compile(r"^!\[(.*?)\]\((.*?)\)\s*$")
 NUMBERED_ITEM_RE = re.compile(r"^([A-Za-z]+[)）]|\d+[)）])\s*(.*)$")
+# 独立「示例N：」行（框式示例标题，GB/T 1.1 10.4.5 / GBT-B11）：冒号后无内容
+# 才提升为标题；"示例1：γ辐照装置…" 这类行内示例（冒号后有内容）不受影响。
+EX_HEADER_RE = re.compile(r"^示例\s*\d*\s*[:：]\s*$")
+EX_LEAD_RE = re.compile(r"^示例\s*\d*\s*[:：]")
+NOTE_LEAD_RE = re.compile(r"^注\s*\d*\s*[:：]")
+# 句末标点后出现点分条号（6.3.5.2 等）→ 把被 OCR 合并进上一句的条号分段
+#（零宽切分点，条号本身保留在下一段开头）。
+CLAUSE_SPLIT_RE = re.compile(r"(?<=[。；])\s*(?=\d+(?:\.\d+)+[\u4e00-\u9fff])")
 # GB/T 1.1 列项符号为破折号（——）或间隔号（·）；OCR 常把 "——" 压成
 # 单个 "-" 或 "—" 且丢失后方空格，故破折号允许无空格（GBT-C12）。
 # CommonMark 的 "*"/"+" 项目符号仍要求后方空格，避免误吞 "**加粗**" 行首。
@@ -185,6 +193,8 @@ class CSMParser:
             issues.append(CSMIssue("CSM-STRUCT-001", "warning", warning))
         fatal_errors.extend(self._repair_tables(blocks, issues))
         self._repair_list_markers(blocks, issues)
+        self._repair_lost_list_markers(blocks, issues)
+        self._repair_text_spacing(blocks, issues)
         fatal_errors.extend(self._classify_body_errors(parse_errors, issues))
         self._normalise_metadata(metadata, blocks, source, issues)
         document_errors: list[str] = []
@@ -318,12 +328,35 @@ class CSMParser:
 
             heading = HEADING_RE.match(line)
             if heading:
+                heading_text = heading.group(2)
+                # GBT-C12 列项误识别为标题：MinerU 偶尔把列项（如 "c）定型和
+                # 固化时间；"）提升成 ## 标题，导致渲染时按标题样式大缩进。
+                # 标题文本若形如列项（字母/数字 + 全/半角括号）则降级为列项
+                # 块，与相邻 a)/b) 同层对齐。真实章条号（5.1、A.1）不含括号，
+                # 不会被误降。
+                numbered_item = NUMBERED_ITEM_RE.match(heading_text)
+                if numbered_item and heading.group(1).count("#") >= 2:
+                    marker = numbered_item.group(1)
+                    if marker.endswith(")"):
+                        marker = marker[:-1] + "）"
+                    blocks.append(
+                        Block(
+                            kind="list",
+                            start_line=line_no(i),
+                            end_line=line_no(i),
+                            text=heading_text,
+                            data={"items": [{"marker": marker, "text": numbered_item.group(2), "line": str(line_no(i))}]},
+                        )
+                    )
+                    warnings.append(f"line {line_no(i)}: heading shaped like a list item was demoted to a list item ({marker} {numbered_item.group(2)!r}).")
+                    i += 1
+                    continue
                 blocks.append(
                     Block(
                         kind="heading",
                         start_line=line_no(i),
                         end_line=line_no(i),
-                        text=heading.group(2),
+                        text=heading_text,
                         level=len(heading.group(1)),
                         directive=pending.pop("block", None),
                     )
@@ -538,26 +571,59 @@ class CSMParser:
                     continue
 
             start = i
-            paragraph_lines = [line]
+            # 段落行尾清理：MinerU 行尾常残留 Markdown 硬换行（两个尾随空格），
+            # 会导致渲染时段落中途断行（如 "……25%时，  \n审查结论应为不通过"）。
+            paragraph_lines = [line.rstrip()]
             i += 1
-            while i < len(lines) and lines[i].strip() and not self._starts_new_block(lines, i):
+            while i < len(lines):
+                if not lines[i].strip():
+                    # 空行续接（6.4.2.4 "……列入多种方法时，\n应指明仲裁方法。"）：
+                    # 上一行以连接性标点结尾且下一非空行不是新块时，视为同一段落
+                    # 被 MinerU 误插空行，跳过空行继续收集（示例/注/图/表引导语除外）。
+                    lookahead = i
+                    while lookahead < len(lines) and not lines[lookahead].strip():
+                        lookahead += 1
+                    if (
+                        lookahead < len(lines)
+                        and not self._starts_new_block(lines, lookahead)
+                        and paragraph_lines
+                        and paragraph_lines[-1].endswith(("，", "；", "：", "、", ","))
+                        and not EX_LEAD_RE.match(lines[lookahead].strip())
+                        and not NOTE_LEAD_RE.match(lines[lookahead].strip())
+                    ):
+                        i = lookahead
+                        continue
+                    break
+                if self._starts_new_block(lines, i):
+                    break
                 if MINERU_PAGE_MARKER_RE.match(lines[i]):
                     # MinerU page-range markers are provenance, not content;
                     # skip them even mid-paragraph so they never leak into the
                     # rendered PDF (GEN-005 页码标记不计入正文).
                     i += 1
                     continue
-                paragraph_lines.append(lines[i])
+                paragraph_lines.append(lines[i].rstrip())
                 i += 1
-            blocks.append(
-                Block(
+            paragraph_text = "\n".join(paragraph_lines)
+            # 6.3.5.2 类合并：MinerU 把「……告知乘客。6.3.5.2为了确保……」
+            # 挤进同一段，导致条号无法回车顶格（GBT-B02）。在句末标点（。；）
+            # 之后出现的点分条号处把段落拆分为两个块。
+            block_directive = pending.pop("block", None)
+            parts = [p.strip() for p in CLAUSE_SPLIT_RE.split(paragraph_text) if p.strip()]
+            for part_index, part in enumerate(parts):
+                block = Block(
                     kind="paragraph",
                     start_line=line_no(start),
                     end_line=line_no(i - 1),
-                    text="\n".join(paragraph_lines),
-                    directive=pending.pop("block", None),
+                    text=part,
+                    directive=block_directive if part_index == 0 else None,
                 )
-            )
+                if EX_HEADER_RE.match(part):
+                    # 独立「示例N：」行（附录框式示例的标题）提升为标题，
+                    # 使其进入 SSIR 结构树并在示例框内居中（GBT-B11）。
+                    block.kind = "heading"
+                    block.level = 2
+                blocks.append(block)
 
         for name, directive in pending.items():
             warnings.append(f"line {directive.line}: ssir:{name} has no following compatible block")
@@ -701,6 +767,136 @@ class CSMParser:
                     repaired=True,
                     repair_action=f"Rewrote marker {original} to {corrected} in memory.",
                 )
+
+    @staticmethod
+    def _repair_lost_list_markers(blocks: list[Block], issues: list[CSMIssue]) -> None:
+        """Re-add dash list markers OCR dropped from whole lines (CSM-OCR-005).
+
+        MinerU 常把破折号列项（——第3部分：分类标准；）整行丢失标记，只留下
+        文本本身；该行会解析成独立段落，夹在两个破折号列表之间（前言部分
+        清单是典型场景）。判定条件收窄以避免误伤真实段落：
+        - 单行、长度 ≤ 40、以 ；或 。结尾；
+        - 前后相邻块都是纯破折号标记列表；
+        - 不以条号、注/示例/警示/表/图/附录开头。
+        命中后转成单条目列表，标记取后一个列表（回退前一个）的破折号。
+        """
+        dash_marker = re.compile(r"^[-—–]+$")
+
+        def is_dash_list(block: Block | None) -> bool:
+            if block is None or block.kind != "list":
+                return False
+            items: list[dict[str, str]] = block.data.get("items", [])
+            return bool(items) and all(dash_marker.match(str(item.get("marker", ""))) for item in items)
+
+        for index, block in enumerate(blocks):
+            if block.kind != "paragraph":
+                continue
+            text = block.text.strip()
+            if not text or "\n" in text or len(text) > 40:
+                continue
+            if not re.search(r"[；。]$", text):
+                continue
+            if re.match(r"^\d+(?:\.\d+)*\s", text):
+                continue  # 条号开头的裸条，不是列表项
+            if re.match(r"^(注|示例|警示|表|图|附)", text):
+                continue
+            previous = blocks[index - 1] if index > 0 else None
+            following = blocks[index + 1] if index + 1 < len(blocks) else None
+            if not (is_dash_list(previous) and is_dash_list(following)):
+                continue
+            assert previous is not None and following is not None
+            following_items: list[dict[str, Any]] = following.data.get("items", [])
+            previous_items: list[dict[str, Any]] = previous.data.get("items", [])
+            marker = str(following_items[0].get("marker") or "") or str(previous_items[0].get("marker") or "")
+            if not marker:
+                continue
+            block.kind = "list"
+            block.text = ""
+            block.data = {"items": [{"marker": marker, "text": text, "line": str(block.start_line)}]}
+            CSMParser._issue(
+                issues,
+                "CSM-OCR-005",
+                f"Dash list marker lost by OCR; re-added {marker!r} to {text!r}.",
+                line=block.start_line,
+                repaired=True,
+                repair_action="Converted the orphan paragraph into a dash list item using the neighbouring list marker.",
+            )
+
+    @staticmethod
+    def _repair_text_spacing(blocks: list[Block], issues: list[CSMIssue]) -> None:
+        """Restore spacing OCR drops inside standard-document text (CSM-OCR-003/004).
+
+        - CSM-OCR-003 术语间隔：术语条目「中文English」（或 OCR 留下半角空格的
+          「中文 English」）中英文之间应空一个汉字。用 U+3000（全角空格）实现：
+          reportlab 段落渲染把它当作普通空白折叠成窄空格仍可显示，且该字体
+          有 U+3000 字形（不会渲染成 .notdef 方框）；历史实现曾用 U+200B
+          （零宽空格）制造 1em 推进宽度，但 Noto Serif CJK SC 无 U+200B 字形，
+          2026-08-29 起改用 U+3000（见 GB_T_20001.5 渲染回归）。
+          只在「术语和定义」章内、行首为汉字串后接拉丁字母、且不含中文标点的
+          行上修复，避免误伤正文。
+        - CSM-OCR-004 标准号间隔：正文中的标准号字母与数字之间应有一个空格
+          （GB/T20001 → GB/T 20001）。只匹配已知前缀形态（GB/T、JB/T、SJ/T、
+          DB11/T、GB/Z、GB 等），带斜杠前导被排除（SAC/TC286 不动），单字母
+          前缀排除（维生素B1 不动）。
+        """
+        term_re = re.compile(r"^([\u4e00-\u9fff]{1,24})[ \u3000\u200b]*([A-Za-z])")
+        no_cjk_punct = re.compile(r"[，。；：？！、”“‘’《》【】（）…]")
+        chapter_re = re.compile(r"^\d+\s+\S")
+        annex_re = re.compile(r"^附\s*录")
+        standard_re = re.compile(
+            r"(?<![A-Za-z0-9/])([A-Z]{1,4}\d{0,2}/[TZ])(?=\d)"
+            r"|(?<![A-Za-z0-9/])([A-Z]{2,4})(?=\d)"
+        )
+        term_gap = "\u3000"
+
+        in_terms = False
+        for block in blocks:
+            if block.kind == "heading":
+                text = block.text.strip()
+                if annex_re.match(text) or (chapter_re.match(text) and "术语" not in text):
+                    in_terms = False
+                elif chapter_re.match(text) and "术语" in text:
+                    in_terms = True
+            if block.kind not in ("paragraph", "heading"):
+                continue
+            original = block.text
+            repaired = original
+            # 标准号间隔（对所有文本行统一修复，幂等：已有空格则不再插入）
+            repaired = standard_re.sub(lambda m: f"{m.group(1) or m.group(2)} ", repaired)
+            # 术语间隔（仅术语章内、行首中文串后接拉丁、无中文标点）
+            if in_terms:
+                for line in repaired.splitlines():
+                    stripped = line.strip()
+                    if not stripped or no_cjk_punct.search(stripped):
+                        continue
+                    if re.match(r"^\d", stripped):
+                        continue  # 术语章内的编号行（3.1 等）不动
+                    if term_re.match(stripped):
+                        repaired = re.sub(
+                            r"^([\u4e00-\u9fff]{1,24})[ \u3000\u200b]*([A-Za-z])",
+                            rf"\1{term_gap}\2",
+                            repaired,
+                            count=1,
+                        )
+                        break
+            if repaired == original:
+                continue
+            block.text = repaired
+            # 列表项文本同样修复（列表项的 text 在 data.items 里）
+            if block.kind == "list":
+                for item in block.data.get("items", []):
+                    item_text = str(item.get("text", ""))
+                    item_repaired = standard_re.sub(lambda m: f"{m.group(1) or m.group(2)} ", item_text)
+                    if item_repaired != item_text:
+                        item["text"] = item_repaired
+            CSMParser._issue(
+                issues,
+                "CSM-OCR-003" if term_gap in repaired else "CSM-OCR-004",
+                f"Restored spacing in {original[:40]!r} -> {repaired[:40]!r}.",
+                line=block.start_line,
+                repaired=True,
+                repair_action="Inserted the missing inter-word / standard-number space in memory.",
+            )
 
     @staticmethod
     def _classify_body_errors(errors: list[str], issues: list[CSMIssue]) -> list[str]:

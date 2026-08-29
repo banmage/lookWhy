@@ -542,7 +542,7 @@ CanonicalText + TextSpan                     │
   "id": "...",
   "documentId": "...",
   "runId": "...",
-  "renderingProfile": "gb-t-1-1-2020",  // 新增 — 对齐 JSON Schema v0.3
+  "renderingProfile": "GB_T_1.1-2020",  // 新增 — 对齐 JSON Schema v0.3
   "overallStatus": "complete" | "partial" | "extractionFailed" | "requiresReview" | "approved" | "rejected",
   "dimensions": {
     "textExtraction": {
@@ -577,7 +577,7 @@ CanonicalText + TextSpan                     │
     },
     "renderingProfileValidation": {
       "status": "PASS",
-      "details": {"profile": "gb-t-1-1-2020"}
+      "details": {"profile": "GB_T_1.1-2020"}
     }
   },
   "assessedAt": "..."
@@ -659,7 +659,7 @@ Object Storage:
 
 **输入**：
 - `SSIRDocument`（L3）
-- `NormativeRenderingProfile`（枚举：gb-t-1-1-2020, iso-iec, custom）
+- `NormativeRenderingProfile`（枚举：GB_T_1.1-2020, iso-iec, custom）
 
 **输出**：
 - `RenderingIR`
@@ -714,8 +714,8 @@ Rendered Document (渲染文档)
 
 ```json
 {
-  "profileName": "gb-t-1-1-2020",
-  "profileType": "gb-t-1-1-2020",  // NormativeRenderingProfile 枚举
+  "profileName": "GB_T_1.1-2020",
+  "profileType": "GB_T_1.1-2020",  // NormativeRenderingProfile 枚举
   "semanticRules": {
     "section": {"rendersAs": "heading1"},
     "clause": {"rendersAs": "heading2"},

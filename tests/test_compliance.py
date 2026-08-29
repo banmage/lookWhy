@@ -114,7 +114,7 @@ class ProductStandardLayerTests(unittest.TestCase):
             ],
         )
         report = verify_compliance(doc)
-        self.assertIn("gbt-20001.10-2014", report.applies)
+        self.assertIn("GB_T_20001.10-2014", report.applies)
         p10 = [f for f in report.findings if f.rule_id == "P10-R02"]
         self.assertEqual(len(p10), 1)
         self.assertIn("缺单位", p10[0].message)
@@ -122,7 +122,7 @@ class ProductStandardLayerTests(unittest.TestCase):
     def test_non_product_standard_skips_p10(self) -> None:
         doc = _document(common={"title": "标准化工作导则"})
         report = verify_compliance(doc)
-        self.assertNotIn("gbt-20001.10-2014", report.applies)
+        self.assertNotIn("GB_T_20001.10-2014", report.applies)
         self.assertFalse([f for f in report.findings if f.rule_id == "P10-R02"])
 
 

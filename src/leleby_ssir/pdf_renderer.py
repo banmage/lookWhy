@@ -15,7 +15,7 @@ import yaml
 from .validation import validate_ssir
 
 
-DEFAULT_PROFILE = Path(__file__).resolve().parents[2] / "config" / "rendering" / "gb-t-1-1-2020.yaml"
+DEFAULT_PROFILE = Path(__file__).resolve().parents[2] / "config" / "rendering" / "GB_T_1.1-2020.yaml"
 
 
 @dataclass(slots=True)
@@ -174,7 +174,7 @@ def render_pdf(
             )
             # 封面徽标按标准类型从固定位置读取（GEN-018/GBT-L02），不再使用
             # 从 PDF 提取的 coverBadge 图块。徽标位于封面右上角、编号区块
-            # 之上，避开横幅文字。尺寸/位置对齐官方封面模板（GBT_23132-2024
+            # 之上，避开横幅文字。尺寸/位置对齐官方封面模板（GB_T_23132-2024
             # 原稿实测：徽章 113.7x56.9pt、上边距 31.5pt≈11.1mm、右缘贴版心
             # 右边距；图像 2:1 全填充）。
             emblem_path = _cover_emblem_path(str(standard_no), profile, profile_file)
@@ -436,9 +436,14 @@ def render_pdf(
         else:
             story.extend([Paragraph(_markup(title), styles["title"]), Spacer(1, 14 * mm)])
         body_title_inserted = False
-        for node in root_nodes:
+        example_default = str((profile.get("styles") or {}).get("examples", {}).get("style", "frame"))
+        idx = 0
+        root_len = len(root_nodes)
+        while idx < root_len:
+            node = root_nodes[idx]
             if _is_toc_node(node):
                 story.extend(toc_story(_toc_nodes(root_nodes, toc_depth), toc_pages))
+                idx += 1
                 continue
             if _is_rendered_index_node(node):
                 marker = _TOCMarker(node["id"]) if record_pages is not None else None
@@ -449,7 +454,25 @@ def render_pdf(
                 story.extend([PageBreak(), Paragraph(_markup(title), styles["title"]), Spacer(1, 14 * mm)])
                 body_title_inserted = True
             marker_factory = (lambda item: _TOCMarker(item["id"])) if record_pages is not None else None
-            _append_node(story, node, registries, styles, font_name, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, marker_factory, PageBreak)
+            if node.get("exampleContent"):
+                # 附录示例块（GBT-B11）：连续 exampleContent 兄弟打包成框。
+                # 「示例N：」是框外题注（黑体顶格），不进框；框内第一个节点
+                # 是示例文档真实标题（黑体居中），其后是示例文档自身编号章条。
+                if _is_example_header(node):
+                    story.append(Paragraph(_markup(str(node.get("title") or "").strip()), styles["example-label"]))
+                    idx += 1
+                    continue
+                box: list[Any] = []
+                mode = str(node.get("exampleStyle") or example_default)
+                while idx < root_len and root_nodes[idx].get("exampleContent"):
+                    if _is_example_header(root_nodes[idx]):
+                        break
+                    _append_node(box, root_nodes[idx], registries, styles, font_name, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, marker_factory, PageBreak, example_default, example_leading=not box)
+                    idx += 1
+                story.append(_example_box(box, mode, colors, Table, TableStyle))
+                continue
+            _append_node(story, node, registries, styles, font_name, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, marker_factory, PageBreak, example_default)
+            idx += 1
         if has_cover:
             # GB/T 1.1-2020 末页应有终结线（GBT-C13）；仅标准类文档（与封面同门控）。
             story.append(_EndLine())
@@ -499,6 +522,16 @@ def _styles(base: Any, profile: dict[str, Any], font: str, body_font: str, cente
     return {
         "title": ParagraphStyle("gbt-title", parent=base["Title"], fontName=font, fontSize=26, leading=34, alignment=center, spaceAfter=8),
         "front": ParagraphStyle("gbt-front", parent=base["BodyText"], fontName=body_font, fontSize=rules["front-matter"]["size-pt"], leading=rules["front-matter"]["leading-pt"], alignment=justify, firstLineIndent=2 * body["size-pt"], spaceAfter=4, wordWrap="CJK"),
+        # GB/T 1.1-2020 Appendix F (Table F.1): 前言/引言/目次等前置标题三号黑体居中。
+        "front-title": ParagraphStyle(
+            "gbt-front-title",
+            parent=base["Title"],
+            fontName=font,
+            fontSize=(rules.get("front-matter-title") or {}).get("size-pt", 16),
+            leading=(rules.get("front-matter-title") or {}).get("leading-pt", 22),
+            alignment=center,
+            spaceAfter=12,
+        ),
         # GB/T 1.1 keeps chapter and clause headings flush left.  The chapter
         # line is one size larger; all clause levels share a size and leading.
         "section": ParagraphStyle("gbt-section", parent=base["Heading2"], fontName=font, fontSize=12, leading=22, alignment=left, leftIndent=0, firstLineIndent=0, spaceBefore=16, spaceAfter=10),
@@ -526,11 +559,77 @@ def _styles(base: Any, profile: dict[str, Any], font: str, body_font: str, cente
         "annex-letter": ParagraphStyle("gbt-annex-letter", parent=base["Heading2"], fontName=font, fontSize=12, leading=20, alignment=center, spaceBefore=6, spaceAfter=4),
         "annex-status": ParagraphStyle("gbt-annex-status", parent=base["Heading3"], fontName=font, fontSize=10.5, leading=16, alignment=center, spaceAfter=4),
         "annex-title": ParagraphStyle("gbt-annex-title", parent=base["Heading2"], fontName=font, fontSize=14, leading=22, alignment=center, spaceAfter=14),
+        # 附录编写示例块（GB/T 20001 表框/图框内容，CSM-OCR-006）：示例文档
+        # 标题黑体居中；示例内部的编号标题（如 4 技术要求）用黑体加粗顶格，
+        # 与正文章条区分（它们是示例文档自带的编号，不是本标准章条）。
+        "example-title": ParagraphStyle("gbt-example-title", parent=base["Title"], fontName=font, fontSize=10.5, leading=16, alignment=center, spaceBefore=6, spaceAfter=4),
+        "example-content": ParagraphStyle("gbt-example-content", parent=base["BodyText"], fontName=font, fontSize=10.5, leading=16, alignment=left, leftIndent=0, firstLineIndent=0, spaceBefore=4, spaceAfter=2, wordWrap="CJK"),
+        # 附录示例框外的「示例N：」题注：黑体顶格，位于框上方（不进框）。
+        "example-label": ParagraphStyle("gbt-example-label", parent=base["BodyText"], fontName=font, fontSize=10.5, leading=16, alignment=left, leftIndent=0, firstLineIndent=0, spaceBefore=8, spaceAfter=2, wordWrap="CJK"),
         "table-unit": ParagraphStyle("gbt-table-unit", parent=base["BodyText"], fontName=body_font, fontSize=9, leading=12, alignment=2, firstLineIndent=0, spaceBefore=2, spaceAfter=0),
     }
 
 
-def _append_node(story: list[Any], node: dict[str, Any], registries: dict[str, dict[str, dict[str, Any]]], styles: dict[str, Any], font: str, report: PDFRenderReport, asset_dir: Path, colors: Any, Table: Any, TableStyle: Any, Paragraph: Any, Spacer: Any, Image: Any, marker_factory: Any = None, PageBreak: Any = None) -> None:
+def _is_example_header(node: dict[str, Any]) -> bool:
+    """True for a standalone '示例N：' label (the annex example caption that
+    sits OUTSIDE the box; the boxed title is the example's real document
+    title, which follows it as the first exampleContent sibling)."""
+    return bool(re.match(r"^示例\s*\d*\s*[:：]\s*$", str(node.get("title") or "").strip()))
+
+
+def _example_box(flowables: list[Any], mode: str, colors: Any, Table: Any, TableStyle: Any) -> Any:
+    """Wrap an annex example block in a box: black thin-line frame or a light
+    background (GBT-B11 示例线框；GB/T 1.1 10.4.5 区分线框细实线).
+
+    每个 flowable 占一行：reportlab Table 按行跨页拆分，每页片段绘制
+    闭合框/背景，与原标准示例框跨页续排的表现一致。
+    """
+    rows = [[flowable] for flowable in flowables]
+    table = Table(rows, colWidths=[None])
+    commands = [
+        ("LEFTPADDING", (0, 0), (-1, -1), 10),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]
+    if mode == "shaded":
+        # 浅色背景（类代码块）：无边框，淡灰底。
+        commands.append(("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F0F2F5")))
+    else:
+        # 黑色细实线框（默认，GB/T 1.1 10.4.5）。
+        commands.append(("BOX", (0, 0), (-1, -1), 0.75, colors.black))
+    table.setStyle(TableStyle(commands))
+    return table
+
+
+def _append_nodes(story: list[Any], nodes: list[dict[str, Any]], registries: dict[str, dict[str, dict[str, Any]]], styles: dict[str, Any], font: str, report: PDFRenderReport, asset_dir: Path, colors: Any, Table: Any, TableStyle: Any, Paragraph: Any, Spacer: Any, Image: Any, marker_factory: Any = None, PageBreak: Any = None, example_default: str = "frame") -> None:
+    """Append sibling nodes, grouping consecutive annex example-content nodes
+    into boxed example blocks (GBT-B11); each '示例N：' label stays outside the
+    box as a caption, and the first boxed node is the example's real title."""
+    index = 0
+    while index < len(nodes):
+        node = nodes[index]
+        if node.get("exampleContent"):
+            # 「示例N：」框外题注：不进框，黑体顶格排在框上方。
+            if _is_example_header(node):
+                story.append(Paragraph(_markup(str(node.get("title") or "").strip()), styles["example-label"]))
+                index += 1
+                continue
+            box: list[Any] = []
+            mode = str(node.get("exampleStyle") or example_default)
+            while index < len(nodes) and nodes[index].get("exampleContent"):
+                if _is_example_header(nodes[index]):
+                    break
+                _append_node(box, nodes[index], registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, marker_factory, PageBreak, example_default, example_leading=not box)
+                index += 1
+            story.append(_example_box(box, mode, colors, Table, TableStyle))
+            continue
+        _append_node(story, node, registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, marker_factory, PageBreak, example_default)
+        index += 1
+
+
+def _append_node(story: list[Any], node: dict[str, Any], registries: dict[str, dict[str, dict[str, Any]]], styles: dict[str, Any], font: str, report: PDFRenderReport, asset_dir: Path, colors: Any, Table: Any, TableStyle: Any, Paragraph: Any, Spacer: Any, Image: Any, marker_factory: Any = None, PageBreak: Any = None, example_default: str = "frame", example_leading: bool = False) -> None:
     # 规则对应: GBT-B02（章条编号顶格、空一字接排标题）、GBT-B05（附录另起一面、编号/
     # 性质/标题各占一行居中）、GBT-B06/B07（图题表题五号黑体居中）、GEN-073（整体性保护）。
     node_type = node.get("nodeType")
@@ -550,17 +649,24 @@ def _append_node(story: list[Any], node: dict[str, Any], registries: dict[str, d
         story.append(Paragraph(_markup(title), styles["annex-title"]))
         for content in sorted(node.get("contentElements", []), key=_order):
             _append_content(story, content, registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image)
-        for child in sorted(node.get("children", []), key=_order):
-            _append_node(story, child, registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, marker_factory, PageBreak)
+        _append_nodes(story, node.get("children", []), registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, marker_factory, PageBreak, example_default)
         return
     heading_style = styles["section"] if depth == 1 else styles["subclause"] if depth >= 3 else styles["clause"] if depth else styles["front"]
+    if node.get("exampleContent"):
+        # 附录编写示例块（GB/T 20001 表框/图框内容，CSM-OCR-006）：框内第一个
+        # 无编号节点是示例文档真实标题（黑体居中）；其余节点——示例内部编号
+        # 标题（如 4 技术要求）以及被 OCR 误提升的无编号列表残留——一律黑体
+        # 顶格左对齐，与正文章条（12pt 黑体）区分。
+        heading_style = styles["example-title"] if (example_leading and not number) else styles["example-content"]
+    elif not number and title.replace(" ", "") in {"前言", "引言", "参考文献", "索引"}:
+        # GB/T 1.1-2020 Appendix F (Table F.1): 前置标题三号黑体居中（GBT-FM2）。
+        heading_style = styles["front-title"]
     if marker_factory:
         story.append(marker_factory(node))
     story.append(Paragraph(_markup(heading), heading_style))
     for content in sorted(node.get("contentElements", []), key=_order):
         _append_content(story, content, registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image)
-    for child in sorted(node.get("children", []), key=_order):
-        _append_node(story, child, registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, marker_factory, PageBreak)
+    _append_nodes(story, node.get("children", []), registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, marker_factory, PageBreak, example_default)
 
 
 def _draw_cover_publication(canvas: Any, left: float, right: float, issued: str, effective: str, issuer: str, bottom: float, font: str) -> None:
@@ -806,8 +912,10 @@ def _table_cell_superscripts(text: str) -> str:
     - 汉字后紧跟的半角小写单字母 → 上角标，但排除可能的小写单字母单位
       （m/s/g/l/t/h），避免误伤 "规格mm"/"长度m" 等。
     """
-    # 行首脚注标记: "a 说明" / "ａ 说明"
+    # 行首脚注标记: "a 说明" / "ａ 说明"（带空格）
     text = re.sub(r"^([a-zA-Zａ-ｚＡ-Ｚ])(?:[ \u3000]+)(\S)", "\x00SUP\x00\\1\x00/SUP\x00 \\2", text)
+    # 行首脚注标记后紧跟汉字（OCR 丢了分隔空格）："a黑体表示…" → ᵃ黑体表示…
+    text = re.sub(r"^([a-zA-Zａ-ｚ])(?=[\u4e00-\u9fff])", "\x00SUP\x00\\1\x00/SUP\x00", text)
     # 汉字后全角小写字母
     text = re.sub(r"(?<=[\u4e00-\u9fff])([ａ-ｚ])", "\x00SUP\x00\\1\x00/SUP\x00", text)
     # 汉字后半角小写单字母（排除单位 m/s/g/l/t/h）
@@ -1055,11 +1163,20 @@ def _markup(text: str) -> str:
     # Number-unit gap: use a non-breaking space so justified lines cannot
     # stretch "50 Hz" into a wide gap (GB 3100 数值与单位间留一个空格).
     text = re.sub(r"(?<=\d) (?=[A-Za-z%℃Ω])", "\u00A0", text)
-    escaped = escape(text).replace("\n", "<br/>")
+    # 术语中英文间隔（CSM-OCR-003）：reportlab 把所有空白（含 U+3000）折叠为
+    # 窄空格，无法表达 GB/T 1.1 要求的"空一个汉字"；用白色汉字填充获得恰好
+    # 1em 的不可见间隙（Noto Serif CJK SC 有该字形，不会渲染成 .notdef 方框）。
+    text = re.sub(r"(?<=[\u4e00-\u9fff])\u3000(?=[A-Za-z])", "\x00GAP\x00", text)
+    # Mid-paragraph newlines are natural source line wraps (MinerU 按行宽换行)，
+    # not hard breaks: collapse them to a single space so the PDF re-wraps
+    # instead of forcing a break ("……25%时，\n审查结论应为不通过" -> one paragraph).
+    text = re.sub(r"[ \t\u3000]*\n[ \t\u3000]*", " ", text)
+    escaped = escape(text)
     # Restore the footnote-superscript sentinels emitted by _table_cell_superscripts
     # (GBT-C18): they must survive XML escaping, so the real <super> tags are
     # re-inserted only after escape().
     escaped = escaped.replace("\x00SUP\x00", "<super>").replace("\x00/SUP\x00", "</super>")
+    escaped = escaped.replace("\x00GAP\x00", '<font color="white">中</font>')
     escaped = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped)
     escaped = re.sub(r"(?<!\*)\*(.+?)\*", r"<i>\1</i>", escaped)
     return escaped
@@ -1107,6 +1224,13 @@ def _heading_parts(node: dict[str, Any]) -> tuple[str, str, bool]:
     raw_number = str(node.get("number") or "").strip()
     title = str(node.get("title") or "").strip()
     annex = node.get("nodeType") == "annex"
+    # 附录示例块（GB/T 20001 表框/图框内容）：示例文档的标题（如
+    # "1 000 kV 变电站监控系统 技术规范"）是文档名而非章条编号，不能
+    # 做编号提取——千位分隔会被误判成编号 "1"，且提取会破坏真实标题。
+    # 示例内部自带的编号章条（如 5 系统结构）在 SSIR 里已有 number 字段，
+    # 直接使用即可。
+    if node.get("exampleContent"):
+        return raw_number, title, False
     status = ""
     if annex:
         status_match = re.match(r"^（(规范性|资料性|未判定)）\s*(.*)$", title)
@@ -1167,24 +1291,79 @@ def _toc_nodes(root_nodes: list[dict[str, Any]], depth: int | None = 2) -> list[
     # 规则对应: GBT-C02/GBT-FM1（目次：前言、引言、章、条(需要时)、附录、参考文献、索引）。
     result: list[dict[str, Any]] = []
 
-    def visit(node: dict[str, Any]) -> None:
-        if _is_toc_node(node):
-            return
-        number, title, is_annex = _heading_parts(node)
-        normalized_title = title.replace(" ", "")
-        # Front matter is represented as unnumbered document blocks.
-        number_depth = len(number.split(".")) if re.fullmatch(r"\d+(?:\.\d+)*", number) else 1 if is_annex else 0
-        if (number and (depth is None or number_depth <= depth)) or normalized_title in {"前言", "引言", "参考文献", "索引"} or is_annex:
-            result.append(node)
-        for child in sorted(node.get("children", []), key=_order):
-            visit(child)
+    def visit(nodes: list[dict[str, Any]]) -> None:
+        for index, node in enumerate(nodes):
+            if _is_toc_node(node):
+                continue
+            if node.get("exampleContent"):
+                # 附录编写示例块（CSM-OCR-006）：示例文档自带的编号不是本标准章条，
+                # 不入目次（原标准附录示例即不出现在目次中）。
+                continue
+            number, title, is_annex = _heading_parts(node)
+            normalized_title = title.replace(" ", "")
+            # 术语裸节（number=3.1, title=""）：术语名在紧随其后的 documentBlock
+            # 兄弟节点标题上（扁平树），或单个子 documentBlock（嵌套树）。目次
+            # 标签合成 "3.1 中文术语"（只显示中文术语，英文对应词不入目次）。
+            if number and not title:
+                next_node = nodes[index + 1] if index + 1 < len(nodes) else None
+                term_title = _term_title_from_sibling(node, next_node)
+                # 段落形态术语（3.1 + contentElement）无 documentBlock 兄弟，
+                # term_title 为空；此时用 builder 写入的 term 元数据即可。
+                if term_title or node.get("term"):
+                    # 中文术语优先用 builder 识别的 term 元数据；未识别时从
+                    # 术语行里截取中文部分（到首个拉丁字母为止）。
+                    cn = str(node.get("term") or _term_cn(term_title) or term_title)
+                    node["_tocLabel"] = _heading_text(number, cn, is_annex)
+            # Front matter is represented as unnumbered document blocks.
+            number_depth = len(number.split(".")) if re.fullmatch(r"\d+(?:\.\d+)*", number) else 1 if is_annex else 0
+            if (number and (depth is None or number_depth <= depth)) or normalized_title in {"前言", "引言", "参考文献", "索引"} or is_annex:
+                result.append(node)
+            visit(node.get("children", []))
 
-    for node in root_nodes:
-        visit(node)
+    visit(root_nodes)
     return result
 
 
+def _strip_cjk_gaps(title: str) -> str:
+    """Remove the letter-spacing blanks in CJK titles (目 次 → 目次) but keep
+    spaces inside English runs (code of practice standard) and the U+200B term
+    separator between Chinese and English."""
+    return re.sub(r"(?<=[\u4e00-\u9fff]) (?=[\u4e00-\u9fff])", "", title)
+
+
+def _term_cn(term_title: str) -> str:
+    """Extract the Chinese term from a '中文 English' term line (TOC shows CN only)."""
+    match = re.match(r"^[\u4e00-\u9fff]{1,24}", term_title.strip())
+    return match.group(0) if match else term_title
+
+
+def _term_title_from_sibling(node: dict[str, Any], next_node: dict[str, Any] | None) -> str:
+    """Return the term title for a bare term section, or '' when not applicable.
+
+    GB/T 20001 术语条目「中文English」常被解析为裸节（number=3.1, title=""）
+    加紧随的 documentBlock 标题（扁平树为兄弟节点，嵌套树为单个子节点）。
+    目次需要 "3.1 中文 English" 形式的完整标签；正文顺序与 roundtrip 不受影响。
+    """
+    children = node.get("children", [])
+    candidates: list[dict[str, Any]] = []
+    if len(children) == 1:
+        candidates.append(children[0])
+    if next_node is not None:
+        candidates.append(next_node)
+    for candidate in candidates:
+        if candidate.get("nodeType") != "documentBlock":
+            continue
+        title = str(candidate.get("title") or "").strip()
+        # 术语名中文与英文之间可能有 U+200B（CSM-OCR-003 术语间隔修复插入）。
+        if re.match(r"^[\u4e00-\u9fff]{1,24}\u200b?[A-Za-z]", title):
+            return title
+    return ""
+
+
 def _toc_label(node: dict[str, Any]) -> str:
+    synthesized = node.get("_tocLabel")
+    if synthesized:
+        return str(synthesized)
     number, title, is_annex = _heading_parts(node)
     return _heading_text(number, title.replace(" ", ""), is_annex)
 

@@ -13,7 +13,7 @@ fully processed documents under the v2.0 stage layout (naming_specification.txt)
 
 Usage:
   .venv/bin/python tools/verify_standard_versions.py \\
-      --docroot out/mineru/gbt-23132-2008 --docroot out/mineru/gbt-23132-2024
+      --docroot out/mineru/GB_T_23132-2008 --docroot out/mineru/GB_T_23132-2024
   (order = chronological: oldest first; the last docroot is treated as the
    newest edition and must declare the replaces relationship)
 """

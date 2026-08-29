@@ -1,6 +1,6 @@
 schema-version: "1.0"
 kind: rendering-profile
-id: gb-t-1-1-2020
+id: GB_T_1.1-2020
 version: "0.2.0"
 status: draft
 title: GB/T 1.1-2020 标准文件 PDF 渲染配置
@@ -27,7 +27,12 @@ styles:
   section: {size-pt: 16, leading-pt: 22, alignment: center}
   clause: {size-pt: 12, leading-pt: 20, alignment: left}
   front-matter: {size-pt: 10.5, leading-pt: 18, alignment: justify}
+  # 前言/引言/目次等前置标题：三号（16pt）黑体居中（GBT-FM2）。
+  front-matter-title: {size-pt: 16, leading-pt: 22, alignment: center}
   table: {size-pt: 9, leading-pt: 13}
+  # 示例线框（GBT-B11，GB/T 1.1 10.4.5 区分线框细实线）：frame=黑色细实线框；
+  # shaded=浅色背景（类代码块）。单条示例可用 SSIR 节点 exampleStyle 覆盖。
+  examples: {style: frame}
 header-footer:
   footer-page-number: true
   footer-format: "第 {page} 页"

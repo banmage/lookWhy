@@ -18,7 +18,7 @@ lookwhy/
 ├── src/leleby_ssir/              # 核心引擎
 ├── tools/                        # 运维脚本
 ├── config/                       # 引擎配置（非业务规则）
-│   ├── rendering/                # 渲染 profile（gb-t-1-1-2020.yaml）
+│   ├── rendering/                # 渲染 profile（GB_T_1.1-2020.yaml）
 │   └── pipeline/                 # 审核组合配置（audit-profile-*.yaml）
 ├── rules/                        # ★ 规则库
 │   ├── base/{standard-id}/       # 通用规则包（场景 a）
@@ -57,12 +57,12 @@ lookwhy/
 
 | 旧路径 | 新路径 |
 |---|---|
-| `rules/generic-extraction-rules.yaml` | `rules/base/gbt-1-1-2020/extraction-rules.yaml` |
-| `rules/gbt-1-1-2020-requirements.yaml` | `rules/base/gbt-1-1-2020/requirements.yaml` |
-| `rules/general-standard-audit.yaml` | `rules/base/gbt-1-1-2020/audit.yaml` |
-| `rules/sources/GBT 1.1-2020.*` | `rules/base/gbt-1-1-2020/source.*` |
-| `rules/sources/GBT 20001.10-2014.*` | `rules/base/gbt-20001.10-2014/source.*` |
-| `rules/rendering/gb-t-1-1-2020.yaml` | `config/rendering/gb-t-1-1-2020.yaml` |
+| `rules/generic-extraction-rules.yaml` | `rules/base/GB_T_1.1-2020/extraction-rules.yaml` |
+| `rules/gbt-1-1-2020-requirements.yaml` | `rules/base/GB_T_1.1-2020/requirements.yaml` |
+| `rules/general-standard-audit.yaml` | `rules/base/GB_T_1.1-2020/audit.yaml` |
+| `rules/sources/GBT 1.1-2020.*` | `rules/base/GB_T_1.1-2020/source.*` |
+| `rules/sources/GBT 20001.10-2014.*` | `rules/base/GB_T_20001.10-2014/source.*` |
+| `rules/rendering/gb-t-1-1-2020.yaml` | `config/rendering/GB_T_1.1-2020.yaml` |
 | `rules/profiles/*.yaml` | `config/pipeline/audit-profile-*.yaml` |
 | `examples/*` | `corpus/golden/*` |
 | `examples/csm/*` | `corpus/golden/csm/*` |

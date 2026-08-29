@@ -129,8 +129,8 @@ CLI 分发位于 `src/leleby_ssir/cli.py`，服务边界位于 `service.py`，`p
 
 规则是系统的“程序”，与语料数据（`corpus/`）和租户运行时数据（`storage/`）严格分离。`rules/base/` 下按标准组织规则包，当前含两套：
 
-- `gbt-1-1-2020/`：`requirements.yaml`（GBT-xxx 内容/结构/排版要求，逐条带 `source` 章节追溯）、`extraction-rules.yaml`（GEN-xxx 通用抽取与合成规则）、`audit.yaml`、以及规则源标准 CSM/SSIR/转换报告三件套；
-- `gbt-20001.10-2014/`：产品标准专项规则包（P10-xxx），仅对产品标准类文件叠加。
+- `GB_T_1.1-2020/`：`requirements.yaml`（GBT-xxx 内容/结构/排版要求，逐条带 `source` 章节追溯）、`extraction-rules.yaml`（GEN-xxx 通用抽取与合成规则）、`audit.yaml`、以及规则源标准 CSM/SSIR/转换报告三件套；
+- `GB_T_20001.10-2014/`：产品标准专项规则包（P10-xxx），仅对产品标准类文件叠加。
 
 实现文件：`src/leleby_ssir/compliance.py`、`rules/base/*`。
 
@@ -237,7 +237,7 @@ PYTHONPATH=src python3 tools/verify_markdown_roundtrip.py \
 建议顺序：
 
 1. 先定义 Rendering IR：页尺寸、版心、字体、标题编号、段落、表格、图、公式、页眉页脚、封面、前言、目次与附录的排版对象；不要直接从 SSIR 拼接 PDF 字符串。
-2. 以 GB/T 1.1 为依据定义可版本化的 `gb-t-1-1-2020` PDF rendering profile；明确哪些规则可自动处理、哪些必须由人工提供（封面、发布信息、分页、复杂图表）。
+2. 以 GB/T 1.1 为依据定义可版本化的 `GB_T_1.1-2020` PDF rendering profile；明确哪些规则可自动处理、哪些必须由人工提供（封面、发布信息、分页、复杂图表）。
 3. 选择可重复的 PDF 生成后端，并在 CI 中固定版本、字体和区域设置；输出 PDF 同时保留 Rendering IR、渲染配置和文件哈希。
 4. 将 PDF 验收拆为语义验收与视觉验收：先保证从 SSIR 到渲染文本、表格、公式的关键内容零损失，再用页图像或 PDF 结构做版式基线比较。
 5. 建立“SSIR -> PDF -> 文本/CSM -> SSIR”的后续回环，但不要把 PDF 视觉差异混入当前 Markdown M1 的等价比较。

@@ -7,7 +7,7 @@ title: 产品标准专项审核准则（GB/T 20001.10-2014）
 description: >-
   在产品标准（document-type=product-standard 或标题/范围命中产品标准判定）上
   叠加的专项审核。只产生审核发现，不阻断原始文档到 SSIR 的转换；
-  与 gbt-1-1-2020/audit.yaml 的通用审核一起构成产品标准的完整审核层。
+  与 GB_T_1.1-2020/audit.yaml 的通用审核一起构成产品标准的完整审核层。
 source:
   type: maintained-rule-set
   authority: leleby

@@ -89,16 +89,16 @@ lookWhy/
 │   ├── verify_markdown_roundtrip.py  # 批量 roundtrip 回归（corpus/golden/csm）
 │   └── extract_schema.py       # schema 工具
 ├── config/
-│   ├── rendering/gb-t-1-1-2020.yaml   # 渲染 profile：字体/字号/边距/emblems 徽标映射
+│   ├── rendering/GB_T_1.1-2020.yaml   # 渲染 profile：字体/字号/边距/emblems 徽标映射
 │   ├── emblems/                # ★ 封面徽标固定目录（GB_logo.png/JB_logo.png/company_logo.png…）
 │   └── pipeline/               # audit-profile-*.yaml（审核 profile 草稿）
 ├── rules/                      # ★ 规则库（系统"程序"，与 corpus/storage 分离）
-│   ├── base/gbt-1-1-2020/
+│   ├── base/GB_T_1.1-2020/
 │   │   ├── requirements.yaml       # GBT-* 54 条（内容/结构/排版，100% 带 source 章节号）
 │   │   ├── extraction-rules.yaml   # GEN-* 34 条（抽取/合成/渲染工程规则，16 条带 gbt11-ref）
 │   │   ├── audit.yaml              # 通用审核准则 11 条（GEN-STRUCT/REF/PRES-*）
 │   │   └── source.*                # GB/T 1.1-2020 源 CSM/SSIR/转换报告
-│   ├── base/gbt-20001.10-2014/     # 产品标准专项
+│   ├── base/GB_T_20001.10-2014/     # 产品标准专项
 │   │   ├── requirements.yaml       # P10-* 7 条（要素/撰写/排版，带 source）
 │   │   ├── extraction-rules.yaml   # P10-GEN-* 7 条（产品标准抽取专项）
 │   │   └── audit.yaml              # P10-AUD-* 7 条（产品标准审核）
@@ -106,8 +106,8 @@ lookWhy/
 │   └── README.md                # 规则库结构说明
 ├── corpus/
 │   ├── golden/                  # ★ 金标准语料（回归验证用 PDF + csm/ 手写 canonical CSM）
-│   │   ├── GBT_1.1-2020.pdf / GBT_25141-2022.pdf / JBT_14425-2023.pdf /
-│   │   │   SJT_11859-2022.pdf / Q_001..004.pdf / DB11T_1000.1-2020.pdf …
+│   │   ├── GB_T_1.1-2020.pdf / GB_T_25141-2022.pdf / JB_T_14425-2023.pdf /
+│   │   │   SJ_T_11859-2022.pdf / Q_001..004.pdf / DB11_T_1000.1-2020.pdf …
 │   │   └── csm/                 # 企业/团体标准手写 CSM（Q_HKT_16016-2026.canonical.md 等）
 │   └── reference-standards/     # 参考标准 Markdown（元模型类，未来规则来源）
 ├── tests/                       # unittest（44 个）
@@ -126,10 +126,10 @@ lookWhy/
 .venv/bin/python tools/verify_markdown_roundtrip.py \
   --examples-dir corpus/golden/csm --output-dir out/roundtrip  # 批量 roundtrip
 # 手动单文档：
-.venv/bin/ssir csm normalize --input in.md --canonical-output out/GBT_15034-2012.canonical.md --report out/r.json
-.venv/bin/ssir csm parse     --input out/GBT_15034-2012.canonical.md --output out/GBT_15034-2012.ssir.json --format json --report out/r2.json
-.venv/bin/ssir csm roundtrip --input out/GBT_15034-2012.canonical.md --render-md-output out/GBT_15034-2012.render.md --verify-output out/GBT_15034-2012.verify.json
-.venv/bin/ssir pdf render    --input out/GBT_15034-2012.ssir.json --output out/GBT_15034-2012.render.pdf --toc-depth 2
+.venv/bin/ssir csm normalize --input in.md --canonical-output out/GB_T_15034-2012.canonical.md --report out/r.json
+.venv/bin/ssir csm parse     --input out/GB_T_15034-2012.canonical.md --output out/GB_T_15034-2012.ssir.json --format json --report out/r2.json
+.venv/bin/ssir csm roundtrip --input out/GB_T_15034-2012.canonical.md --render-md-output out/GB_T_15034-2012.render.md --verify-output out/GB_T_15034-2012.verify.json
+.venv/bin/ssir pdf render    --input out/GB_T_15034-2012.ssir.json --output out/GB_T_15034-2012.render.pdf --toc-depth 2
 # 旧旗标 --std0-output / --std1-output 仍兼容
 ```
 
@@ -143,8 +143,8 @@ lookWhy/
 - **可恢复**：失败页块只重跑自己；`--stage {extract,merge,finalize,all}` 分段；
   状态在 `out/mineru/<std>/pipeline-state.json`。
 - **命名方案**（用户确认，实现于 `src/leleby_ssir/naming.py`）：输出 stem 按标准号规范化——
-  GB/T→`GBT_15034-2012`、JB/T→`JBT_14054-2021`、DB11/T→`DB11T_1000-2020`、
-  Q/→`Q_XKBZ_002-2026`、T/→`T_CAS_501-2021`；显式 `--output-stem` 优先。
+  标准号斜杠一律转下划线（GB/T→`GB_T_15034-2012`、JB/T→`JB_T_14054-2021`、DB11/T→`DB11_T_1000-2020`、
+  Q/→`Q_XKBZ_002-2026`、T/→`T_CAS_501-2021`）；显式 `--output-stem` 优先。
 - **产物**（单文档阶段目录，见 `naming_specification.txt` §4.2）：
   `00_source/<ID>.source.pdf` + `.checksum.sha256`、`01_extract/<ID>.raw.md` +
   `.provenance.json`、`02_canonical/<ID>.canonical.md` + `.normalize-report.json`、
@@ -226,7 +226,7 @@ lookWhy/
 
 - 改完代码跑 `./.venv/bin/python -m unittest discover`（41 个测试）。
 - 全流程验证用金标准 PDF：`corpus/golden/Q_003.pdf`（企业标准 6 页，快）、
-  `JBT_14425-2023.pdf`（OCR 型 21 页）、`GBT_25141-2022.pdf`（国标 18 页）。
+  `JB_T_14425-2023.pdf`（OCR 型 21 页）、`GB_T_25141-2022.pdf`（国标 18 页）。
 - 验证清单：roundtrip passed、渲染 warnings 数量合理（企业标准 ICS/CCS 缺失
   占位是预期）、SSIR metadata 关键字段（title/issuer/dates/standardNumber）。
 - git：本地身份已配置 joylix <joylix@126.com>，提交前无需再设。

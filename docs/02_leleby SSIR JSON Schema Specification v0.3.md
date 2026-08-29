@@ -313,7 +313,7 @@
     "NormativeRenderingProfile": {
       "type": "string",
       "enum": [
-        "gb-t-1-1-2020",
+        "GB_T_1.1-2020",
         "iso-iec-directives-part-2",
         "custom"
       ],
@@ -1597,7 +1597,7 @@
       "id": "ssir:GBT-77777-2026/qa/qa-001",
       "documentId": "ssir:GBT-77777-2026",
       "runId": "ssir:processing/run/20260815-001",
-      "renderingProfile": "gb-t-1-1-2020",
+      "renderingProfile": "GB_T_1.1-2020",
       "overallStatus": "partial",
       "ocrConfidence": 0.92,
       "structureConfidence": 0.85,

@@ -7,15 +7,15 @@ title: 标准编写规则 第10部分：产品标准
 language: zh-CN
 source:
   mode: user-markdown
-  original-file-name: GBT 20001_10-2014 标准编写规则 产品标准.md
+  original-file-name: GB_T_20001_10-2014_标准编写规则_产品标准.md
   provenance: none
-rendering-profile: gb-t-1-1-2020
+rendering-profile: GB_T_1.1-2020
 extensions:
   rule-source:
-    id: gb-t-20001-10-2014
+    id: GB_T_20001.10-2014
     role: normative-rule-document
     extraction-status: source-ssir
-    supersedes-or-complements: gb-t-1-1-2020
+    supersedes-or-complements: GB_T_1.1-2020
 ---
 
 # 标准编写规则 第10部分：产品标准

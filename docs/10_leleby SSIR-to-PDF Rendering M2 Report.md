@@ -16,18 +16,18 @@
 - 生成独立渲染报告，记录 profile、字体、页数和缺失资产/未知内容警告；有目次时预检与最终构建各跑一次封面故事，占位 warning 去重后再写报告；
 - 生成前先执行 SSIR Schema 与引用完整性校验。
 
-渲染器各函数均带“规则对应”注释，逐条映射到 `rules/base/gbt-1-1-2020/requirements.yaml`（GBT-*）与 `rules/base/gbt-1-1-2020/extraction-rules.yaml`（GEN-*），便于后续逐条核对。
+渲染器各函数均带“规则对应”注释，逐条映射到 `rules/base/GB_T_1.1-2020/requirements.yaml`（GBT-*）与 `rules/base/GB_T_1.1-2020/extraction-rules.yaml`（GEN-*），便于后续逐条核对。
 
 ## 配置
 
-默认配置为 `config/rendering/gb-t-1-1-2020.yaml`（原 `rules/rendering/`，2026-08 迁移至 `config/rendering/`）。配置独立描述纸张、版心、字体、正文/标题/表格样式、页眉页脚和缺失资产策略。字体路径是环境相关配置，不应被视为跨机器固定事实。
+默认配置为 `config/rendering/GB_T_1.1-2020.yaml`（原 `rules/rendering/`，2026-08 迁移至 `config/rendering/`）。配置独立描述纸张、版心、字体、正文/标题/表格样式、页眉页脚和缺失资产策略。字体路径是环境相关配置，不应被视为跨机器固定事实。
 
 ## 当前验收
 
 已对以下 SSIR 生成 PDF：
 
-- `GBT 1.1-2020.ssir.json`：85 页，封面完整（ICS 01.120、CCS P 20、代替关系、发布/实施日期、英文名称），0 warning；
-- `GBT 20001.10-2014.ssir.json`：22 页，封面完整（ICS 01.120、CCS A 31、发布/实施日期、发布机构），0 warning。
+- `GB_T_1.1-2020.ssir.json`：85 页，封面完整（ICS 01.120、CCS P 20、代替关系、发布/实施日期、英文名称），0 warning；
+- `GB_T_20001.10-2014.ssir.json`：22 页，封面完整（ICS 01.120、CCS A 31、发布/实施日期、发布机构），0 warning。
 
 两份 PDF 均成功生成并嵌入 WenQuanYi Zen Hei / AR PL UMing 字体。项目原有 26 项测试全部通过（含 `tests/test_compliance.py` 新增的 6 项规则合规测试）。
 

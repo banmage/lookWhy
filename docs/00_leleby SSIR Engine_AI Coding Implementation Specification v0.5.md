@@ -971,7 +971,7 @@ class RenderingNode(BaseModel):
 
 class RenderingIR(BaseModel):
     documentId: str
-    profile: str  # "gb-t-1-1-2020"
+    profile: str  # "GB_T_1.1-2020"
     nodes: List[RenderingNode]
     styles: Dict[str, RenderingStyle]
     pageSetup: Optional[dict] = None
@@ -1177,7 +1177,7 @@ class PreservationStatus(str, Enum):
 
 class NormativeRenderingProfile(str, Enum):
     """规范性渲染配置文件 — 新增于 JSON Schema v0.3 / Data Model v0.4 §7.3"""
-    GB_T_1_1_2020 = "gb-t-1-1-2020"
+    GB_T_1_1_2020 = "GB_T_1.1-2020"
     ISO_IEC_DIRECTIVES_PART_2 = "iso-iec-directives-part-2"
     CUSTOM = "custom"
 
@@ -1238,7 +1238,7 @@ class NormalizationPolicy(str, Enum):
 
 class RenderingProfileType(str, Enum):
     """渲染配置文件类型 — Rendering IR"""
-    GB_T_1_1_2020 = "gb-t-1-1-2020"
+    GB_T_1_1_2020 = "GB_T_1.1-2020"
     ISO_IEC = "iso-iec"
     CUSTOM = "custom"
 ```

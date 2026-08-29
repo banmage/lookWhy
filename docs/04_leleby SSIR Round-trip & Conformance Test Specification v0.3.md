@@ -915,7 +915,7 @@ Phase 1 必须通过的 8 道 Gate：
   "reportId": "rt-20260815-001",
   "timestamp": "2026-08-15T14:30:00Z",
   "documentId": "ssir:GBT-42093.1-2022",
-  "renderingProfile": "gb-t-1-1-2020",
+  "renderingProfile": "GB_T_1.1-2020",
   "cycle": 1,
   
   "summary": {
@@ -966,7 +966,7 @@ Phase 1 必须通过的 8 道 Gate：
   
   "renderingProfileValidation": {
     "status": "PASS",
-    "profile": "gb-t-1-1-2020"
+    "profile": "GB_T_1.1-2020"
   },
   
   "recommendations": []

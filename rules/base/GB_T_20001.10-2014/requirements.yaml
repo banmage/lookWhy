@@ -3,7 +3,7 @@
 # =====================================================================
 # 来源：《标准编写规则 第10部分：产品标准》（GB/T 20001.10-2014）
 # 用途：产品标准类文件在通用规则（extraction-rules.yaml GEN-xxx）与
-#       GB/T 1.1-2020 要求（gbt-1-1-2020/requirements.yaml GBT-xxx）之上
+#       GB/T 1.1-2020 要求（GB_T_1.1-2020/requirements.yaml GBT-xxx）之上
 #       叠加的专项要求。规则 ID 前缀 P10-；源码中以 "P10-xxx" 注释引用。
 # 适用判定：文档为产品标准时（封面/范围含"产品标准"表述，或 front-matter
 #       document-type/product-scope 标注）加载本规则包逐条验证。
@@ -53,5 +53,5 @@ content-and-structure:
 
 layout:
   - id: P10-L01
-    rule: 封面与排版遵循 GB/T 1.1-2020 附录 E/F（见 gbt-1-1-2020/requirements.yaml 的 layout 部分），本部分无额外差异。
+    rule: 封面与排版遵循 GB/T 1.1-2020 附录 E/F（见 GB_T_1.1-2020/requirements.yaml 的 layout 部分），本部分无额外差异。
     source: "第1章"

@@ -7,21 +7,21 @@
 ```
 rules/
 ├── base/                          # 通用规则（平台管理员上传，批准即全局生效）
-│   ├── gbt-1-1-2020/              # 一个标准一个规则包
+│   ├── GB_T_1.1-2020/              # 一个标准一个规则包
 │   │   ├── requirements.yaml      # GB/T 1.1-2020 结构化规则要求（内容/结构/排版，带 source 章节追溯）
 │   │   ├── extraction-rules.yaml  # 通用抽取与合成规则（GEN-xxx，带 gbt11-ref 追溯字段）
 │   │   ├── audit.yaml             # 通用审核准则
 │   │   ├── source.csm.md          # 规则源标准 CSM 副本
 │   │   ├── source.ssir.json       # 权威 SSIR 文件
 │   │   └── source.conversion-report.json  # 转换诊断与来源哈希
-│   └── gbt-20001.10-2014/         # 同构规则包（当前仅 source 三件套）
+│   └── GB_T_20001.10-2014/         # 同构规则包（当前仅 source 三件套）
 ├── industries/                    # 行业规则（规划）：{industry_code}/{pending,approved,rejected}/
 ├── ontology/                      # 本体文件（规划）：分类树、术语库等平台级资源
 └── schemas/                       # 规则文件自身的校验 Schema
     └── audit-rule-set.schema.json
 ```
 
-## base/gbt-1-1-2020 制品说明
+## base/GB_T_1.1-2020 制品说明
 
 - `requirements.yaml`：从 GB/T 1.1-2020 原文整理的内容、结构与排版要求（GBT-xxx 编号），每条规则的 `source` 字段给出标准章节编号以便追溯。
 - `extraction-rules.yaml`：PDF 抽取→CSM→SSIR→PDF 流水线的通用逻辑规则（GEN-xxx），有标准原文对应的条目带 `gbt11-ref` 追溯字段。
@@ -42,7 +42,7 @@ GB/T 20001.10 规则包（产品标准专项）已补齐三件套：
 
 ```text
 PYTHONPATH=src python3 -m leleby_ssir csm parse \
-  --input 'rules/base/gbt-1-1-2020/source.csm.md' \
-  --output 'rules/base/gbt-1-1-2020/source.ssir.json' \
+  --input 'rules/base/GB_T_1.1-2020/source.csm.md' \
+  --output 'rules/base/GB_T_1.1-2020/source.ssir.json' \
   --format json
 ```

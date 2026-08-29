@@ -28,6 +28,22 @@ def _is_annex_heading(text: str) -> bool:
     return bool(re.match(r"^附\s*录\s*[A-Z]", text.strip()))
 
 
+# 术语行：中文术语 + 间隙（U+3000/空格/历史 U+200B）+ 英文对应词。
+# 英文部分只允许拉丁字母、数字、空白与少量符号，禁止中文标点/汉字，
+# 避免把定义段误判为术语行。
+TERM_LINE_RE = re.compile(
+    r"^([\u4e00-\u9fff]{1,24})[\u3000 \u200b]+([A-Za-z][A-Za-z0-9 &()（）·.\-—]*)$"
+)
+
+
+def _match_term_line(text: str) -> tuple[str, str] | None:
+    """Split a term line into (中文术语, 英文对应词), or None when it is not one."""
+    match = TERM_LINE_RE.match(text.strip())
+    if not match:
+        return None
+    return match.group(1), match.group(2).strip()
+
+
 def _marker_type(marker: str) -> str:
     value = marker.rstrip(")）")
     if marker in {"-", "*", "+"}:
@@ -111,12 +127,25 @@ class SSIRBuilder:
         stack: list[tuple[int, dict[str, Any]]] = [(0, root)]
         node_sort = 0
         content_sort: dict[str, int] = defaultdict(int)
+        doc_title = str(metadata.get("title") or "").strip()
+        # 术语和定义章（术语条目识别：CSM-OCR-003/GB-T 术语中英文两项元数据）。
+        in_terms = False
+        pending_term: dict[str, Any] | None = None
+        chapter_re = re.compile(r"^\d+\s+\S")
+        term_number_re = re.compile(r"^\d+(?:\.\d+)+$")
 
         for block in document.blocks:
             if block.kind == "heading":
                 # The document title is the sole H1 that is not a structural
                 # node.  MinerU commonly emits annex starts as later H1s.
                 if block.level == 1 and not _is_annex_heading(block.text):
+                    state.canonical_parts.append(block.text)
+                    continue
+                heading_text = block.text.strip()
+                # 正文首页标题重复：MinerU 把正文首页的标准名称也抽成 ## 标题，
+                # 其文本与文档标题相同，不应作为章节节点（否则引言末尾多出
+                # 一个标准名称且进入目次）。
+                if (block.level or 0) >= 2 and heading_text == doc_title:
                     state.canonical_parts.append(block.text)
                     continue
                 node = self._make_node(state, block, node_sort)
@@ -128,6 +157,25 @@ class SSIRBuilder:
                 parent.setdefault("children", []).append(node)
                 stack.append((depth, node))
                 state.canonical_parts.append(block.text)
+                # 术语章/术语条目状态机（扁平树：3.1、3.2 与文档块都是根级兄弟）
+                if chapter_re.match(heading_text) and "术语" in heading_text:
+                    in_terms = True
+                    pending_term = None
+                elif chapter_re.match(heading_text):
+                    in_terms = False
+                    pending_term = None
+                elif in_terms and term_number_re.match(str(node.get("number") or "")):
+                    # 裸术语节（3.1，title=""）：期待紧随的术语行（段落或文档块标题）
+                    pending_term = node
+                else:
+                    # 文档块/子条：若是术语行的标题形态（3.2 + "功能function"）
+                    if pending_term is not None and node.get("nodeType") in ("documentBlock", "clause", "subClause", "item", "subItem"):
+                        title = str(node.get("title") or "").strip()
+                        pair = _match_term_line(title)
+                        if pair:
+                            pending_term["term"] = pair[0]
+                            pending_term["englishTerm"] = pair[1]
+                    pending_term = None
                 continue
 
             parent = stack[-1][1] if stack else root
@@ -137,6 +185,15 @@ class SSIRBuilder:
             parent.setdefault("contentElements", []).append(element)
             state.canonical_refs.append(element["id"])
             state.canonical_parts.append(self._canonical_fragment(block))
+            # 术语行的段落形态（3.1 + "规范标准 specification standard"）
+            if pending_term is not None and parent is pending_term:
+                text = str(element.get("textContent") or "")
+                pair = _match_term_line(text)
+                if pair:
+                    pending_term["term"] = pair[0]
+                    pending_term["englishTerm"] = pair[1]
+                    element.setdefault("semanticTypes", []).append("termDefinition")
+                pending_term = None
 
         common: dict[str, Any] = {
             "documentIdentifier": identifier,
@@ -199,7 +256,61 @@ class SSIRBuilder:
             "preservationLevel": "Level3",
             "createdAt": "1970-01-01T00:00:00Z",
         }
+        self._mark_annex_examples(root)
         return ssir
+
+    @staticmethod
+    def _mark_annex_examples(root: dict[str, Any]) -> None:
+        """Mark example-internal content inside annexes (CSM-OCR-006 / GBT-B05).
+
+        GB/T 20001 系列附录里的编写示例（表框/图框内容）自带编号体系
+        （如「4 技术要求」「5 试验方法」），这些编号不是本标准的真实章条，
+        不应与正文编号混淆：合规编号检查、目次与渲染器据此排除/特殊处理。
+        规则：在附录（或附录小节 A.x）内，无编号标题（示例文档标题，如
+        「1 000 kV 变电站监控系统 技术规范」「示例1：」）之后出现的编号
+        标题及其子树都属于示例内容；附录小节（A.1/A.2…）本身是真实标题。
+        该标记仅附加在 SSIR 节点上，csm_renderer 仍按标题序列化，
+        canonical/roundtrip 不受影响。
+        """
+        annex_section_re = re.compile(r"^[A-Z](?:\.\d+)*\s")
+
+        def visit(nodes: list[dict[str, Any]], in_annex: bool = False, example_active: bool = False) -> None:
+            for node in nodes:
+                if node.get("nodeType") == "annex":
+                    # 嵌套树：附录 children 即附录内容。扁平树（MinerU 全 ## 抽取，
+                    # 附录无 children，示例内容是其后继兄弟）：保持 in_annex 状态
+                    # 让同一列表的后续节点按附录内容处理，直到下一个 annex 节点。
+                    visit(node.get("children", []), True, False)
+                    in_annex = True
+                    example_active = False
+                    continue
+                if not in_annex:
+                    visit(node.get("children", []), False, False)
+                    continue
+                number = str(node.get("number") or "").strip()
+                title = str(node.get("title") or "").strip()
+                if not number:
+                    if annex_section_re.match(title):
+                        # 附录小节（A.1 产品规范标准编写示例）——真实标题，结束示例块。
+                        visit(node.get("children", []), True, False)
+                        example_active = False
+                    else:
+                        # 无编号标题 = 示例文档标题（示例1：/ 示例文档名），开始示例块。
+                        node["exampleContent"] = True
+                        visit(node.get("children", []), True, True)
+                        example_active = True
+                    continue
+                if re.match(r"^[A-Z](?:\.\d+)*$", number):
+                    # 带编号的附录小节（A.1 / A.2），结束示例块。
+                    visit(node.get("children", []), True, False)
+                    example_active = False
+                elif example_active:
+                    node["exampleContent"] = True
+                    visit(node.get("children", []), True, True)
+                else:
+                    visit(node.get("children", []), True, False)
+
+        visit(root.get("children", []))
 
     def _make_node(self, state: _BuilderState, block: Block, sort_order: int) -> dict[str, Any]:
         title = block.text
@@ -213,7 +324,9 @@ class SSIRBuilder:
         # the compact GB/T form, while user Markdown sometimes contains a space.
         annex = re.match(r"^附\s*录\s*([A-Z])\s*(?:[(（](规范性|资料性|未判定|推荐性)[)）])?\s*(.*)$", title)
         pure_numbered = re.match(r"^(\d+(?:\.\d+)*)$", title)
-        numbered = re.match(r"^(\d+(?:\.\d+)*)(?:\s+|(?=[\u4e00-\u9fffA-Za-z（]))(.+)$", title)
+        # 编号后必须接汉字/字母/括号，不能接数字："1 000 kV 变电站监控系统 技术规范"
+        # 的 "1 000" 是名称本身（一千伏），不是章号 "1"（GEN-031 层次编号规范化）。
+        numbered = re.match(r"^(\d+(?:\.\d+)*)(?:\s+)?(?=[\u4e00-\u9fffA-Za-z（(])(.+)$", title)
         if annex:
             number = annex.group(1)
             # Annex status is normative information, so retain it in the schema's title field.
@@ -439,7 +552,7 @@ class SSIRBuilder:
             "assessedAt": "1970-01-01T00:00:00Z",
         }
         profile = state.document.metadata.get("rendering-profile")
-        if profile in {"gb-t-1-1-2020", "iso-iec-directives-part-2", "custom"}:
+        if profile in {"GB_T_1.1-2020", "iso-iec-directives-part-2", "custom"}:
             quality["renderingProfile"] = profile
         if state.unresolved_figures:
             quality["unresolvedFigures"] = state.unresolved_figures

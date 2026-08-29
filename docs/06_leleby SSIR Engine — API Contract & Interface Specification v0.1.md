@@ -122,11 +122,11 @@ POST /documents
 |------|------|------|------|
 | `file` | file | ✅ | PDF 或 DOCX 文件 |
 | `metadata` | object | ❌ | 用户提供的元数据覆盖 |
-| `renderingProfile` | string | ❌ | 渲染配置，默认 `gb-t-1-1-2020` |
+| `renderingProfile` | string | ❌ | 渲染配置，默认 `GB_T_1.1-2020` |
 | `autoProcess` | boolean | ❌ | 是否自动启动提取，默认 `true` |
 
 **`renderingProfile` 枚举**：
-- `gb-t-1-1-2020`
+- `GB_T_1.1-2020`
 - `iso-iec-directives-part-2`
 - `custom`
 
@@ -140,7 +140,7 @@ POST /documents
     "documentId": "ssir:GBT-42093.1-2022",
     "sourceFileId": "src:a1b2c3d4e5f67890",
     "status": "PROCESSING",
-    "renderingProfile": "gb-t-1-1-2020",
+    "renderingProfile": "GB_T_1.1-2020",
     "createdAt": "2026-08-15T10:30:00Z"
   },
   "timestamp": "2026-08-15T10:30:00Z",
@@ -244,7 +244,7 @@ GET /documents/{documentId}
     "sourceFiles": [
       {
         "id": "src:a1b2c3d4e5f67890",
-        "fileName": "GBT_42093.1-2022.pdf",
+        "fileName": "GB_T_42093.1-2022.pdf",
         "mimeType": "application/pdf",
         "pageCount": 30
       }
@@ -256,7 +256,7 @@ GET /documents/{documentId}
     "qualityAssessment": {
       "id": "ssir:GBT-42093.1-2022/qa/qa-001",
       "overallStatus": "complete",
-      "renderingProfile": "gb-t-1-1-2020",
+      "renderingProfile": "GB_T_1.1-2020",
       "structureConfidence": 0.99,
       "contentConfidence": 0.98,
       "assessedAt": "2026-08-15T11:00:00Z"
@@ -583,13 +583,13 @@ POST /documents/{documentId}/render
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `format` | string | ❌ | 输出格式：`docx`（默认）、`pdf`、`html` |
-| `profile` | string | ❌ | 渲染配置，默认 `gb-t-1-1-2020` |
+| `profile` | string | ❌ | 渲染配置，默认 `GB_T_1.1-2020` |
 
 **请求体**：
 
 ```json
 {
-  "profile": "gb-t-1-1-2020",
+  "profile": "GB_T_1.1-2020",
   "options": {
     "includeCover": true,
     "includeTOC": true,
@@ -664,7 +664,7 @@ POST /documents/{documentId}/roundtrip
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `profile` | string | ❌ | 渲染配置，默认 `gb-t-1-1-2020` |
+| `profile` | string | ❌ | 渲染配置，默认 `GB_T_1.1-2020` |
 | `includeFidelity` | boolean | ❌ | 是否包含 Rendering Fidelity 测试，默认 `true` |
 | `includeCriticalLoss` | boolean | ❌ | 是否包含 Critical Loss 检查，默认 `true` |
 
@@ -672,7 +672,7 @@ POST /documents/{documentId}/roundtrip
 
 ```json
 {
-  "profile": "gb-t-1-1-2020",
+  "profile": "GB_T_1.1-2020",
   "options": {
     "includeFidelity": true,
     "includeCriticalLoss": true,
@@ -725,7 +725,7 @@ GET /documents/{documentId}/roundtrip/result
     "reportId": "rt-20260815-001",
     "timestamp": "2026-08-15T10:30:00Z",
     "documentId": "ssir:GBT-42093.1-2022",
-    "renderingProfile": "gb-t-1-1-2020",
+    "renderingProfile": "GB_T_1.1-2020",
     "summary": {
       "overallStatus": "PASS",
       "criticalLoss": false,
@@ -820,7 +820,7 @@ GET /documents/{documentId}/quality
       "id": "ssir:GBT-42093.1-2022/qa/qa-001",
       "documentId": "ssir:GBT-42093.1-2022",
       "runId": "ssir:processing/run/20260815-001",
-      "renderingProfile": "gb-t-1-1-2020",
+      "renderingProfile": "GB_T_1.1-2020",
       "overallStatus": "complete",
       "dimensions": {
         "textExtraction": {
@@ -849,7 +849,7 @@ GET /documents/{documentId}/quality
         },
         "renderingProfileValidation": {
           "status": "PASS",
-          "profile": "gb-t-1-1-2020"
+          "profile": "GB_T_1.1-2020"
         }
       },
       "assessedAt": "2026-08-15T11:00:00Z"

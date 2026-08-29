@@ -701,7 +701,7 @@ def _recover_gbt_7_4_diagrams(markdown: str, source_pdf: Path, asset_dir: Path) 
         import fitz  # type: ignore
 
         asset_dir.mkdir(parents=True, exist_ok=True)
-        crops = (("gbt-1-1-2020-7-4-diagrams.png", fitz.Rect(72, 275, 530, 548)),)
+        crops = (("GB_T_1.1-2020-7-4-diagrams.png", fitz.Rect(72, 275, 530, 548)),)
         with fitz.open(source_pdf) as document:
             page = document[17]  # PDF page 18, where GB/T 1.1 clause 7.4 appears.
             for name, rect in crops:
@@ -940,9 +940,9 @@ def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
     # did not supply them explicitly, matching the generic PDF extractor logic.
     number = args.standard_number or standard_number_from_text("\n".join(parts_raw)[:3000], stem)
     number = re.sub(r"\.(?=\d)", "", number) if number.count(".") > 1 else number
-    # 输出文件命名方案（用户确认）：推荐性/指导性标准 /T /Z 并入代号
-    # （GB/T→GBT、JB/T→JBT），企业/团体斜杠转下划线，代号与顺序号间加
-    # 下划线（GBT_15034-2012、Q_XKBZ_002-2026）。显式 --output-stem 优先；
+    # 输出文件命名方案（用户确认）：标准号中的斜杠一律转下划线
+    # （GB/T→GB_T、JB/T→JB_T、Q/XKBZ→Q_XKBZ），代号与顺序号间加
+    # 下划线（GB_T_15034-2012、Q_XKBZ_002-2026）。显式 --output-stem 优先；
     # 否则按解析出的标准号规范化命名并写入 state 供后续阶段复用。
     if not args.output_stem:
         derived = standard_filename(number)
@@ -1088,7 +1088,55 @@ def finalize(args: argparse.Namespace, merged: Path) -> Path | None:
         print("SSIR parsing needs review; normalized CSM remains available.", file=sys.stderr)
         return None
     _log(f"SSIR JSON written: {ssir}")
+    _stamp_example_styles(ssir, args.input)
     return ssir
+
+
+def _stamp_example_styles(ssir_path: Path, source_pdf: Path) -> None:
+    """Detect the original example-box style and record it on SSIR example nodes
+    (GBT-B11 示例线框：frame=黑色细实线框 / shaded=浅色背景，两种模式都要保留，
+    渲染与原文一致).
+
+    检测依据是源 PDF 的矢量几何：大尺寸描边矩形 → frame；大尺寸填充矩形 → shaded。
+    扫描型 PDF（页面是位图、无矢量框线）检测不到，节点不带 exampleStyle，
+    渲染时回退到渲染 profile 的 examples.style 默认值。
+    """
+    try:
+        import fitz  # type: ignore
+    except Exception:
+        return
+    stroke_rects = 0
+    fill_rects = 0
+    try:
+        with fitz.open(source_pdf) as document:
+            for page in document:
+                for drawing in page.get_drawings():
+                    rect = drawing["rect"]
+                    if rect.width < 80 or rect.height < 30:
+                        continue
+                    if drawing.get("fill"):
+                        fill_rects += 1
+                    elif drawing.get("stroke"):
+                        stroke_rects += 1
+    except Exception:
+        return
+    if not (stroke_rects or fill_rects):
+        return  # 无矢量几何（扫描型）→ 保留 profile 默认
+    style = "frame" if stroke_rects >= fill_rects else "shaded"
+    try:
+        data = json.loads(ssir_path.read_text(encoding="utf-8"))
+    except Exception:
+        return
+
+    def visit(nodes: list[Any]) -> None:
+        for node in nodes:
+            if node.get("exampleContent"):
+                node.setdefault("exampleStyle", style)
+            visit(node.get("children", []) or [])
+
+    visit(data.get("structuralRoot", {}).get("children", []) or [])
+    ssir_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    _log(f"Example style detected from source PDF: {style} (stroke={stroke_rects}, fill={fill_rects})")
 
 
 def compare(original: Path, generated: Path, output: Path) -> None:
@@ -1133,8 +1181,8 @@ def main() -> int:
     if args.chunk_size < 1:
         parser.error("--chunk-size must be positive")
     # 文档根目录（naming_specification.txt §4.2 out/mineru/{input}/）：默认用
-    # 源文件名主干（corpus 已是规范 ID 形如 GBT_23132-2008，保留下划线）；
-    # 仅当主干含空白（如 "GBT 20001.10-2014"）才把 \W+ 折叠为连字符。
+    # 源文件名主干（corpus 已是规范 ID 形如 GB_T_23132-2008，保留下划线）；
+    # 仅当主干含空白（如 "GB_T_1.1-2020 标准化文件的起草规则"）才把 \W+ 折叠为连字符。
     stem_dir = args.input.stem if not re.search(r"\s", args.input.stem) else re.sub(r"\W+", "-", args.input.stem).strip("-")
     args.output_dir = args.output_dir or ROOT / "out" / "mineru" / stem_dir
     args.output_dir.mkdir(parents=True, exist_ok=True)

@@ -93,7 +93,7 @@ source:
   mode: user-markdown
   original-file-name: "Q_EXAMPLE_001-2026.md"
   provenance: none
-rendering-profile: gb-t-1-1-2020
+rendering-profile: GB_T_1.1-2020
 extensions: {}
 ---
 ```
@@ -111,7 +111,7 @@ extensions: {}
 | `source.original-file-name` | 否 | 原始 PDF 或用户文件名 |
 | `source.original-file-sha256` | 否 | 原始文件 SHA-256 小写十六进制值 |
 | `source.provenance` | 是 | `sidecar` 或 `none` |
-| `rendering-profile` | 否 | 如 `gb-t-1-1-2020`；仅记录期望规范化配置 |
+| `rendering-profile` | 否 | 如 `GB_T_1.1-2020`；仅记录期望规范化配置 |
 | `extensions` | 是 | 空对象或命名空间化的扩展对象 |
 
 禁止将发布日期、实施日期、发布机构、起草单位等标准内容只放入 front matter。它们必须同时出现在相应的正文要素中，以保证在没有 YAML 解析器的情况下仍可审阅。
@@ -191,7 +191,7 @@ GB/T 1.1 要求章编号从范围开始连续，条使用下脚点分隔的阿�
 ```yaml
 extensions:
   standard-profile: product
-  profile-rules: ["gb-t-1-1-2020", "gb-t-20001-10-2014"]
+  profile-rules: ["GB_T_1.1-2020", "GB_T_20001.10-2014"]
 ```
 
 产品标准配置不改变 CSM 的通用语法，但导入器必须额外检查：
@@ -211,7 +211,7 @@ extensions:
 ```yaml
 extensions:
   standard-profile: product
-  profile-rules: ["gb-t-1-1-2020", "gb-t-20001-10-2014"]
+  profile-rules: ["GB_T_1.1-2020", "GB_T_20001.10-2014"]
   quality-notices:
     - code: GB20001-10-6.5.4
       severity: warning

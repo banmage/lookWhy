@@ -47,8 +47,8 @@ ssir csm validate --input incoming/user-standard.md
 # 将原始 Markdown 安全纠错并冻结为 Canonical CSM，同时写入纠错报告
 ssir csm normalize \
   --input incoming/user-standard.md \
-  --canonical-output out/GBT_15034-2012.canonical.md \
-  --report out/GBT_15034-2012.normalize-report.json
+  --canonical-output out/GB_T_15034-2012.canonical.md \
+  --report out/GB_T_15034-2012.normalize-report.json
 ```
 
 `Canonical` 是回旋转换的唯一输入基线（旧旗标 `--std0-output` 仍兼容）。转换报告保存原始文件的 SHA-256、问题代码、行号、是否已修复以及修复动作。加上 `--strict` 时，任何警告都会使命令失败，适合 CI 和 Golden 数据集。
@@ -58,15 +58,15 @@ ssir csm normalize \
 ```bash
 # 生成权威 SSIR JSON 和解析报告
 ssir csm parse \
-  --input out/GBT_15034-2012.canonical.md \
-  --output out/GBT_15034-2012.ssir.json \
+  --input out/GB_T_15034-2012.canonical.md \
+  --output out/GB_T_15034-2012.ssir.json \
   --format json \
-  --report out/GBT_15034-2012.parse-report.json
+  --report out/GB_T_15034-2012.parse-report.json
 
 # 可选：生成 Turtle RDF 投影
 ssir csm parse \
-  --input out/GBT_15034-2012.canonical.md \
-  --output out/GBT_15034-2012.semantic.ttl \
+  --input out/GB_T_15034-2012.canonical.md \
+  --output out/GB_T_15034-2012.semantic.ttl \
   --format ttl
 ```
 
@@ -74,10 +74,10 @@ ssir csm parse \
 
 ```bash
 ssir csm roundtrip \
-  --input out/GBT_15034-2012.canonical.md \
-  --render-md-output out/GBT_15034-2012.render.md \
-  --verify-output out/GBT_15034-2012.verify.json \
-  --report out/GBT_15034-2012.roundtrip.json
+  --input out/GB_T_15034-2012.canonical.md \
+  --render-md-output out/GB_T_15034-2012.render.md \
+  --verify-output out/GB_T_15034-2012.verify.json \
+  --report out/GB_T_15034-2012.roundtrip.json
 ```
 
 命令返回值：`0` 表示通过，`2` 表示输入或生成文档存在不可恢复错误，`3` 表示 SSIR 与 Verify 不等价或发生关键损失。旧旗标 `--std1-output` 仍兼容。
@@ -88,8 +88,8 @@ ssir csm roundtrip \
 
 ```bash
 ssir pdf extract \
-  --input "corpus/golden/GBT_10401-2023.pdf" \
-  --output out/GBT_10401-2023/01_extract/GBT_10401-2023.raw.md \
+  --input "corpus/golden/GB_T_10401-2023.pdf" \
+  --output out/GB_T_10401-2023/01_extract/GB_T_10401-2023.raw.md \
   --backend auto
 ```
 
@@ -97,27 +97,27 @@ ssir pdf extract \
 
 ```bash
 .venv/bin/python tools/mineru_full_standard.py \
-  --input "corpus/golden/GBT_10401-2023.pdf" \
+  --input "corpus/golden/GB_T_10401-2023.pdf" \
   --roundtrip --render
 ```
 
-输出在 `out/mineru/gbt-10401-2023/`（单文档阶段目录：`00_source/ … 05_verify/` +
+输出在 `out/mineru/GB_T_10401-2023/`（单文档阶段目录：`00_source/ … 05_verify/` +
 `manifest.json`，见 `naming_specification.txt`）。退出码 `0` 表示流程完成且回旋等价，`3` 表示 SSIR 与 Verify 不等价或发生关键信息损失，`2` 表示抽取或转换失败。未安装 MinerU 或需要快速验证时，可改用下面的轻量命令链（PyMuPDF 回退抽取 → 规范化 → 解析 → 回旋验证）：
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m leleby_ssir pdf extract \
-  --input "corpus/golden/GBT_10401-2023.pdf" \
-  --output out/gbt-10401-2023/01_extract/GBT_10401-2023.raw.md --backend auto
+  --input "corpus/golden/GB_T_10401-2023.pdf" \
+  --output out/GB_T_10401-2023/01_extract/GB_T_10401-2023.raw.md --backend auto
 PYTHONPATH=src .venv/bin/python -m leleby_ssir csm normalize \
-  --input out/gbt-10401-2023/01_extract/GBT_10401-2023.raw.md \
-  --canonical-output out/gbt-10401-2023/02_canonical/GBT_10401-2023.canonical.md
+  --input out/GB_T_10401-2023/01_extract/GB_T_10401-2023.raw.md \
+  --canonical-output out/GB_T_10401-2023/02_canonical/GB_T_10401-2023.canonical.md
 PYTHONPATH=src .venv/bin/python -m leleby_ssir csm parse \
-  --input out/gbt-10401-2023/02_canonical/GBT_10401-2023.canonical.md \
-  --output out/gbt-10401-2023/03_ssir/GBT_10401-2023.ssir.json
+  --input out/GB_T_10401-2023/02_canonical/GB_T_10401-2023.canonical.md \
+  --output out/GB_T_10401-2023/03_ssir/GB_T_10401-2023.ssir.json
 PYTHONPATH=src .venv/bin/python -m leleby_ssir csm roundtrip \
-  --input out/gbt-10401-2023/02_canonical/GBT_10401-2023.canonical.md \
-  --render-md-output out/gbt-10401-2023/04_render/GBT_10401-2023.render.md \
-  --verify-output out/gbt-10401-2023/05_verify/GBT_10401-2023.verify.json
+  --input out/GB_T_10401-2023/02_canonical/GB_T_10401-2023.canonical.md \
+  --render-md-output out/GB_T_10401-2023/04_render/GB_T_10401-2023.render.md \
+  --verify-output out/GB_T_10401-2023/05_verify/GB_T_10401-2023.verify.json
 ```
 
 ### 5. 生成传统 PDF 标准文稿
@@ -126,12 +126,12 @@ PDF 渲染读取已通过 SSIR 校验的 JSON，不重新解析 Markdown。项�
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m leleby_ssir pdf render \
-  --input out/GBT_15034-2012.ssir.json \
-  --output out/GBT_15034-2012.render.pdf \
-  --report out/GBT_15034-2012.render-report.json
+  --input out/GB_T_15034-2012.ssir.json \
+  --output out/GB_T_15034-2012.render.pdf \
+  --report out/GB_T_15034-2012.render-report.json
 ```
 
-也可以通过 `--profile` 指定自定义渲染配置。当前实现覆盖 GB/T 1.1 封面（左上 ICS/CCS、文件编号、横幅、文件名称、英文译名、一致性程度标识、底部发布/实施日期与发布机构，见 `rules/base/gbt-1-1-2020/requirements.yaml` 的 GBT-L01~L09）、前置要素、章节/条款、正文、列表、表格、公式原文、图像资产或图像缺失占位、附录、页眉标准号和页脚页码。封面必备信息（GBT-C01）缺失时以 “××” 占位并在渲染报告记录对应规则 ID；标准类文档一律渲染封面，不再因 ICS/CCS 缺失而跳过整个封面。字号字体、版心和分页属于可版本化的渲染配置；PDF 输出是传统标准草稿，尚未宣称通过完整的印刷版式验收。
+也可以通过 `--profile` 指定自定义渲染配置。当前实现覆盖 GB/T 1.1 封面（左上 ICS/CCS、文件编号、横幅、文件名称、英文译名、一致性程度标识、底部发布/实施日期与发布机构，见 `rules/base/GB_T_1.1-2020/requirements.yaml` 的 GBT-L01~L09）、前置要素、章节/条款、正文、列表、表格、公式原文、图像资产或图像缺失占位、附录、页眉标准号和页脚页码。封面必备信息（GBT-C01）缺失时以 “××” 占位并在渲染报告记录对应规则 ID；标准类文档一律渲染封面，不再因 ICS/CCS 缺失而跳过整个封面。字号字体、版心和分页属于可版本化的渲染配置；PDF 输出是传统标准草稿，尚未宣称通过完整的印刷版式验收。
 
 ### 6. 批量验证样例
 

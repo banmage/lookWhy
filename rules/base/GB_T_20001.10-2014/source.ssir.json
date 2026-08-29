@@ -239,7 +239,7 @@
       "humanReviewStatus": "machineReviewed",
       "id": "ssir:GB-T-20001.10-2014/qa/m1",
       "overallStatus": "partial",
-      "renderingProfile": "gb-t-1-1-2020",
+      "renderingProfile": "GB_T_1.1-2020",
       "runId": "ssir:processing/run/19700101-001",
       "structureConfidence": 1.0,
       "tableConfidence": 1.0
@@ -251,7 +251,7 @@
         "algorithm": "SHA-256",
         "value": "bdcf59c52035406a44d2e8360a40c8e28f70fe21213244fd22a9ef1fe85deb09"
       },
-      "fileName": "GBT 20001.10-2014.csm.md",
+      "fileName": "GB_T_20001.10-2014.csm.md",
       "fileSize": 35437,
       "id": "src:bdcf59c52035406a",
       "mimeType": "text/markdown"

@@ -7,12 +7,12 @@ title: GB/T 1.1—2020 标准化工作导则 第1部分：标准化文件的结�
 language: zh-CN
 source:
   mode: user-markdown
-  original-file-name: GBT 1.1-2020 标准化文件的起草规则.md
+  original-file-name: GB_T_1.1-2020_标准化文件的起草规则.md
   provenance: none
-rendering-profile: gb-t-1-1-2020
+rendering-profile: GB_T_1.1-2020
 extensions:
   rule-source:
-    id: gb-t-1-1-2020
+    id: GB_T_1.1-2020
     role: normative-rule-document
     extraction-status: source-ssir
 ---
@@ -1066,12 +1066,12 @@ title: "GB/T 1.1—2020 标准化工作导则 第1部分：标准化文件的结
 language: zh-CN
 source:
   mode: user-markdown
-  original-file-name: "GBT 1.1-2020 标准化文件的起草规则.md"
+  original-file-name: "GB_T_1.1-2020_标准化文件的起草规则.md"
   provenance: none
-rendering-profile: gb-t-1-1-2020
+rendering-profile: GB_T_1.1-2020
 extensions:
   rule-source:
-    id: gb-t-1-1-2020
+    id: GB_T_1.1-2020
     role: normative-rule-document
     extraction-status: source-ssir
 ---

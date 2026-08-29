@@ -4,11 +4,11 @@ Loads the layered rule packages under ``rules/base/`` and checks a converted
 SSIR document against them, producing per-rule findings that are recorded in
 the conversion report:
 
-Layer 1  GEN-xxx   rules/base/gbt-1-1-2020/extraction-rules.yaml
+Layer 1  GEN-xxx   rules/base/GB_T_1.1-2020/extraction-rules.yaml
                    (通用抽取/合成/渲染/验证规则)
-Layer 2  GBT-xxx   rules/base/gbt-1-1-2020/requirements.yaml
+Layer 2  GBT-xxx   rules/base/GB_T_1.1-2020/requirements.yaml
                    (GB/T 1.1-2020 内容、结构与排版要求)
-Layer 3  P10-xxx   rules/base/gbt-20001.10-2014/requirements.yaml
+Layer 3  P10-xxx   rules/base/GB_T_20001.10-2014/requirements.yaml
                    (产品标准专项要求，仅对产品标准类文件加载)
 
 Each finding carries the rule ID, priority (must→fail / should→warning),
@@ -83,6 +83,15 @@ def _walk_nodes(nodes: list[dict[str, Any]]):
         yield from _walk_nodes(node.get("children", []))
 
 
+def _is_example_content(node: dict[str, Any]) -> bool:
+    """True for nodes inside an annex example block (CSM-OCR-006).
+
+    示例块（GB/T 20001 附录编写示例等）的编号是示例文档自带的，不是本标准
+    的真实章条；合规检查对它们既不判定也不递归，避免与正文编号混淆。
+    """
+    return bool(node.get("exampleContent"))
+
+
 def _node_titles(document: dict[str, Any]) -> list[str]:
     titles: list[str] = []
     for node in _walk_nodes(document.get("structuralRoot", {}).get("children", [])):
@@ -125,7 +134,7 @@ def _check_cover_fields(metadata: dict[str, Any], report: ComplianceReport) -> N
             report.findings.append(
                 ComplianceFinding(
                     rule_id="GBT-C01",
-                    rule_set="gbt-1-1-2020",
+                    rule_set="GB_T_1.1-2020",
                     priority="must",
                     check="cover-required-field-present",
                     message=f"封面必备信息缺失：{key}（渲染时以占位符标注）",
@@ -144,22 +153,23 @@ def _check_element_order(document: dict[str, Any], report: ComplianceReport) -> 
     headings = [
         (str(n.get("number") or ""), str(n.get("title") or ""))
         for n in _walk_nodes(document.get("structuralRoot", {}).get("children", []))
+        if not _is_example_content(n)
     ]
     title_texts = [norm(t) for _, t in headings]
     if not any(t.startswith("前言") for t in title_texts):
         report.findings.append(
-            ComplianceFinding("GBT-E03", "gbt-1-1-2020", "must", "foreword-present", "必备要素缺失：前言")
+            ComplianceFinding("GBT-E03", "GB_T_1.1-2020", "must", "foreword-present", "必备要素缺失：前言")
         )
     scope_index = next((i for i, t in enumerate(title_texts) if "范围" in t and len(t) <= 6), None)
     if scope_index is None:
         report.findings.append(
-            ComplianceFinding("GBT-E05", "gbt-1-1-2020", "must", "scope-present", "必备要素缺失：范围（第 1 章）")
+            ComplianceFinding("GBT-E05", "GB_T_1.1-2020", "must", "scope-present", "必备要素缺失：范围（第 1 章）")
         )
     else:
         first_numbered = next((n for n, _ in headings if n), "")
         if first_numbered and not first_numbered.startswith("1"):
             report.findings.append(
-                ComplianceFinding("GBT-C05", "gbt-1-1-2020", "must", "scope-is-chapter-1", f"范围应为第 1 章，实际首章编号为 {first_numbered}")
+                ComplianceFinding("GBT-C05", "GB_T_1.1-2020", "must", "scope-is-chapter-1", f"范围应为第 1 章，实际首章编号为 {first_numbered}")
             )
 
 
@@ -173,13 +183,13 @@ def _check_annex_markers(document: dict[str, Any], report: ComplianceReport) -> 
         title = str(node.get("title") or "").strip()
         if not letter:
             report.findings.append(
-                ComplianceFinding("GBT-C09", "gbt-1-1-2020", "must", "annex-letter-present", f"附录缺少大写字母编号：{title[:30]}")
+                ComplianceFinding("GBT-C09", "GB_T_1.1-2020", "must", "annex-letter-present", f"附录缺少大写字母编号：{title[:30]}")
             )
         elif re.match(r"^[A-Za-z]$", letter):
             letters.append(letter.upper())
         if not re.search(r"[（(](规范性|资料性|推荐性)[)）]", title):
             report.findings.append(
-                ComplianceFinding("GBT-C09", "gbt-1-1-2020", "must", "annex-status-marked", f"附录 {letter or '?'} 缺少 (规范性)/(资料性) 性质标识")
+                ComplianceFinding("GBT-C09", "GB_T_1.1-2020", "must", "annex-status-marked", f"附录 {letter or '?'} 缺少 (规范性)/(资料性) 性质标识")
             )
     if letters:
         expected_ord = ord(letters[0])
@@ -193,7 +203,7 @@ def _check_annex_markers(document: dict[str, Any], report: ComplianceReport) -> 
             report.findings.append(
                 ComplianceFinding(
                     "GBT-C15",
-                    "gbt-1-1-2020",
+                    "GB_T_1.1-2020",
                     "should",
                     "annex-letters-continuous",
                     f"附录字母编号不连续，缺失：{', '.join(missing)}",
@@ -244,7 +254,7 @@ def _check_numbering_continuity(document: dict[str, Any], report: ComplianceRepo
             report.findings.append(
                 ComplianceFinding(
                     "GBT-H03",
-                    "gbt-1-1-2020",
+                    "GB_T_1.1-2020",
                     "must" if depth == 1 else "should",
                     "numbering-continuous",
                     f"{label}编号不连续：{'；'.join(details)}",
@@ -252,8 +262,10 @@ def _check_numbering_continuity(document: dict[str, Any], report: ComplianceRepo
             )
 
     def walk(children: list[dict[str, Any]]) -> None:
-        check_siblings(children)
+        check_siblings([c for c in children if not _is_example_content(c)])
         for node in children:
+            if _is_example_content(node):
+                continue
             walk(node.get("children", []))
 
     walk(document.get("structuralRoot", {}).get("children", []))
@@ -281,6 +293,8 @@ def _check_list_item_numbering(document: dict[str, Any], report: ComplianceRepor
         return None
 
     for node in _walk_nodes(document.get("structuralRoot", {}).get("children", [])):
+        if _is_example_content(node):
+            continue
         for content in node.get("contentElements", []):
             if content.get("presentationType") != "list":
                 continue
@@ -302,7 +316,7 @@ def _check_list_item_numbering(document: dict[str, Any], report: ComplianceRepor
             report.findings.append(
                 ComplianceFinding(
                     "GBT-C14",
-                    "gbt-1-1-2020",
+                    "GB_T_1.1-2020",
                     "should",
                     "list-item-numbers-continuous",
                     f"列表项编号缺失：{missing_text}（「{str(node.get('title') or '')[:24]}」内）",
@@ -339,7 +353,7 @@ def _check_glyph_confusion(document: dict[str, Any], report: ComplianceReport) -
         report.findings.append(
             ComplianceFinding(
                 "GBT-C16",
-                "gbt-1-1-2020",
+                "GB_T_1.1-2020",
                 "should",
                 "number-glyph-confusion",
                 f"{len(heading_hits)} 处标题编号疑似字形混淆（O/I/l 疑似 0/1）：{', '.join(heading_hits[:3])}",
@@ -349,7 +363,7 @@ def _check_glyph_confusion(document: dict[str, Any], report: ComplianceReport) -
         report.findings.append(
             ComplianceFinding(
                 "GBT-C16",
-                "gbt-1-1-2020",
+                "GB_T_1.1-2020",
                 "should",
                 "standard-number-glyph-confusion",
                 f"{len(reference_hits)} 处标准号疑似字形混淆（O/I/l 疑似 0/1）：{', '.join(reference_hits[:3])}",
@@ -368,7 +382,7 @@ def _check_reference_chapter(document: dict[str, Any], report: ComplianceReport)
     if chapter2 is None:
         report.findings.append(
             ComplianceFinding(
-                "GBT-C06", "gbt-1-1-2020", "should", "reference-chapter-second",
+                "GBT-C06", "GB_T_1.1-2020", "should", "reference-chapter-second",
                 "规范性引用文件应为第 2 章，但未找到编号为 2 的章",
             )
         )
@@ -377,7 +391,7 @@ def _check_reference_chapter(document: dict[str, Any], report: ComplianceReport)
     if "规范性引用文件" not in title:
         report.findings.append(
             ComplianceFinding(
-                "GBT-C06", "gbt-1-1-2020", "should", "reference-chapter-title",
+                "GBT-C06", "GB_T_1.1-2020", "should", "reference-chapter-title",
                 f"第 2 章标题应为\"规范性引用文件\"，实际为：{title}",
             )
         )
@@ -391,7 +405,7 @@ def _check_reference_chapter(document: dict[str, Any], report: ComplianceReport)
     if not any(t.startswith("下列文件") for t in texts):
         report.findings.append(
             ComplianceFinding(
-                "GBT-C06", "gbt-1-1-2020", "should", "reference-lead-in",
+                "GBT-C06", "GB_T_1.1-2020", "should", "reference-lead-in",
                 "规范性引用文件章缺少规定引导语（\"下列文件…\"），或未声明\"本文件没有规范性引用文件\"",
             )
         )
@@ -402,7 +416,7 @@ def _check_reference_chapter(document: dict[str, Any], report: ComplianceReport)
                 if marker and not marker.startswith("-") and marker not in ("—", "——"):
                     report.findings.append(
                         ComplianceFinding(
-                            "GBT-C06", "gbt-1-1-2020", "should", "reference-list-unordered",
+                            "GBT-C06", "GB_T_1.1-2020", "should", "reference-list-unordered",
                             f"规范性引用文件清单不应加序号，但列表项使用标记 {marker}",
                         )
                     )
@@ -414,14 +428,16 @@ def _check_sibling_heading_titles(document: dict[str, Any], report: ComplianceRe
 
     def walk(nodes: list[dict[str, Any]]) -> None:
         for node in nodes:
+            if _is_example_content(node):
+                continue
             kids = node.get("children", [])
             if kids:
-                titled = [c for c in kids if str(c.get("title") or "").strip()]
-                untitled = [c for c in kids if not str(c.get("title") or "").strip()]
+                titled = [c for c in kids if not _is_example_content(c) and str(c.get("title") or "").strip()]
+                untitled = [c for c in kids if not _is_example_content(c) and not str(c.get("title") or "").strip()]
                 if titled and untitled:
                     report.findings.append(
                         ComplianceFinding(
-                            "GBT-H04", "gbt-1-1-2020", "should", "sibling-heading-titles-consistent",
+                            "GBT-H04", "GB_T_1.1-2020", "should", "sibling-heading-titles-consistent",
                             f"「{node.get('title') or node.get('number') or ''}」下同一层次 "
                             f"{len(titled)} 个条有标题、{len(untitled)} 个条无标题，应一致",
                         )
@@ -430,7 +446,7 @@ def _check_sibling_heading_titles(document: dict[str, Any], report: ComplianceRe
                     if child.get("children"):
                         report.findings.append(
                             ComplianceFinding(
-                                "GBT-H04", "gbt-1-1-2020", "should", "untitled-clause-keeps-children",
+                                "GBT-H04", "GB_T_1.1-2020", "should", "untitled-clause-keeps-children",
                                 f"无标题条 {child.get('number')} 不应再分条",
                             )
                         )
@@ -442,6 +458,8 @@ def _check_sibling_heading_titles(document: dict[str, Any], report: ComplianceRe
 def _check_hanging_paragraphs(document: dict[str, Any], report: ComplianceReport) -> None:
     """GBT-H05: 不宜设悬置段——章标题与条之间、条标题与下一层次条之间的段。"""
     for node in _walk_nodes(document.get("structuralRoot", {}).get("children", [])):
+        if _is_example_content(node):
+            continue
         if not node.get("children"):
             continue
         paragraphs = [
@@ -452,7 +470,7 @@ def _check_hanging_paragraphs(document: dict[str, Any], report: ComplianceReport
             label = f"{node.get('number')} {node.get('title')}".strip()
             report.findings.append(
                 ComplianceFinding(
-                    "GBT-H05", "gbt-1-1-2020", "should", "no-hanging-paragraph",
+                    "GBT-H05", "GB_T_1.1-2020", "should", "no-hanging-paragraph",
                     f"「{label}」标题与其子条之间存在悬置段（{len(paragraphs)} 段），不宜设悬置段",
                 )
             )
@@ -471,7 +489,7 @@ def _check_note_example_formats(document: dict[str, Any], report: ComplianceRepo
                 if not text.startswith(("注：", "注:", "注1：", "注1:", "注２：", "注2：")):
                     report.findings.append(
                         ComplianceFinding(
-                            "GBT-X03", "gbt-1-1-2020", "should", "note-lead-in",
+                            "GBT-X03", "GB_T_1.1-2020", "should", "note-lead-in",
                             f"注应以\"注：\"（单个）或\"注1：\"（多个，编号从 1 起）起始：{text[:24]}",
                         )
                     )
@@ -479,7 +497,7 @@ def _check_note_example_formats(document: dict[str, Any], report: ComplianceRepo
                 if not text.startswith(("示例：", "示例:", "示例1：", "示例1:")):
                     report.findings.append(
                         ComplianceFinding(
-                            "GBT-X05", "gbt-1-1-2020", "should", "example-lead-in",
+                            "GBT-X05", "GB_T_1.1-2020", "should", "example-lead-in",
                             f"示例应以\"示例：\"（单个）或\"示例1：\"（多个）起始：{text[:24]}",
                         )
                     )
@@ -501,7 +519,7 @@ def _check_footnote_numbering(document: dict[str, Any], report: ComplianceReport
             if n != expected:
                 report.findings.append(
                     ComplianceFinding(
-                        "GBT-X04", "gbt-1-1-2020", "should", "footnote-numbers-continuous",
+                        "GBT-X04", "GB_T_1.1-2020", "should", "footnote-numbers-continuous",
                         f"条文脚注编号应从前言起全文连续（1)、2)…），发现 {n}（应为 {expected}）",
                     )
                 )
@@ -514,12 +532,12 @@ def _check_table_figure_numbers(document: dict[str, Any], registries: dict[str, 
     for table in registries.get("tables", []):
         if not str(table.get("number") or "").strip():
             report.findings.append(
-                ComplianceFinding("GBT-X02", "gbt-1-1-2020", "must", "table-number-present", f"表格缺少编号：{str(table.get('caption') or table.get('id'))[:30]}")
+                ComplianceFinding("GBT-X02", "GB_T_1.1-2020", "must", "table-number-present", f"表格缺少编号：{str(table.get('caption') or table.get('id'))[:30]}")
             )
     for figure in registries.get("figures", []):
         if not str(figure.get("number") or "").strip():
             report.findings.append(
-                ComplianceFinding("GBT-X01", "gbt-1-1-2020", "should", "figure-number-present", f"图缺少编号：{str(figure.get('caption') or figure.get('id'))[:30]}")
+                ComplianceFinding("GBT-X01", "GB_T_1.1-2020", "should", "figure-number-present", f"图缺少编号：{str(figure.get('caption') or figure.get('id'))[:30]}")
             )
 
 
@@ -538,7 +556,7 @@ def _check_numeric_requirements_have_units(document: dict[str, Any], report: Com
         report.findings.append(
             ComplianceFinding(
                 "P10-R02",
-                "gbt-20001.10-2014",
+                "GB_T_20001.10-2014",
                 "must",
                 "numeric-requirements-carry-units",
                 f"{hits} 处定量要求疑似缺单位（“不大于/不小于/≤/≥ + 裸数值”）",
@@ -566,7 +584,7 @@ def verify_compliance(document: dict[str, Any], metadata: dict[str, Any] | None 
         "ics": document.get("metadata", {}).get("standard", {}).get("ics", ""),
         "ccs": document.get("metadata", {}).get("standard", {}).get("ccs", ""),
     }
-    report = ComplianceReport(applies=["gbt-1-1-2020"])
+    report = ComplianceReport(applies=["GB_T_1.1-2020"])
 
     # Layer 2: GB/T 1.1-2020 requirements (always applied).
     _check_cover_fields(flat_metadata, report)
@@ -585,7 +603,7 @@ def verify_compliance(document: dict[str, Any], metadata: dict[str, Any] | None 
 
     # Layer 3: GB/T 20001.10 product-standard requirements.
     if is_product_standard({"document-type": metadata.get("document-type", ""), "title": flat_metadata.get("title", "")}, document):
-        report.applies.append("gbt-20001.10-2014")
+        report.applies.append("GB_T_20001.10-2014")
         _check_numeric_requirements_have_units(document, report)
 
     # Priority-to-status normalisation: only must rules fail the report;
