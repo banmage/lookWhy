@@ -81,11 +81,13 @@ lookWhy/
 │   ├── exporters.py            # JSON 权威输出 + Turtle(RDF) 投影
 │   ├── report.py               # 转换报告（SHA-256、issue 列表、修复动作）
 │   ├── compliance.py           # 三层合规验证（GEN→GBT→P10），写 findings
+│   ├── standard_name.py        # ★ 标准名称解析：类型（GBT-N01）与主对象（GBT-N02）
 │   ├── pdf_extractor.py        # PDF→CSM：MinerU 首选、PyMuPDF 文本层回退
 │   ├── pdf_renderer.py         # SSIR → 标准风格 PDF（reportlab，封面/目次/正文/附录）
 │   └── ssir.schema.json        # SSIR JSON Schema（元数据键必须在此登记）
 ├── tools/
 │   ├── mineru_full_standard.py # ★ PDF 全流程工具（分块抽取→合并→normalize→parse→roundtrip→render）
+│   ├── parse_standard_names.py # 批量解析标准名称 CSV → 类型/主对象/场合 TSV
 │   ├── verify_markdown_roundtrip.py  # 批量 roundtrip 回归（corpus/golden/csm）
 │   └── extract_schema.py       # schema 工具
 ├── config/
@@ -94,7 +96,7 @@ lookWhy/
 │   └── pipeline/               # audit-profile-*.yaml（审核 profile 草稿）
 ├── rules/                      # ★ 规则库（系统"程序"，与 corpus/storage 分离）
 │   ├── base/GB_T_1.1-2020/
-│   │   ├── requirements.yaml       # GBT-* 54 条（内容/结构/排版，100% 带 source 章节号）
+│   │   ├── requirements.yaml       # GBT-* 70 条（内容/结构/排版/命名，100% 带 source 章节号）
 │   │   ├── extraction-rules.yaml   # GEN-* 34 条（抽取/合成/渲染工程规则，16 条带 gbt11-ref）
 │   │   ├── audit.yaml              # 通用审核准则 11 条（GEN-STRUCT/REF/PRES-*）
 │   │   └── source.*                # GB/T 1.1-2020 源 CSM/SSIR/转换报告

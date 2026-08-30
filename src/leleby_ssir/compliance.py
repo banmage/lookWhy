@@ -23,6 +23,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .standard_name import name_matches_type, parse_standard_name
+
 RULES_ROOT = Path(__file__).resolve().parents[2] / "rules" / "base"
 
 # Rule IDs referenced from code comments; keep in sync with requirements.yaml.
@@ -108,9 +110,21 @@ def _node_titles(document: dict[str, Any]) -> list[str]:
 
 
 def is_product_standard(metadata: dict[str, Any], document: dict[str, Any]) -> bool:
-    """Decide whether the P10 product-standard rule layer applies (P10 meta)."""
+    """Decide whether the P10 product-standard rule layer applies (P10 meta).
+
+    优先使用标准名称解析结果（standard_name.parse_standard_name）：方法/
+    术语/分类/规程/指南标准明确不加载 P10；产品标准明确加载。解析不出
+    明确类型（其他/安全/空标题）时回退到标题正则（PRODUCT_STANDARD_HINT）。
+    """
     if str(metadata.get("document-type", "")).strip() == "product-standard":
         return True
+    title = str(metadata.get("title", ""))
+    if title:
+        info = parse_standard_name(title)
+        if info.standard_type in ("方法标准", "术语标准", "分类标准", "规程标准", "指南标准"):
+            return False
+        if info.standard_type == "产品标准":
+            return True
     title_haystack = "\n".join(
         [
             str(metadata.get("title", "")),
@@ -564,6 +578,44 @@ def _check_numeric_requirements_have_units(document: dict[str, Any], report: Com
         )
 
 
+def _check_standard_name(metadata: dict[str, Any], report: ComplianceReport) -> None:
+    """GBT-N01/N02: 标准名称与功能类型一致性 + 标准化主对象识别。
+
+    使用 standard_name 解析器（后缀定类型、中缀定主语、含"用"定场合）：
+    - GBT-N01：名称必须体现其功能类型（术语标准应含"术语/定义/词汇"、
+      方法标准应含"试验/测定/测试/校准/计算/测量/检验"、分类标准应含
+      "分类/编码/命名/型号"、规程标准应含"规程"、指南标准应含"指南/
+      导则"、安全标准应含"安全"、产品标准应含"条件/规范/通则/总则/
+      要求/限值"），对应 GB/T 1.1-2020 6.1.4 命名要求；
+    - GBT-N02：应能识别出标准化主对象（主语），识别失败提示人工核查。
+    """
+    title = str(metadata.get("title", "")).strip()
+    if not title:
+        return
+    info = parse_standard_name(title)
+    if not name_matches_type(info):
+        report.findings.append(
+            ComplianceFinding(
+                "GBT-N01",
+                "GB_T_1.1-2020",
+                "must",
+                "name-matches-type",
+                f"标准名称与功能类型不符：识别为「{info.standard_type}」（命中 "
+                f"「{info.type_basis}」），但名称未体现该类型的必备关键词：{title}",
+            )
+        )
+    if not info.subject:
+        report.findings.append(
+            ComplianceFinding(
+                "GBT-N02",
+                "GB_T_1.1-2020",
+                "should",
+                "subject-identified",
+                f"未能从标准名称识别出标准化主对象，需人工核查：{title}",
+            )
+        )
+
+
 def _hyphenate(key: str) -> str:
     """camelCase -> hyphen-case so metadata lookups are key-name agnostic.
 
@@ -600,6 +652,7 @@ def verify_compliance(document: dict[str, Any], metadata: dict[str, Any] | None 
     _check_footnote_numbering(document, report)
     registries = {"tables": document.get("tables", []), "figures": document.get("figures", [])}
     _check_table_figure_numbers(document, registries, report)
+    _check_standard_name(flat_metadata, report)
 
     # Layer 3: GB/T 20001.10 product-standard requirements.
     if is_product_standard({"document-type": metadata.get("document-type", ""), "title": flat_metadata.get("title", "")}, document):
