@@ -395,7 +395,7 @@ def render_pdf(
             # 线条画在 flowable 底部；gap 位于内容与线条之间。
             canvas.line((self.width - self.length) / 2, self.line_width, (self.width + self.length) / 2, self.line_width)
 
-    def toc_story(toc_nodes: list[dict[str, Any]], toc_pages: dict[str, int]) -> list[Any]:
+    def toc_story(toc_nodes: list[dict[str, Any]], toc_pages: dict[str, int], extra_contents: list[dict[str, Any]] | None = None) -> list[Any]:
         rows = []
         for node in toc_nodes:
             label = _toc_label(node)
@@ -415,6 +415,11 @@ def render_pdf(
             result.append(_TOCFlowable(rows[offset:offset + rows_per_page], float(doc_width)))
             if offset + rows_per_page < len(rows):
                 result.append(PageBreak())
+        # 目次块内的非行内容（如目录页底部的装饰图）保留渲染；TOC 文本
+        # paragraph 由 _toc_nodes 行生成，此处只补 figure 等，避免重复。
+        for content in sorted(extra_contents or [], key=_order):
+            if content.get("presentationType") == "figure":
+                _append_content(result, content, registries, styles, font_name, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image)
         result.append(PageBreak())
         return result
 
@@ -442,7 +447,7 @@ def render_pdf(
         while idx < root_len:
             node = root_nodes[idx]
             if _is_toc_node(node):
-                story.extend(toc_story(_toc_nodes(root_nodes, toc_depth), toc_pages))
+                story.extend(toc_story(_toc_nodes(root_nodes, toc_depth), toc_pages, node.get("contentElements", [])))
                 idx += 1
                 continue
             if _is_rendered_index_node(node):

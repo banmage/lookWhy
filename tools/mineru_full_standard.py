@@ -378,12 +378,15 @@ def _cover_metadata(part_dir: Path, markdown_text: str) -> dict[str, str]:
         # OCR may split the word ("发 布") and fuse both bodies into one footer
         # line, so compare on whitespace-stripped text.
         compact_line = re.sub(r"\s+", "", text)
+        # GEN-013: 发布/实施日期可能同行（"2021-08-19 发布 2021-09-19 实施"），
+        # 逐个识别全部「日期+发布/实施」对，而不是只认行首的日期。
         issued = re.match(r"^(\d{4}-\d{2}-\d{2})\s*发布", compact_line)
         effective = re.match(r"^(\d{4}-\d{2}-\d{2})\s*实施", compact_line)
-        if issued:
-            result.setdefault("publication-date", issued.group(1))
-        if effective:
-            result.setdefault("effective-date", effective.group(1))
+        for date_pair in re.finditer(r"(\d{4}-\d{2}-\d{2})\s*(发布|实施)", compact_line):
+            if date_pair.group(2) == "发布":
+                result.setdefault("publication-date", date_pair.group(1))
+            else:
+                result.setdefault("effective-date", date_pair.group(1))
         if "发布" in compact_line and not issued and not effective:
             issuer_text = compact_line
             if compact_line == "发布" and prev_footer:
@@ -1161,7 +1164,10 @@ def main() -> int:
     # normalize=GEN-031—034；build=GEN-050/052；verify=GEN-051/090/091 + 三层合规
     # （GEN→GBT→P10，见 compliance.py）；render=GEN-070—076。
     parser = argparse.ArgumentParser(description="Run a resumable full MinerU extraction, SSIR parsing, round-trip verification and optional PDF rendering for a national-standard PDF.")
-    parser.add_argument("--input", type=Path, help="PDF input of the national standard to extract (required)")
+    parser.add_argument("file", nargs="?", type=str, default=None,
+                        help="standard file name resolved under corpus/golden/ (e.g. T_ZZB_2224-2021 or T_ZZB_2224-2021.pdf). "
+                             "Shortcut mode: implies --stage all --roundtrip --render so one command runs extraction, rendering and round-trip verification.")
+    parser.add_argument("--input", type=Path, help="PDF input of the national standard to extract (alternative to the positional file name; full path or relative path)");
     parser.add_argument("--output-dir", type=Path, help="output directory (default: out/mineru/<input-stem>)")
     parser.add_argument("--output-stem", type=str, help="output filename stem for merged CSM/SSIR/PDF artifacts (default: input file name without the .pdf extension)")
     parser.add_argument("--front-matter-json", type=Path, help="optional JSON object with additional CSM front matter keys merged into the merged document (e.g. {\"ics\": \"01.120\", \"issuer\": \"...\"})")
@@ -1174,8 +1180,26 @@ def main() -> int:
     parser.add_argument("--render", action="store_true", help="Render parsed SSIR to PDF and write a comparison report.")
     parser.add_argument("--toc-depth", default="2", help="Maximum numbered TOC level for --render (positive integer or all; default: 2).")
     args = parser.parse_args()
-    if not args.input:
-        parser.error("--input is required (a PDF of the national standard to extract)")
+    if not args.input and not args.file:
+        parser.error("an input is required: pass a file name resolved under corpus/golden/ (e.g. T_ZZB_2224-2021) or --input PATH")
+    if args.input and args.file:
+        parser.error("pass either a positional file name or --input, not both")
+    if args.file:
+        # 快捷模式：文件名默认在 corpus/golden/ 下解析（允许带或不带 .pdf 后缀，
+        # 也允许子路径如 团体标准/T_ZZB_2224-2021.pdf）。
+        file_path = Path(args.file)
+        if file_path.is_file():
+            args.input = file_path
+        else:
+            candidate = ROOT / "corpus" / "golden" / args.file
+            if not candidate.is_file() and candidate.suffix.lower() != ".pdf":
+                candidate = candidate.with_suffix(".pdf")
+            if not candidate.is_file():
+                parser.error(f"file not found under corpus/golden/: {args.file!r} (looked for {candidate})")
+            args.input = candidate
+        # 单命令完成全部：提取 + 渲染 + 回环验证（与 README「一条命令」承诺一致）。
+        args.roundtrip = True
+        args.render = True
     if not args.input.is_file() or args.input.suffix.lower() != ".pdf":
         parser.error(f"input must be an existing PDF: {args.input}")
     if args.chunk_size < 1:

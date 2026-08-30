@@ -87,6 +87,10 @@ TABLE_CAPTION_RE = re.compile(r"^\*\*表([^\s]+)\s+(.+?)\*\*$")
 # Bare numbered caption: "**表N**" — 行业标准/企业标准常见排版，题注只有编号
 # 无题名 (GBT-B08 编号必备；题名可省略)。
 TABLE_BARE_CAPTION_RE = re.compile(r"^\*\*表([^\s]+)\*\*$")
+# Heading-shaped table caption ("## 表4 物理性能要求") — MinerU 偶尔把表题注
+# 提升为 ## 标题且位于 ssir:table directive 之前；解析时降级为表格 caption，
+# 避免渲染出「表4 物理性能要求」+「表4」双题注（GEN-032/033、GBT-B08）。
+TABLE_HEADING_CAPTION_RE = re.compile(r"^表([^\s]+)\s+(.+)$")
 
 SUPPORTED_DIRECTIVES = {
     "block",
@@ -270,6 +274,7 @@ class CSMParser:
         errors: list[str] = []
         warnings: list[str] = []
         pending: dict[str, Directive] = {}
+        pending_table_caption: tuple[str, str] | None = None
         directive_ids: set[str] = set()
         last_table: Block | None = None
         i = 0
@@ -314,6 +319,13 @@ class CSMParser:
                     if name in {"table", "figure", "formula", "unknown", "block"} and "id" not in attrs:
                         errors.append(f"line {line_no(i)}: ssir:{name} requires id")
                     directive = Directive(name=name, attrs=attrs, line=line_no(i))
+                    if name == "table":
+                        # 表题注被提升为标题（heading-shaped caption）已暂存，
+                        # 在此合并进 table attrs；已有显式 caption 时以显式为准。
+                        if pending_table_caption is not None:
+                            attrs.setdefault("caption-number", pending_table_caption[0])
+                            attrs.setdefault("caption", pending_table_caption[1])
+                            pending_table_caption = None
                     if name == "table-merge":
                         if last_table is None:
                             errors.append(f"line {line_no(i)}: ssir:table-merge must follow a table")
@@ -329,6 +341,30 @@ class CSMParser:
             heading = HEADING_RE.match(line)
             if heading:
                 heading_text = heading.group(2)
+                # 表题注被提升为标题（"## 表4 物理性能要求"，GEN-032/033）：
+                # 若形如「表N 题名」且后随（可跨空行）ssir:table directive 或
+                # 表格行，则降级为表格 caption 并入待处理的 table attrs，
+                # 避免渲染出「表4 物理性能要求」+「表4」双题注。
+                table_heading_caption = TABLE_HEADING_CAPTION_RE.match(heading_text)
+                if table_heading_caption and heading.group(1).count("#") >= 2:
+                    lookahead = i + 1
+                    while lookahead < len(lines) and not lines[lookahead].strip():
+                        lookahead += 1
+                    next_line = lines[lookahead].strip() if lookahead < len(lines) else ""
+                    next_table = next_line.startswith("<!-- ssir:table ")
+                    if not next_table and next_line.startswith("|") and lookahead + 1 < len(lines):
+                        next_table = bool(TABLE_SEPARATOR_RE.match(lines[lookahead + 1].strip()))
+                    if next_table:
+                        pending_table_caption = (
+                            table_heading_caption.group(1),
+                            table_heading_caption.group(2),
+                        )
+                        warnings.append(
+                            f"line {line_no(i)}: heading-shaped table caption was folded into the table caption "
+                            f"({table_heading_caption.group(1)} {table_heading_caption.group(2)!r})."
+                        )
+                        i += 1
+                        continue
                 # GBT-C12 列项误识别为标题：MinerU 偶尔把列项（如 "c）定型和
                 # 固化时间；"）提升成 ## 标题，导致渲染时按标题样式大缩进。
                 # 标题文本若形如列项（字母/数字 + 全/半角括号）则降级为列项

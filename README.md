@@ -93,7 +93,20 @@ ssir pdf extract \
   --backend auto
 ```
 
-**完整抽取与验证工具**：`tools/mineru_full_standard.py` 对任意国家标准 PDF 执行"可恢复的分块 MinerU 全量抽取 → 合并 raw → 规范化为 canonical → 解析为 SSIR → 回旋验证 →（可选）渲染 PDF 并比较"。所有输出文件名、标准号和标题均从输入 PDF 自动派生，可用 `--standard-number`/`--title` 覆盖；`--output-stem` 可固定输出文件名前缀，`--front-matter-json` 可补充已知元数据（如 `ics`/`ccs`/`replaces`/`issuer`）：
+**完整抽取与验证工具**：`tools/mineru_full_standard.py` 对任意国家标准 PDF 执行"可恢复的分块 MinerU 全量抽取 → 合并 raw → 规范化为 canonical → 解析为 SSIR → 回旋验证 →（可选）渲染 PDF 并比较"。所有输出文件名、标准号和标题均从输入 PDF 自动派生，可用 `--standard-number`/`--title` 覆盖；`--output-stem` 可固定输出文件名前缀，`--front-matter-json` 可补充已知元数据（如 `ics`/`ccs`/`replaces`/`issuer`）。
+
+**一条命令跑完全流程（推荐）**：直接附加需处理的标准文件名即可，程序默认在 `corpus/golden/` 目录中查找（可带或不带 `.pdf` 后缀，也接受子路径），并自动完成提取、渲染与回环验证：
+
+```bash
+# 自动定位 corpus/golden/T_ZZB_2224-2021.pdf，完成 提取 → 解析 → 回环验证 → 渲染
+.venv/bin/python tools/mineru_full_standard.py T_ZZB_2224-2021
+
+# 等价写法：显式 .pdf 后缀 / 子路径 / 完整路径
+.venv/bin/python tools/mineru_full_standard.py T_ZZB_2224-2021.pdf
+.venv/bin/python tools/mineru_full_standard.py corpus/golden/T_ZZB_2224-2021.pdf
+```
+
+快捷模式等价于 `--input corpus/golden/T_ZZB_2224-2021.pdf --stage all --roundtrip --render`，退出码 `0` 表示流程完成且回旋等价，`3` 表示 SSIR 与 Verify 不等价或发生关键信息损失，`2` 表示抽取或转换失败。需要分步控制（只抽取、跳过渲染等）时改用 `--input` 加阶段旗标：
 
 ```bash
 .venv/bin/python tools/mineru_full_standard.py \
@@ -188,7 +201,7 @@ CSM 的完整格式、YAML front matter、表格/图/公式/列表写法见 [CSM
 | `src/leleby_ssir/naming.py` | 命名单一事实源：STANDARD_ID 推导、`<ID>.<representation>.<ext>` 解析、报告默认路径。 |
 | `src/leleby_ssir/service.py` | 面向 CLI 和未来 HTTP API 的转换服务：Canonical 生成、CSM 转 SSIR、导出、回环；解析时执行逐条合规验证并把发现写入报告。 |
 | `tools/verify_markdown_roundtrip.py` | 对一个或多个 Canonical 文件批量执行回环验证。 |
-| `tools/mineru_full_standard.py` | 对任意国家标准 PDF 执行可恢复的分块 MinerU 全量抽取、CSM 合并、SSIR 解析、回旋验证和可选 PDF 渲染比较；产出单文档阶段目录（00_source…05_verify + manifest）。 |
+| `tools/mineru_full_standard.py` | 对任意国家标准 PDF 执行可恢复的分块 MinerU 全量抽取、CSM 合并、SSIR 解析、回旋验证和可选 PDF 渲染比较；直接传文件名（默认在 `corpus/golden/` 查找）即自动完成提取、渲染与回环验证；产出单文档阶段目录（00_source…05_verify + manifest）。 |
 
 实现模块的职责如下：
 
