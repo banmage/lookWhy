@@ -458,7 +458,7 @@ def _check_reference_chapter(document: dict[str, Any], report: ComplianceReport)
 
 
 _STANDARD_NUMBER_RE = re.compile(
-    r"(?:GB|GB/T|GB/Z|JB/T|JB|DB\d{1,2}/T|QB|SJ/T|SJ|DL/T|NY/T|T/|Q/|ISO|IEC)\s*[A-Z0-9][A-Z0-9.\-—–]*\d"
+    r"(?:GB/T|GB/Z|GB|JB/T|JB|DB\d{1,2}/T|QB/T|QB|SJ/T|SJ|DL/T|NY/T|HG/T|FZ/T|WS/T|YD/T|GA/T|CJ/T|JG/T|TB/T|SH/T|JC/T|EJ/T|MT/T|YY/T|YY|HJ/T|HJ|T/|Q/|ISO|IEC)\s*[A-Z0-9][A-Z0-9.\-—–]*\s*\d"
 )
 
 

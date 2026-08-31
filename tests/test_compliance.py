@@ -360,6 +360,38 @@ class NumberingContinuityTests(unittest.TestCase):
         self.assertEqual(len(c06), 1)
         self.assertIn("/ — 环境试验", c06[0].message)
 
+    def test_reference_item_industry_prefixes_not_flagged(self) -> None:
+        # 回归（2026-08-31，QB_T_2946-2020）：_STANDARD_NUMBER_RE 此前缺 QB/T
+        # 前缀分支（只列了 QB），导致 QB/T 引用条目全部误报"缺少标准文件编号"。
+        # 修复后 QB/T、HG/T、FZ/T、T/CAS、Q/ 等常见行业/团体/企业前缀均识别，
+        # 而真实缺号的条目（"/ — …"）与普通正文（"3 产品分类和型号命名"）仍报。
+        doc = _document(children=[
+            _clause("1", "范围"),
+            {
+                "nodeType": "clause",
+                "number": "2",
+                "title": "规范性引用文件",
+                "contentElements": [
+                    {"presentationType": "paragraph", "textContent": "下列文件对于本文件的应用是必不可少的。"},
+                    {"presentationType": "paragraph", "textContent": "QB/T 1714自行车命名和型号编制方法"},
+                    {"presentationType": "paragraph", "textContent": "QB/T 1802 自行车轮辋"},
+                    {"presentationType": "paragraph", "textContent": "HG/T 20507-2014 自动化仪表选型设计规范"},
+                    {"presentationType": "paragraph", "textContent": "FZ/T 73020-2019 针织休闲服装"},
+                    {"presentationType": "paragraph", "textContent": "T/CAS 502-2021 团体标准样例"},
+                    {"presentationType": "paragraph", "textContent": "Q/XKBZ 002-2026 企业标准样例"},
+                    {"presentationType": "paragraph", "textContent": "GB/T 755-2019 旋转电机 定额和性能"},
+                    {"presentationType": "paragraph", "textContent": "/ — 数据元和交换格式 信息交换 日期和时间表示法"},
+                    {"presentationType": "paragraph", "textContent": "3 产品分类和型号命名"},
+                ],
+                "children": [],
+            },
+        ])
+        report = verify_compliance(doc)
+        c06 = [f for f in report.findings if f.rule_id == "GBT-C06" and "标准文件编号" in f.message]
+        self.assertEqual(len(c06), 2)
+        self.assertIn("/ — 数据元和交换格式", c06[0].message)
+        self.assertIn("3 产品分类和型号命名", c06[1].message)
+
     def test_footnote_explanation_marker_must_be_lowercase(self) -> None:
         # 回归（2026-08-31，GB_T_43726-2024 表6 相位字母误判）：图表脚注解释行
         # 标记必须为小写拉丁字母（GB/T 1.1 9.12.2），大写是内容不是标记。
