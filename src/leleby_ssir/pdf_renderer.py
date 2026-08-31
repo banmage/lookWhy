@@ -474,6 +474,7 @@ def render_pdf(
                         break
                     _append_node(box, root_nodes[idx], registries, styles, font_name, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, marker_factory, PageBreak, example_default, example_leading=not box)
                     idx += 1
+                box = _strip_pagebreaks(box, PageBreak)
                 story.append(_example_box(box, mode, colors, Table, TableStyle))
                 continue
             _append_node(story, node, registries, styles, font_name, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, marker_factory, PageBreak, example_default)
@@ -582,6 +583,20 @@ def _is_example_header(node: dict[str, Any]) -> bool:
     return bool(re.match(r"^示例\s*\d*\s*[:：]\s*$", str(node.get("title") or "").strip()))
 
 
+def _strip_pagebreaks(flowables: list[Any], PageBreak: Any) -> list[Any]:
+    """Drop page breaks from an example box before wrapping it in a table.
+
+    A PageBreak flowable claims the full frame height, so inside the
+    single-column example-box table it inflates a row to ~72000pt and
+    reportlab raises LayoutError.  The box table already splits across
+    pages on its own (one closed box per page fragment), so page breaks
+    are never needed inside it.
+    """
+    if PageBreak is None:
+        return flowables
+    return [flowable for flowable in flowables if not isinstance(flowable, PageBreak)]
+
+
 def _example_box(flowables: list[Any], mode: str, colors: Any, Table: Any, TableStyle: Any) -> Any:
     """Wrap an annex example block in a box: black thin-line frame or a light
     background (GBT-B11 示例线框；GB/T 1.1 10.4.5 区分线框细实线).
@@ -628,6 +643,7 @@ def _append_nodes(story: list[Any], nodes: list[dict[str, Any]], registries: dic
                     break
                 _append_node(box, nodes[index], registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, marker_factory, PageBreak, example_default, example_leading=not box)
                 index += 1
+            box = _strip_pagebreaks(box, PageBreak)
             story.append(_example_box(box, mode, colors, Table, TableStyle))
             continue
         _append_node(story, node, registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, marker_factory, PageBreak, example_default)
@@ -907,25 +923,43 @@ def _ocr_l_one(markers: list[str]) -> bool:
     return bool(digit_ones) and len(letters) >= 2 and len(letters) + len(digit_ones) == len(markers)
 
 
+def _footnote_superscripts(text: str) -> str:
+    """脚注标记渲染为上角标——正文/图脚注安全版（GBT-X04 执行侧）。
+
+    GB/T 1.1-2020 9.12.2：图表脚注用小写拉丁字母 a)、b) 上标，脚注由标记与
+    解释成对组成。处理：
+    - 解释行行首标记："a 填写行业标准代号。" / "a国家标准…" → ᵃ；
+    - 汉字后全角小写字母（OCR 还原的标记）→ 上角标。
+    正文版刻意**不**做"汉字后半角小写单字母"（避免误伤变量/列项引用如
+    "转速n，"、"a)中所述"）；公式变量行（"n —转速" 字母后是破折号）不触发。
+    """
+    # 行首脚注解释标记 + 空格 + 汉字；排除公式变量行（字母后是 — 破折号）。
+    text = re.sub(r"^([ａ-ｚa-z])(?:[ \u3000]+)([\u4e00-\u9fff])", "\x00SUP\x00\\1\x00/SUP\x00 \\2", text)
+    # 行首脚注解释标记后紧跟汉字（OCR 丢了分隔空格）。
+    text = re.sub(r"^([ａ-ｚa-z])(?=[\u4e00-\u9fff])", "\x00SUP\x00\\1\x00/SUP\x00", text)
+    # 句末标点后紧跟的下一条脚注解释标记（MinerU 常把 "a 说明。 b说明。" 合并
+    # 成一段，2026-08-31 GB_T_1.1-2020 附录 E）："。 b行业…" → ᵇ。
+    text = re.sub(r"(?<=[。；])([ \u3000\n]*)([ａ-ｚa-z])(?=[\u4e00-\u9fff])", "\\1\x00SUP\x00\\2\x00/SUP\x00", text)
+    # 汉字后全角小写字母（全角必为 OCR 标记，非正文内容）。
+    text = re.sub(r"(?<=[\u4e00-\u9fff])([ａ-ｚ])", "\x00SUP\x00\\1\x00/SUP\x00", text)
+    return text
+
+
 def _table_cell_superscripts(text: str) -> str:
-    """表格单元格/表注的脚注引用标记渲染为上角标（GBT-C18）。
+    """表格单元格/表注的脚注引用标记渲染为上角标（GBT-C18 / GBT-X04）。
 
     GB/T 1.1 表脚注：被注释内容后跟上角标字母（匝间绝缘ᵃ），表下方以
     "a 说明" 列出。OCR 把上角标还原为普通字符（半角 a 或全角 ａ），此处：
     - 表注行行首的 "a "（标记+空格）→ 上角标；
     - 汉字后紧跟的全角小写字母 ａ-ｚ → 上角标（全角必为 OCR 标记）；
     - 汉字后紧跟的半角小写单字母 → 上角标，但排除可能的小写单字母单位
-      （m/s/g/l/t/h），避免误伤 "规格mm"/"长度m" 等。
+      （m/s/g/l/t/h）与列项引用 ")"（避免误伤 "规格mm"/"长度m"/"a)中所述"）。
+    行首规则只用小写（GB/T 1.1 表脚注 a/b/c；大写如 "A 相" 是内容，2026-08-31）。
     """
-    # 行首脚注标记: "a 说明" / "ａ 说明"（带空格）
-    text = re.sub(r"^([a-zA-Zａ-ｚＡ-Ｚ])(?:[ \u3000]+)(\S)", "\x00SUP\x00\\1\x00/SUP\x00 \\2", text)
-    # 行首脚注标记后紧跟汉字（OCR 丢了分隔空格）："a黑体表示…" → ᵃ黑体表示…
-    text = re.sub(r"^([a-zA-Zａ-ｚ])(?=[\u4e00-\u9fff])", "\x00SUP\x00\\1\x00/SUP\x00", text)
-    # 汉字后全角小写字母
-    text = re.sub(r"(?<=[\u4e00-\u9fff])([ａ-ｚ])", "\x00SUP\x00\\1\x00/SUP\x00", text)
-    # 汉字后半角小写单字母（排除单位 m/s/g/l/t/h）
+    text = _footnote_superscripts(text)
+    # 汉字后半角小写单字母（排除单位与 ")" 列项引用）
     text = re.sub(
-        r"(?<=[\u4e00-\u9fff])([abcefijknopqruvwxyz])(?![\u4e00-\u9fffA-Za-z])",
+        r"(?<=[\u4e00-\u9fff])([abcefijknopqruvwxyz])(?![)\u4e00-\u9fffA-Za-z])",
         "\x00SUP\x00\\1\x00/SUP\x00",
         text,
     )
@@ -981,7 +1015,7 @@ def _append_content(story: list[Any], content: dict[str, Any], registries: dict[
             # number) render flush left per GBT-B02; ordinary body text keeps
             # the two-Han-character first-line indent.
             style = styles["body-flush"] if _clause_leading_number(text) else styles["body"]
-            story.append(Paragraph(_markup(text), style))
+            story.append(Paragraph(_markup(_footnote_superscripts(text)), style))
     elif kind == "note":
         story.append(Paragraph(_markup(content.get("textContent", "")), styles["note"]))
     elif kind == "list":
@@ -1050,10 +1084,19 @@ def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any
 
     number = str(table.get("number") or "").strip()
     caption = str(table.get("caption") or "").strip()
+    unit = str(table.get("unit") or "").strip()
     # A table with neither number nor caption gets no caption line at all
     # (otherwise a lone "表" character would appear above the table).
     if number or caption:
         story.append(Paragraph(_markup(f"表{number} {caption}".strip()), styles["caption"]))
+    # GB/T 1.1 表题注块：单位行（"单位为毫米"）小号右对齐，紧贴表格上方
+    # （GEN-032；table-unit 样式 alignment=2 右对齐、spaceAfter=0 贴表框）。
+    if unit:
+        from reportlab.lib.styles import ParagraphStyle
+        unit_style = styles.get("table-unit") or ParagraphStyle(
+            "gbt-table-unit", parent=styles["body"], alignment=2, fontSize=9, leading=12, spaceAfter=0, firstLineIndent=0,
+        )
+        story.append(Paragraph(_markup(f"单位为{unit}"), unit_style))
     rows = sorted(table.get("rows", []), key=lambda row: row["rowIndex"])
     data = [[Paragraph(_markup(_table_cell_superscripts(cell.get("text", ""))), styles["table"]) for cell in sorted(row.get("cells", []), key=lambda cell: cell["colIndex"])] for row in rows]
     if not data:
@@ -1165,9 +1208,17 @@ def _markup(text: str) -> str:
         "\\1\u3000\\2",
         text,
     )
-    # Number-unit gap: use a non-breaking space so justified lines cannot
-    # stretch "50 Hz" into a wide gap (GB 3100 数值与单位间留一个空格).
-    text = re.sub(r"(?<=\d) (?=[A-Za-z%℃Ω])", "\u00A0", text)
+    # Number-unit gap: 单位符号前应空四分之一汉字的间隙（GB/T 1.1-2020 10.4.6，
+    # GBT-B12）。统一用不换行空格（\u00A0）实现，两端对齐时不会被拉伸成宽隙：
+    # - 源文/OCR 已有空格（"50 Hz"）→ 转 \u00A0；
+    # - 紧贴（"210mm"、"0.2℃"、"85K"、"15N"）→ 补插 \u00A0，消除同一文档
+    #   间隙不一致（GB 3100 数值与单位间留一个空格）；
+    # - 例外：% 前不留间隙（GB/T 15835-2011 示例 "34.05%"、"63%~68%"），已有
+    #   空格也收紧；平面角度分秒 °′″ 紧跟数值（GBT-B12 例外，字符不在集合内）；
+    #   分表/分图代号（"表2a"，GB/T 1.1 9.8.1.3 示例）不插间隙。
+    text = re.sub(r"(?<=\d) (?=[A-Za-z℃Ωμµ])", "\u00A0", text)
+    text = re.sub(r"(?<=\d) (?=%)", "", text)
+    text = re.sub(r"(?<![图表]\d)(?<=\d)(?=[A-Za-z℃Ωμµ])", "\u00A0", text)
     # 术语中英文间隔（CSM-OCR-003）：reportlab 把所有空白（含 U+3000）折叠为
     # 窄空格，无法表达 GB/T 1.1 要求的"空一个汉字"；用白色汉字填充获得恰好
     # 1em 的不可见间隙（Noto Serif CJK SC 有该字形，不会渲染成 .notdef 方框）。

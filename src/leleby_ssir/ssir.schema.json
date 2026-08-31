@@ -770,6 +770,10 @@
         "caption": {
           "type": "string"
         },
+        "unit": {
+          "type": "string",
+          "description": "表头右上方的单位行（如 \"毫米\"，渲染为右对齐\"单位为毫米\"紧贴表格上方，GB/T 1.1 表题注块）。"
+        },
         "rowCount": {
           "type": "integer",
           "minimum": 0

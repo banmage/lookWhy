@@ -144,7 +144,9 @@ class _RenderState:
         # 合并单元格/空位以一字线表示）。
         table_id = self._next_id("tbl")
         header_rows = sum(1 for row in table["rows"] if row.get("isHeader")) or 1
-        self.lines.append(f'<!-- ssir:table id="{table_id}" header-rows="{header_rows}" -->')
+        unit = str(table.get("unit") or "").strip()
+        unit_attr = f' unit="{unit}"' if unit else ""
+        self.lines.append(f'<!-- ssir:table id="{table_id}" header-rows="{header_rows}"{unit_attr} -->')
         if table.get("number") and table.get("caption"):
             self.lines.append(f"**表{table['number']} {table['caption']}**")
         elif table.get("number"):

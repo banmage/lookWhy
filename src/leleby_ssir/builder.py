@@ -289,6 +289,16 @@ class SSIRBuilder:
                     continue
                 number = str(node.get("number") or "").strip()
                 title = str(node.get("title") or "").strip()
+                # 扁平树（MinerU 全 ## 抽取）中，最后一个附录之后的文档级要素
+                # （参考文献/索引/目次/前言/引言）不是附录内容：遇到即退出附录
+                # 模式，防止文后要素被误标为示例内容（GB_T_1.1-2020 曾把参考
+                # 文献/索引起始块标成 exampleContent，渲染器将其整体打包成
+                # 示例框并崩溃）。
+                if not number and title.replace(" ", "") in {"参考文献", "索引", "目次", "前言", "引言"}:
+                    visit(node.get("children", []), False, False)
+                    in_annex = False
+                    example_active = False
+                    continue
                 if not number:
                     if annex_section_re.match(title):
                         # 附录小节（A.1 产品规范标准编写示例）——真实标题，结束示例块。
@@ -439,10 +449,13 @@ class SSIRBuilder:
         if block.directive:
             number = block.directive.attrs.get("caption-number")
             caption = block.directive.attrs.get("caption")
+            unit = block.directive.attrs.get("unit")
             if number:
                 table["number"] = number
             if caption:
                 table["caption"] = caption
+            if unit:
+                table["unit"] = unit
         for row_index, row in enumerate(rows):
             row_data: dict[str, Any] = {
                 "id": f"row-{state.next('row'):04d}",
