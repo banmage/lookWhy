@@ -82,7 +82,10 @@ CLAUSE_SPLIT_RE = re.compile(r"(?<=[。；])\s*(?=\d+(?:\.\d+)+[\u4e00-\u9fff])"
 # GB/T 1.1 列项符号为破折号（——）或间隔号（·）；OCR 常把 "——" 压成
 # 单个 "-" 或 "—" 且丢失后方空格，故破折号允许无空格（GBT-C12）。
 # CommonMark 的 "*"/"+" 项目符号仍要求后方空格，避免误吞 "**加粗**" 行首。
-UNORDERED_ITEM_RE = re.compile(r"^(?:([-—]+)|([*+])\s+)\s*(.*)$")
+# ●/•（U+25CF/U+2022）是规程/规范类标准示例常用的第一层次项目符号
+# （GB_T_20001.6 附录示例 6.1/6.2），OCR 可能全角半角混用，且无 Markdown
+# 强调歧义，故允许无空格。
+UNORDERED_ITEM_RE = re.compile(r"^(?:([-—]+)|([*+]\s+)|([●•])\s*)\s*(.*)$")
 TABLE_CAPTION_RE = re.compile(r"^\*\*表([^\s]+)\s+(.+?)\*\*$")
 # Bare numbered caption: "**表N**" — 行业标准/企业标准常见排版，题注只有编号
 # 无题名 (GBT-B08 编号必备；题名可省略)。
@@ -92,6 +95,79 @@ TABLE_BARE_CAPTION_RE = re.compile(r"^\*\*表([^\s]+)\*\*$")
 # 避免渲染出「表4 物理性能要求」+「表4」双题注（GEN-032/033、GBT-B08）。
 # 允许 "表" 与编号之间有空格（OCR 排法 "表 3 轴伸径向圆跳动"，2026-08-31）。
 TABLE_HEADING_CAPTION_RE = re.compile(r"^表\s*([^\s]+)\s+(.+)$")
+
+# 裸条号标题（MinerU 偶尔把章条标题抽成普通段落，无 ## 前缀——如
+# QB_T_2946-2020 第 3 章 "3 产品分类和型号命名" / "3.1 电动机分类和型号命名" /
+# "3.1.1 电动机分类"，只有 3.1.2 保留 ##，导致 GBT-H03 报"章编号不连续：缺失 3"
+# 且 GBT-C06 把 "3 产品分类和型号命名" 误当引用条目）。判别（保守）：
+# 行首编号 + 空白 + 汉字/括号开头（排除 "1 000 kV" 千分位，GEN-031）、
+# 无句末标点、长度 ≤ 40（正文短句以编号开头时通常更长或带标点）。
+BARE_HEADING_CANDIDATE_RE = re.compile(r"^(\d+(?:\.\d+)*)\s+[\u4e00-\u9fff（(]")
+# 段落句末标点（有则不可能为标题；标题行以句号/逗号/分号结尾的极罕见）。
+_BARE_HEADING_TERMINAL_PUNCT = "。；，,、！？"
+
+
+def _bare_heading_candidates(lines: list[str]) -> tuple[set[str], dict[int, str]]:
+    """预扫描：返回 (已确认标题编号集合, {行号: 候选编号})。
+
+    已确认标题 = 带 ## 前缀且文本以"编号+空白"开头的标题行；候选 = 形如
+    标题的裸段落行（排除表格/引用/图片/代码/公式/指令/列项行）。用于
+    级联提升：候选编号是某已确认编号的祖先（3 是 3.1.2 的祖先）、或父编号
+    已提升（3.1.1 的父 3.1 提升后 3.1.1 跟随）时提升为标题。
+    """
+    confirmed: set[str] = set()
+    candidates: dict[int, str] = {}
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        heading = HEADING_RE.match(line)
+        if heading:
+            number_match = re.match(r"^(\d+(?:\.\d+)*)\s", heading.group(2))
+            if number_match:
+                confirmed.add(number_match.group(1))
+            continue
+        if stripped.startswith(("|", ">", "!", "```", "$$", "<!--", "**")):
+            continue
+        if UNORDERED_ITEM_RE.match(line) or NUMBERED_ITEM_RE.match(line):
+            continue
+        candidate = BARE_HEADING_CANDIDATE_RE.match(stripped)
+        if candidate and len(stripped) <= 40 and not any(
+            ch in stripped for ch in _BARE_HEADING_TERMINAL_PUNCT
+        ):
+            candidates[idx] = candidate.group(1)
+    return confirmed, candidates
+
+
+def _promoted_bare_headings(confirmed: set[str], candidates: dict[int, str]) -> set[str]:
+    """级联提升：初始 = 所有已确认编号的祖先链；迭代 = 父编号已提升的子编号。
+
+    保守设计：没有已确认标题编号时什么都不提升（整树裸抽无法可靠区分
+    标题与正文，留给人工核查，符合 CSM-OCR-002 的"无法唯一合法时不要猜"）。
+    """
+    promoted: set[str] = set()
+
+    def ancestors(number: str) -> list[str]:
+        parts = number.split(".")
+        return [".".join(parts[:i]) for i in range(1, len(parts))]
+
+    def parent(number: str) -> str:
+        return number.rsplit(".", 1)[0] if "." in number else ""
+
+    for number in confirmed:
+        for ancestor in ancestors(number):
+            promoted.add(ancestor)
+    changed = True
+    while changed:
+        changed = False
+        for number in candidates.values():
+            if number in promoted:
+                continue
+            if parent(number) in promoted:
+                promoted.add(number)
+                changed = True
+    return promoted
+
 
 # 单位为毫米 等单位行：位于表题注与表格之间，题注折叠时的 lookahead 可跳过，
 # 且折进 table directive 的 unit 属性（渲染为右对齐"单位为毫米"紧贴表格）。
@@ -252,6 +328,7 @@ class CSMParser:
         fatal_errors.extend(self._repair_tables(blocks, issues))
         self._repair_list_markers(blocks, issues)
         self._repair_clause_numbers(blocks, issues)
+        self._repair_heading_levels(blocks, issues)
         self._repair_lost_list_markers(blocks, issues)
         self._repair_text_spacing(blocks, issues)
         fatal_errors.extend(self._classify_body_errors(parse_errors, issues))
@@ -325,6 +402,10 @@ class CSMParser:
         # 规则对应: GEN-031/GBT-H02-H03（章条编号与层级）、GBT-X02（表格）、GBT-X06（公式）、
         # GEN-052（ssir 指令/引用注册表化，未知指令保留原文）。
         lines = body.splitlines()
+        # 裸条号标题提升预扫描（2026-08-31）：MinerU 偶尔把章条标题抽成裸段落
+        # （无 ## 前缀），用"已确认标题祖先链 + 父已提升子级跟随"级联恢复。
+        confirmed_numbers, bare_candidates = _bare_heading_candidates(lines)
+        bare_promoted = _promoted_bare_headings(confirmed_numbers, bare_candidates)
         blocks: list[Block] = []
         errors: list[str] = []
         warnings: list[str] = []
@@ -718,6 +799,37 @@ class CSMParser:
                     continue
 
             start = i
+            # 裸条号标题提升（MinerU 把章条标题抽成裸段落，如 QB_T_2946-2020
+            # 第 3 章 "3 产品分类和型号命名"）：候选编号是已确认标题的祖先链
+            # 或父编号已提升时，提升为 heading，恢复章节结构（GBT-H03 连续
+            # 编号、GBT-C06 引用清单边界）。保守：无确认标题时不提升。
+            stripped_line = line.strip()
+            if bare_promoted and not any((
+                DIRECTIVE_RE.match(line),
+                HEADING_RE.match(line),
+                line.startswith(("$$", ">", "```")),
+                IMAGE_RE.match(line),
+                CSMParser._is_list_line(line),
+            )):
+                bare_match = BARE_HEADING_CANDIDATE_RE.match(stripped_line)
+                if bare_match and bare_match.group(1) in bare_promoted:
+                    level = bare_match.group(1).count(".") + 2
+                    blocks.append(
+                        Block(
+                            kind="heading",
+                            start_line=line_no(i),
+                            end_line=line_no(i),
+                            text=stripped_line,
+                            level=level,
+                            directive=pending.pop("block", None),
+                        )
+                    )
+                    warnings.append(
+                        f"line {line_no(i)}: bare numbered paragraph was promoted to a heading "
+                        f"({bare_match.group(1)}, level {level}) by ancestor-chain promotion."
+                    )
+                    i += 1
+                    continue
             # 段落行尾清理：MinerU 行尾常残留 Markdown 硬换行（两个尾随空格），
             # 会导致渲染时段落中途断行（如 "……25%时，  \n审查结论应为不通过"）。
             paragraph_lines = [line.rstrip()]
@@ -784,7 +896,7 @@ class CSMParser:
     def _parse_list_line(line: str) -> tuple[str, str]:
         unordered = UNORDERED_ITEM_RE.match(line)
         if unordered:
-            return unordered.group(1) or unordered.group(2), unordered.group(3)
+            return unordered.group(1) or unordered.group(2) or unordered.group(3), unordered.group(4)
         numbered = NUMBERED_ITEM_RE.match(line)
         assert numbered
         marker = numbered.group(1)
@@ -966,6 +1078,40 @@ class CSMParser:
                 repaired=True,
                 repair_action=f"Rewrote heading number {raw_number} to {new_number} in memory.",
             )
+
+    @staticmethod
+    def _repair_heading_levels(blocks: list[Block], issues: list[CSMIssue]) -> None:
+        """Normalise heading levels by clause-number depth (CSM-OCR-006).
+
+        MinerU 常把章条标题全部压成同一层 ##（扁平树抽取，语料实测 90%+ 的
+        标题层级错：GB_T_1.1-2020 176 个编号标题 166 个层级错）。正确层级由
+        编号段数决定：章 1 段 → level 2（##）、条 2 段 → level 3（###）、
+        子条 3 段 → level 4（####）…… 本修复只提升（当前层级低于编号深度），
+        不降低——避免把用户手写的高层标题（如 #### 下的 ###）误压扁，也避免
+        与 _repair_clause_numbers 的连续性修复冲突。标题文本本身不变，
+        canonical/SSIR/render 三侧一致，roundtrip 等价性保持。
+        """
+        heading_number = re.compile(r"^(\d+(?:\.\d+)*)\s*[\u4e00-\u9fff（(]")
+        for block in blocks:
+            if block.kind != "heading" or not block.level:
+                continue
+            match = heading_number.match(block.text)
+            if not match:
+                continue
+            segments = match.group(1).count(".") + 1
+            expected = segments + 1  # 章=2, 条=3, 子条=4, …
+            if expected > block.level:
+                previous = block.level
+                block.level = expected
+                CSMParser._issue(
+                    issues,
+                    "CSM-OCR-006",
+                    f"Heading {block.text!r} was flattened by the extractor (level {previous}); "
+                    f"restored to level {expected} from its {segments}-segment clause number.",
+                    line=block.start_line,
+                    repaired=True,
+                    repair_action=f"Raised heading level {previous} -> {expected} in memory.",
+                )
 
     @staticmethod
     def _repair_lost_list_markers(blocks: list[Block], issues: list[CSMIssue]) -> None:

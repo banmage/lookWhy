@@ -64,6 +64,12 @@ def _page_count(pdf: Path) -> int:
 # （条号 4.2.1→421、标准号 GB/T2423.→"GB/T2423." 或整段丢失）。
 _ORPHAN_NUMBER_DOT_RE = re.compile(r"^\d{1,3}\.$")
 _TRUNCATED_STANDARD_RE = re.compile(r"^(?:GB/T|GB|JB/T|DB\d{1,2}/T|T/|Q/)\S*\.$")
+# 标准号提及（文本层/raw 覆盖率对比用，2026-08-31）：宽匹配，前缀 + 数字/字母
+# 即算一次提及。GB_T_15835-2011 类文档（文本层健康但 MinerU 抽取丢拉丁）的
+# 特征是文本层标准号远多于抽取结果——用于 _latin_loss_check 的自动 OCR 判定。
+_STANDARD_MENTION_RE = re.compile(
+    r"(?:GB/T|GB/Z|GB|JB/T|JB|DB\d{1,2}/T|QB/T|QB|SJ/T|SJ|DL/T|NY/T|HG/T|FZ/T|WS/T|YD/T|GA/T|CJ/T|JG/T|TB/T|SH/T|JC/T|EJ/T|MT/T|YY/T|YY|HJ/T|HJ|T/|Q/|ISO|IEC)\s*[A-Z0-9]"
+)
 
 
 def _detect_broken_text_layer(pdf: Path, sample_pages: int = 30) -> str | None:
@@ -101,6 +107,40 @@ def _detect_broken_text_layer(pdf: Path, sample_pages: int = 30) -> str | None:
     return None
 
 
+def _latin_loss_check(raw_markdowns: list[str], pdf: Path, sample_pages: int = 30) -> str | None:
+    """Compare standard-number coverage between the source text layer and the
+    extracted markdown; return a reason string when the extractor dropped
+    Latin/digit runs (GB_T_15835-2011 / GB_T_23132-2024 class).
+
+    GEN-092 预检（_detect_broken_text_layer）只覆盖"文本层本身损坏"型（孤立
+    4. 行、截断 GB/T2423.）。但有一类 PDF 文本层**健康**（pymupdf 读得到
+    "GB/T1.1—2009"），MinerU 的 txt/auto 抽取却按字体编码问题整段丢弃拉丁
+    字母与数字（"GB/T 1.1—2020" → "/ — "）——语料实测 GB_T_15835-2011、
+    GB_T_23132-2024 中招。这里在抽取完成后对比源 PDF 文本层与 raw 的标准号
+    提及数：文本层 ≥5 且 raw 不足其一半时判定丢失，提示强制 OCR 重抽。
+    健康文档（GB_T_1.1-2020：文本层/raw 都密）与扫描件（无文本层，提及数 0）
+    均不会触发。
+    """
+    try:
+        import fitz  # type: ignore
+    except ImportError:
+        return None
+    text_hits = 0
+    with fitz.open(pdf) as document:
+        for page_index in range(min(sample_pages, len(document))):
+            text_hits += len(_STANDARD_MENTION_RE.findall(str(document[page_index].get_text())))
+    if text_hits < 5:
+        return None  # 文本层本身标准号稀疏（扫描件/健康短文档），不判定
+    raw_hits = sum(len(_STANDARD_MENTION_RE.findall(raw)) for raw in raw_markdowns)
+    if raw_hits * 2 < text_hits:
+        return (
+            f"Latin/digit loss detected: the source text layer carries {text_hits} "
+            f"standard-number mentions but the extraction preserved only {raw_hits}; "
+            "text-based extraction dropped Latin/digit runs (re-run with --method ocr)"
+        )
+    return None
+
+
 # Generic helpers shared with the PDF extractor: these recognise common Chinese
 # national/industry standard-number prefixes (GB, GB/T, DB, QB, JB, DL, NY, ISO)
 # and are deliberately not specific to GB/T 1.1-2020.  The implementations live
@@ -112,6 +152,18 @@ def _usable_title(text: str, fallback: str) -> str:
     if not compact or sum(1 for char in compact if "犀" <= char <= "犿") > 4:
         return fallback
     return compact[:180]
+
+
+def _normalize_part_title(title: str) -> str:
+    """多部分标准名称规范：主体要素与分部分名称之间补空格（GBT-C01 执行侧）。
+
+    GB/T 1.1-2020 8.2.2：多部分标准各部分的名称应为"主体要素 第X部分：分部分
+    名称"。OCR 常丢失封面标题中"第X部分"前的空格（"标准编写规则第6部分：规程
+    标准" → "标准编写规则 第6部分：规程标准"），而正文首页同名标题往往保留。
+    仅在紧贴汉字且缺空格时补一个半角空格（已带空格/紧跟英文/非"第N部分："形态
+    均不触碰）。
+    """
+    return re.sub(r"(?<=[\u4e00-\u9fff])第(\d+)部分(?=[：:])", r" 第\1部分", title)
 
 
 def _is_gbt_1_1_2020(source: Path) -> bool:
@@ -887,6 +939,25 @@ def _cover_title(markdown: str) -> str:
     return ""
 
 
+def _replace_cover_title(markdown: str, old_title: str, new_title: str) -> str:
+    """Replace the cover H1 title line (and any exact bare-paragraph match)
+    after title normalization so normalize's H1==front-matter-title check holds.
+
+    Only touches the exact title text, never a longer line containing it.
+    """
+    lines = markdown.splitlines()
+    changed = False
+    for i, line in enumerate(lines):
+        content = re.sub(r"^#+\s*", "", line.strip())
+        if content == old_title:
+            if line.strip().startswith("#"):
+                lines[i] = re.sub(r"^(#+\s*).*$", r"\1" + new_title, lines[i])
+            else:
+                lines[i] = new_title
+            changed = True
+    return "\n".join(lines) if changed else markdown
+
+
 def extract(args: argparse.Namespace, state: dict[str, Any]) -> None:
     # 规则对应: GEN-002（分块抽取，每块可重试/断点续跑）、GEN-003（中间产物保留）。
     command = _mineru_command()
@@ -1049,7 +1120,12 @@ def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
         # (no heading); recover it so the front-matter title is the actual
         # document name, not a number fallback (GBT-C01 文件名称必备).
         real_heading = _cover_title(parts_raw[0])
-    title = args.title or _usable_title(real_heading, number)
+    raw_title = args.title or _usable_title(real_heading, number)
+    title = _normalize_part_title(raw_title)
+    # 标题规范化（如补"第N部分"前空格）后，封面 H1 必须同步，否则
+    # normalize 的 "H1 title must exactly match front matter title" 校验失败。
+    if title != raw_title:
+        parts_raw[0] = _replace_cover_title(parts_raw[0], raw_title, title)
     extra_front_matter: list[str] = []
     # Recover the cover ICS/CCS codes that MinerU drops as page headers.  An
     # explicitly supplied --front-matter-json value always wins.
@@ -1293,6 +1369,25 @@ def main() -> int:
         if args.stage == "extract":
             _log("Extraction stage complete. Run with --stage all to merge and parse after all page ranges finish.")
             return 0
+        # 拉丁/数字丢失后验（2026-08-31，GB_T_15835-2011/GB_T_23132-2024 类）：
+        # 文本层健康但 MinerU txt/auto 抽取按字体编码丢拉丁整段（"GB/T 1.1—2020"
+        # → "/ — "）。GEN-092 预检只在抽取**前**看文本层损坏特征，覆盖不到这类；
+        # 这里在抽取**后**对比文本层与 raw 的标准号提及数，命中则自动强制 OCR
+        # 重抽（extract 的 previous_method 不一致逻辑会失效旧 parts）。显式
+        # --method 尊重用户选择，不自动改。
+        if args.method == "auto" and state.get("parts"):
+            raw_markdowns = []
+            for part in state["parts"]:
+                if part.get("status") != "complete":
+                    continue
+                markdown_path = args.output_dir / part["markdown"]
+                if markdown_path.is_file():
+                    raw_markdowns.append(markdown_path.read_text(encoding="utf-8", errors="replace"))
+            latin_reason = _latin_loss_check(raw_markdowns, args.input)
+            if latin_reason:
+                _log(f"Latin-loss check: {latin_reason}; forcing --method ocr and re-extracting")
+                args.method = "ocr"
+                extract(args, state)
         merged = merge(args, state)
         _log(f"Merged MinerU Markdown: {merged}")
         if args.stage == "merge":

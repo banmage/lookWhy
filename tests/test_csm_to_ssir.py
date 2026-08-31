@@ -284,6 +284,168 @@ source:
             ],
         )
 
+    def test_bare_numbered_chapter_headings_are_promoted(self) -> None:
+        # 回归（2026-08-31，QB_T_2946-2020 第 3 章）：MinerU 把章条标题抽成
+        # 裸段落（"3 产品分类和型号命名"/"3.1 电动机分类和型号命名"/
+        # "3.1.1 电动机分类"），只有 3.1.2 保留 ##。祖先链级联提升应恢复
+        # 完整章节结构，否则 GBT-H03 报"章编号不连续：缺失 3"且 GBT-C06 把
+        # "3 产品分类和型号命名" 误当引用清单条目。
+        csm = """---
+csm-version: "1.0"
+document-type: standard
+document-identifier: "QB/T 2946—2020"
+standard-number: "QB/T 2946—2020"
+title: "电动自行车用电动机及控制器"
+language: zh-CN
+source:
+  mode: mineru
+  original-file-name: "QB_T_2946-2020.pdf"
+---
+
+# 电动自行车用电动机及控制器
+
+## 1 范围
+
+本标准规定了电动自行车用电动机及控制器的要求。
+
+## 2 规范性引用文件
+
+下列文件中的内容通过文中的规范性引用而构成本文件必不可少的条款。
+
+GB/T 755-2019 旋转电机 定额和性能
+
+QB/T 1714自行车命名和型号编制方法
+
+3 产品分类和型号命名
+
+3.1 电动机分类和型号命名
+
+3.1.1 电动机分类
+
+电动机按结构分为轮毂电动机和轴旋转电动机。
+
+## 3.1.2 电动机型号命名
+
+## 3.1.2.1 总则
+
+## 5 要求
+
+## 6 检验规则
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bare-headings.canonical.md"
+            path.write_text(csm, encoding="utf-8")
+            doc = CSMParser().read(path)
+        promoted = [issue.display() for issue in doc.issues if "promoted to a heading" in issue.message]
+        self.assertEqual(len(promoted), 3)
+        self.assertIn("3", doc.issues[0].message)
+        # 提升后的标题进入 SSIR 结构树，章 3 恢复且挂在根下。
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bare-headings.canonical.md"
+            path.write_text(csm, encoding="utf-8")
+            ssir = parse_csm(path)
+        numbers = [node["number"] for node in self._nodes(ssir["structuralRoot"]) if node.get("number")]
+        self.assertIn("3", numbers)
+        chapter3 = next(node for node in self._nodes(ssir["structuralRoot"]) if node.get("number") == "3")
+        self.assertEqual(chapter3["title"], "产品分类和型号命名")
+        self.assertEqual([c["number"] for c in chapter3.get("children", [])], ["3.1"])
+        clause31 = next(c for c in chapter3.get("children", []) if c.get("number") == "3.1")
+        self.assertEqual([c["number"] for c in clause31.get("children", [])], ["3.1.1", "3.1.2"])
+
+    def test_flat_heading_levels_are_restored_from_clause_depth(self) -> None:
+        # 回归（2026-08-31，语料 90%+ 标题层级错）：MinerU 把章条标题全部压成
+        # 同一层 ##。CSM-OCR-006 按编号段数提升（章 1 段→2、条 2 段→3、子条
+        # 3 段→4），只提升不降低，标题文本不变。3.1.2.5派生代号（编号后无空格）
+        # 也应提升。
+        csm = """---
+csm-version: "1.0"
+document-type: standard
+document-identifier: "QB/T 2946—2020"
+standard-number: "QB/T 2946—2020"
+title: "电动自行车用电动机及控制器"
+language: zh-CN
+source:
+  mode: mineru
+  original-file-name: "QB_T_2946-2020.pdf"
+---
+
+# 电动自行车用电动机及控制器
+
+## 1 范围
+
+## 2 规范性引用文件
+
+## 3 产品分类和型号命名
+
+## 3.1 电动机分类和型号命名
+
+## 3.1.1 电动机分类
+
+## 3.1.2 电动机型号命名
+
+## 3.1.2.1 总则
+
+## 3.1.2.5派生代号
+
+## 4一般规定
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "flat.canonical.md"
+            path.write_text(csm, encoding="utf-8")
+            doc = CSMParser().read(path)
+        levels = {block.text: block.level for block in doc.blocks if block.kind == "heading"}
+        self.assertEqual(levels["3 产品分类和型号命名"], 2)
+        self.assertEqual(levels["3.1 电动机分类和型号命名"], 3)
+        self.assertEqual(levels["3.1.1 电动机分类"], 4)
+        self.assertEqual(levels["3.1.2 电动机型号命名"], 4)
+        self.assertEqual(levels["3.1.2.1 总则"], 5)
+        self.assertEqual(levels["3.1.2.5派生代号"], 5)
+        # 章级标题（1 段）本来正确，不误提升也不降低。
+        self.assertEqual(levels["4一般规定"], 2)
+        self.assertEqual(levels["1 范围"], 2)
+        # 千分位名称（1 000 kV）不是编号，不得按编号段数提升。
+        self.assertNotIn("1 000 kV 变电站监控系统 技术规范", levels)
+
+    def test_circle_bullet_list_items_parse_as_lists(self) -> None:
+        # 回归（2026-08-31，GB_T_20001.6-2017 附录示例 6.1/6.2）：规程/规范类
+        # 标准示例常用 ●/• 作第一层次项目符号，OCR 可能全角半角混用且无空格。
+        # 此前 UNORDERED_ITEM_RE 不认 ●/•，条目被并入单个段落。
+        csm = """---
+csm-version: "1.0"
+document-type: standard
+document-identifier: "GB/T 20001.6—2017"
+standard-number: "GB/T 20001.6—2017"
+title: "标准编写规则 第6部分：规程标准"
+language: zh-CN
+source:
+  mode: mineru
+  original-file-name: "GB_T_20001.6-2017.pdf"
+---
+
+# 标准编写规则 第6部分：规程标准
+
+## 6 规程的表述
+
+### 6.1 示例
+
+● 马铃薯脱毒试管苗繁育程序
+
+• 甘薯脱毒试管苗繁育程序
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "circle-list.canonical.md"
+            path.write_text(csm, encoding="utf-8")
+            ssir = parse_csm(path)
+        lists = [
+            element
+            for node in self._nodes(ssir["structuralRoot"])
+            for element in node.get("contentElements", [])
+            if element["presentationType"] == "list"
+        ]
+        self.assertTrue(lists, "●/• 行应解析为列表而不是段落")
+        markers = [item["marker"] for content in lists for item in content["listItems"]]
+        self.assertEqual(markers, ["●", "•"])
+
     def test_paragraph_shaped_table_caption_is_folded(self) -> None:
         # 回归（2026-08-31，GB_T_43726-2024 表4）：MinerU 把表题注抽成 directive
         # 前的普通段落（"表4 安装配合面的同轴度"，可隔"单位为毫米"行），渲染出
