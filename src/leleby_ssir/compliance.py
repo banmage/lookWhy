@@ -275,12 +275,28 @@ def _check_numbering_continuity(document: dict[str, Any], report: ComplianceRepo
                 )
             )
 
-    def walk(children: list[dict[str, Any]]) -> None:
+    def walk(children: list[dict[str, Any]], parent_number: str | None = None) -> None:
         check_siblings([c for c in children if not _is_example_content(c)])
         for node in children:
             if _is_example_content(node):
                 continue
-            walk(node.get("children", []))
+            number = str(node.get("number") or "").strip()
+            # 父号前缀一致（2026-08-31，GB_T_43726-2024 条号掉点 4.2.1→421）：
+            # 子条号必须以"父号+."开头（GB/T 1.1 7.3.1 点分编号）。OCR 掉点后
+            # "421" 挂在本章 "4" 之下，前缀校验直接命中（即使连续性缺口过大
+            # 也可能被跳号检查掩盖）。附录子条（A.1 挂 A 下）同样适用。
+            if parent_number and number:
+                if not number.startswith(parent_number + "."):
+                    report.findings.append(
+                        ComplianceFinding(
+                            "GBT-H03",
+                            "GB_T_1.1-2020",
+                            "should",
+                            "clause-prefix-mismatch",
+                            f"条号 {number} 未以父号 {parent_number} 为前缀（点分编号缺失或归属错误）",
+                        )
+                    )
+            walk(node.get("children", []), number or parent_number)
 
     walk(document.get("structuralRoot", {}).get("children", []))
 
@@ -434,6 +450,33 @@ def _check_reference_chapter(document: dict[str, Any], report: ComplianceReport)
                             f"规范性引用文件清单不应加序号，但列表项使用标记 {marker}",
                         )
                     )
+                _check_reference_item_number(item.get("text", ""), report)
+        elif content.get("presentationType") == "paragraph":
+            text = str(content.get("textContent", "")).strip()
+            if text and not text.startswith("下列文件") and "没有规范性引用文件" not in text:
+                _check_reference_item_number(text, report)
+
+
+_STANDARD_NUMBER_RE = re.compile(
+    r"(?:GB|GB/T|GB/Z|JB/T|JB|DB\d{1,2}/T|QB|SJ/T|SJ|DL/T|NY/T|T/|Q/|ISO|IEC)\s*[A-Z0-9][A-Z0-9.\-—–]*\d"
+)
+
+
+def _check_reference_item_number(text: str, report: ComplianceReport) -> None:
+    """GBT-C06: 引用清单条目必须含标准文件编号（GB/T ×××—××××）。
+
+    2026-08-31（GB_T_43726-2024）：文本层损坏时标准号整段丢失（raw 里
+    "/ — 环境试验 第 部分:…"），条目缺编号即提示，便于强制 OCR 后复核。
+    """
+    if not text:
+        return
+    if not _STANDARD_NUMBER_RE.search(text):
+        report.findings.append(
+            ComplianceFinding(
+                "GBT-C06", "GB_T_1.1-2020", "should", "reference-item-number",
+                f"规范性引用清单条目缺少标准文件编号：{text[:40]}",
+            )
+        )
 
 
 def _check_sibling_heading_titles(document: dict[str, Any], report: ComplianceReport) -> None:
@@ -518,7 +561,8 @@ def _check_note_example_formats(document: dict[str, Any], report: ComplianceRepo
 
 
 def _check_footnote_numbering(document: dict[str, Any], report: ComplianceReport) -> None:
-    """GBT-X04: 条文脚注编号 1)、2)… 从前言起全文连续。"""
+    """GBT-X04: 条文脚注编号 1)、2)… 从前言起全文连续；图表脚注解释行标记为
+    小写拉丁字母 a)、b) 且与标记成对（GB/T 1.1 9.12.1、9.12.2）。"""
     numbers: list[int] = []
     for node in _walk_nodes(document.get("structuralRoot", {}).get("children", [])):
         for content in node.get("contentElements", []):
@@ -539,6 +583,22 @@ def _check_footnote_numbering(document: dict[str, Any], report: ComplianceReport
                 )
                 break
             expected = n + 1
+    # 图表脚注解释行（"a 说明" / "a说明"）：标记必须为小写拉丁字母（9.12.2）。
+    # 2026-08-31（GB_T_43726-2024 表6）：大写 "A 相" 等是内容不是脚注标记，
+    # 解释行若出现大写字母开头则提示（脚注由标记+解释成对组成）。
+    for node in _walk_nodes(document.get("structuralRoot", {}).get("children", [])):
+        for content in node.get("contentElements", []):
+            if content.get("presentationType") != "paragraph":
+                continue
+            text = str(content.get("textContent", "")).strip()
+            match = re.match(r"^([Ａ-ＺA-Z])(?:[ \u3000]+)([\u4e00-\u9fff])", text)
+            if match:
+                report.findings.append(
+                    ComplianceFinding(
+                        "GBT-X04", "GB_T_1.1-2020", "should", "footnote-marker-lowercase",
+                        f"图表脚注解释行标记应为小写拉丁字母，实际为大写 {match.group(1)}：{text[:30]}",
+                    )
+                )
 
 
 def _check_table_figure_numbers(document: dict[str, Any], registries: dict[str, list[dict[str, Any]]], report: ComplianceReport) -> None:

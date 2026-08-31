@@ -316,6 +316,64 @@ class NumberingContinuityTests(unittest.TestCase):
         self.assertTrue(any("4.O.1" in f.message for f in c16))
         self.assertTrue(any("GB/T 5O89" in f.message for f in c16))
 
+    def test_clause_number_without_parent_prefix_flagged(self) -> None:
+        # 回归（2026-08-31，GB_T_43726-2024 条号掉点）：OCR 掉点后 "421 型号结构"
+        # 挂在本章 "4" 之下，条号未以父号加点为前缀（GB/T 1.1 7.3.1 点分编号）。
+        doc = _document(children=[
+            _clause("1", "范围"),
+            _clause("2", "规范性引用文件"),
+            _clause("3", "术语和定义"),
+            _clause("4", "分类与型号", children=[
+                _clause("41", "分类"),
+                _clause("4.2", "型号"),
+                _clause("421", "型号结构"),
+                _clause("4.2.2", "机座号"),
+            ]),
+        ])
+        report = verify_compliance(doc)
+        prefix = [f for f in report.findings if f.rule_id == "GBT-H03" and "前缀" in f.message]
+        messages = " | ".join(f.message for f in prefix)
+        self.assertTrue(any("41" in f.message for f in prefix), messages)
+        self.assertTrue(any("421" in f.message for f in prefix), messages)
+        # 合法点分子条不误报
+        self.assertFalse(any("条号 4.2" in f.message for f in prefix), messages)
+
+    def test_reference_item_without_standard_number_flagged(self) -> None:
+        # 回归（2026-08-31，GB_T_43726-2024 第 2 章）：文本层损坏致标准号整段
+        # 丢失（"/ — 环境试验 第 部分：…"），条目缺编号应提示复核。
+        doc = _document(children=[
+            _clause("1", "范围"),
+            {
+                "nodeType": "clause",
+                "number": "2",
+                "title": "规范性引用文件",
+                "contentElements": [
+                    {"presentationType": "paragraph", "textContent": "下列文件中的内容通过文中的规范性引用而构成本文件必不可少的条款。"},
+                    {"presentationType": "paragraph", "textContent": "GB/T 2423.16—2022 环境试验 第2部分：试验方法 试验J和导则：长霉"},
+                    {"presentationType": "paragraph", "textContent": "/ — 环境试验 第 部分：试验方法 试验 和导则"},
+                ],
+                "children": [],
+            },
+        ])
+        report = verify_compliance(doc)
+        c06 = [f for f in report.findings if f.rule_id == "GBT-C06" and "标准文件编号" in f.message]
+        self.assertEqual(len(c06), 1)
+        self.assertIn("/ — 环境试验", c06[0].message)
+
+    def test_footnote_explanation_marker_must_be_lowercase(self) -> None:
+        # 回归（2026-08-31，GB_T_43726-2024 表6 相位字母误判）：图表脚注解释行
+        # 标记必须为小写拉丁字母（GB/T 1.1 9.12.2），大写是内容不是标记。
+        doc = _document(children=[
+            _clause("1", "范围", content=[
+                {"presentationType": "paragraph", "textContent": "A 填写行业标准代号。"},
+                {"presentationType": "paragraph", "textContent": "a 填写地方标准代号。"},
+            ]),
+        ])
+        report = verify_compliance(doc)
+        x04 = [f for f in report.findings if f.rule_id == "GBT-X04" and "小写" in f.message]
+        self.assertEqual(len(x04), 1)
+        self.assertIn("A", x04[0].message)
+
 
 if __name__ == "__main__":
     unittest.main()
