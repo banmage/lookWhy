@@ -59,6 +59,48 @@ def _page_count(pdf: Path) -> int:
         return len(document)
 
 
+# 文本层损坏特征（2026-08-31，GB_T_43726-2024 等）：PDF 文本层是"半坏"的——
+# 有内容但数字/拉丁被拆散或截断，MinerU auto/txt 直接抽取会逐行丢点丢数字
+# （条号 4.2.1→421、标准号 GB/T2423.→"GB/T2423." 或整段丢失）。
+_ORPHAN_NUMBER_DOT_RE = re.compile(r"^\d{1,3}\.$")
+_TRUNCATED_STANDARD_RE = re.compile(r"^(?:GB/T|GB|JB/T|DB\d{1,2}/T|T/|Q/)\S*\.$")
+
+
+def _detect_broken_text_layer(pdf: Path, sample_pages: int = 30) -> str | None:
+    """Return a reason string when the source PDF's text layer shows the typical
+    damage pattern that makes text-based extraction (auto/txt) lose digits and
+    Latin runs; return None for healthy text layers and for scanned PDFs
+    (no text layer at all — MinerU auto already OCRs those).
+
+    信号（对语料库实测，2026-08-31）：
+    - 孤立"4."/"2."行（条号被拆到独立行）：健康文本层 0 条，损坏文档 130+ 条；
+    - 截断的标准号 "GB/T2423."（点号处切断）：健康 0 条，损坏文档 4+ 条。
+    """
+    try:
+        import fitz  # type: ignore
+    except ImportError:
+        return None
+    orphan_dots = 0
+    truncated_standards = 0
+    with fitz.open(pdf) as document:
+        scanned = min(sample_pages, len(document))
+        for page_index in range(scanned):
+            for line in document[page_index].get_text().splitlines():
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                if _ORPHAN_NUMBER_DOT_RE.match(stripped):
+                    orphan_dots += 1
+                elif _TRUNCATED_STANDARD_RE.match(stripped):
+                    truncated_standards += 1
+        if orphan_dots >= 30 or truncated_standards >= 3:
+            return (
+                f"text layer damage detected: {orphan_dots} orphaned number-dot lines, "
+                f"{truncated_standards} truncated standard numbers in the first {scanned} pages"
+            )
+    return None
+
+
 # Generic helpers shared with the PDF extractor: these recognise common Chinese
 # national/industry standard-number prefixes (GB, GB/T, DB, QB, JB, DL, NY, ISO)
 # and are deliberately not specific to GB/T 1.1-2020.  The implementations live
@@ -856,8 +898,23 @@ def extract(args: argparse.Namespace, state: dict[str, Any]) -> None:
     state["pageCount"] = total_pages
     state["chunkSize"] = args.chunk_size
     state["backend"] = "mineru pipeline"
-    state["parameters"] = {"method": args.method, "language": "ch", "formula": True, "table": True}
     state.setdefault("parts", [])
+
+    # 提取方法变更失效（2026-08-31）：auto 抽出的损坏 parts（文本层丢点丢数字）
+    # 在改走 OCR 后不能续跑复用——先读旧方法（state["parameters"] 尚未覆盖），
+    # 不一致时全部重抽，且删除磁盘上的旧 parts（否则会被下方 "Markdown exists;
+    # state was repaired" 分支当成有效产物重新登记，绕过重抽）。
+    previous_method = (state.get("parameters") or {}).get("method")
+    if previous_method and previous_method != args.method:
+        _log(
+            f"Extraction method changed {previous_method} -> {args.method}; "
+            f"re-extracting all page ranges (previously completed parts are invalid)"
+        )
+        state["parts"] = []
+        parts_root = args.output_dir / "parts"
+        if parts_root.is_dir():
+            shutil.rmtree(parts_root)
+    state["parameters"] = {"method": args.method, "language": "ch", "formula": True, "table": True}
 
     completed = {item["start"]: item for item in state["parts"] if item.get("status") == "complete"}
     for start in range(0, total_pages, args.chunk_size):
@@ -1192,8 +1249,10 @@ def main() -> int:
             args.input = file_path
         else:
             candidate = ROOT / "corpus" / "golden" / args.file
-            if not candidate.is_file() and candidate.suffix.lower() != ".pdf":
-                candidate = candidate.with_suffix(".pdf")
+            # 注意：不能用 with_suffix(".pdf")——标准号含点（GB_T_1.1-2020）时
+            # Path 会把 ".1-2020" 当成后缀替换成 GB_T_1.pdf；直接整体拼 .pdf 保留点。
+            if not candidate.is_file():
+                candidate = ROOT / "corpus" / "golden" / f"{args.file}.pdf"
             if not candidate.is_file():
                 parser.error(f"file not found under corpus/golden/: {args.file!r} (looked for {candidate})")
             args.input = candidate
@@ -1216,6 +1275,14 @@ def main() -> int:
     # 断点续跑：stem 在上一次 merge 已推导并存入 state，直接复用。
     if not args.output_stem and state.get("outputStem"):
         args.output_stem = state["outputStem"]
+    # 文本层质量预检（2026-08-31）：默认 auto 模式下，若源 PDF 文本层呈典型
+    # 损坏特征（孤立 "4."/"2." 行、截断标准号 "GB/T2423."），MinerU 直接抽取
+    # 会丢点丢数字——自动改走 OCR；显式 --method 时尊重用户选择。
+    if args.method == "auto":
+        damage_reason = _detect_broken_text_layer(args.input)
+        if damage_reason:
+            _log(f"Text-layer quality check: {damage_reason}; forcing --method ocr")
+            args.method = "ocr"
     _log(f"Input PDF: {args.input.resolve()}")
     _log(f"Output directory: {args.output_dir.resolve()}")
     _log(f"Stage: {args.stage}; round-trip: {args.roundtrip}; render after parsing: {args.render}")

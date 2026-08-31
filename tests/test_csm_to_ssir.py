@@ -112,6 +112,282 @@ class CSMToSSIRTests(unittest.TestCase):
         self.assertTrue(report.passed, report.to_dict())
         self.assertEqual((annex1["number"], annex1["title"]), (annex2["number"], annex2["title"]))
 
+    def test_back_matter_after_last_annex_not_marked_example_content(self) -> None:
+        # 回归（2026-08-31，GB_T_1.1-2020 渲染 LayoutError）：扁平树（MinerU 全
+        # ## 抽取）中最后一个附录之后的 参考文献/索 引/索引字母块曾被误标
+        # exampleContent，渲染器把它们整体打包成示例框且框内含 PageBreak →
+        # reportlab 崩溃。只有真正的附录示例（示例：/示例文档标题）才应标记。
+        csm = """---
+csm-version: "1.0"
+document-type: standard
+document-identifier: "GB/T 1.1—2020"
+standard-number: "GB/T 1.1—2020"
+title: "标准化工作导则 第1部分：标准化文件的结构和起草规则"
+language: zh-CN
+source:
+  mode: mineru
+  original-file-name: "GB_T_1.1-2020.pdf"
+---
+
+# 标准化工作导则 第1部分：标准化文件的结构和起草规则
+
+## 1 范围
+
+本文件规定了标准化文件的结构和起草规则。
+
+## 附录 A（资料性） 层次编号示例
+
+下面给出了层次编号的示例。
+
+## 示例：
+
+示例图片内容。
+
+## 附录 B（规范性） 标准化项目标记
+
+## B.1 概述
+
+正文。
+
+## 多刃刀片 GB/T 2079-TPGN 160308-EN-P20
+
+示例文档内容。
+
+## 参考文献
+
+[1] GB/T 1.1—2020 标准化工作导则 第1部分：标准化文件的结构和起草规则
+
+## 索 引
+
+## B
+
+必备要素 3.2.5
+
+## Z
+
+章 7.2
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "flat.canonical.md"
+            path.write_text(csm, encoding="utf-8")
+            ssir = parse_csm(path)
+        nodes = {str(node.get("title") or "").replace(" ", ""): node for node in self._nodes(ssir["structuralRoot"]) if node.get("nodeType") == "documentBlock"}
+        for title in ("参考文献", "索引", "B", "Z"):
+            self.assertFalse(nodes[title].get("exampleContent"), f"{title} must not be example content")
+        for title in ("示例：", "多刃刀片GB/T2079-TPGN160308-EN-P20"):
+            self.assertTrue(nodes[title].get("exampleContent"), f"{title} must be example content")
+
+    def test_repair_restores_decimal_points_in_clause_numbers(self) -> None:
+        # 回归（2026-08-31，GB_T_43726-2024）：文本层损坏型 PDF 经 MinerU auto
+        # 抽取后标题点号整段丢失（7.4.2 → 742、5.10 → 510、5.2.1 → 521），
+        # 且同一文档内损坏逐行不一致（7.4.2.2 又带点）。CSM-OCR-002 用编号
+        # 连续性约束恢复点分隔；无法唯一合法拆点时不猜测。
+        csm = """---
+csm-version: "1.0"
+document-type: standard
+document-identifier: "GB/T 43726—2024"
+standard-number: "GB/T 43726—2024"
+title: "无刷直流力矩电动机通用技术条件"
+language: zh-CN
+source:
+  mode: mineru
+  original-file-name: "GB_T_43726-2024.pdf"
+---
+
+# 无刷直流力矩电动机通用技术条件
+
+## 1 范围
+
+本文件规定了电机的技术要求。
+
+## 2 规范性引用文件
+
+下列文件中的内容通过文中的规范性引用而构成本文件必不可少的条款。
+
+## 3 术语和定义
+
+## 4 分类与型号
+
+## 41 分类
+
+## 4.2 型号
+
+## 421 型号结构
+
+## 422 机座号
+
+## 5 技术要求
+
+## 51 外观
+
+## 511 表面外观
+
+## 512 标志
+
+## 52 外形和安装尺寸
+
+## 53 径向间隙
+
+## 54 轴向间隙
+
+## 55 轴伸径向圆跳动
+
+## 56 安装配合面的同轴度
+
+## 57 安装配合面的端面垂直度
+
+## 58 引出线或接线端
+
+## 59 绝缘电阻
+
+## 510 绝缘介电强度
+
+## 511 定子电阻
+
+## 6 检验方法
+
+## 7 检验规则
+
+## 71 检验分类
+
+## 72 检验条件
+
+## 73 鉴定检验
+
+## 74 质量一致性检验
+
+## 741 A组检验
+
+## 742 C组检验
+
+## 7421 通则
+
+## 7.4.2.2 不合格
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "damaged.canonical.md"
+            path.write_text(csm, encoding="utf-8")
+            ssir = parse_csm(path)
+        numbers = [
+            node["number"]
+            for node in self._nodes(ssir["structuralRoot"])
+            if node.get("number")
+        ]
+        self.assertEqual(
+            numbers,
+            [
+                "1", "2", "3", "4", "4.1", "4.2", "4.2.1", "4.2.2",
+                "5", "5.1", "5.1.1", "5.1.2", "5.2", "5.3", "5.4", "5.5",
+                "5.6", "5.7", "5.8", "5.9", "5.10", "5.11",
+                "6", "7", "7.1", "7.2", "7.3", "7.4", "7.4.1", "7.4.2",
+                "7.4.2.1", "7.4.2.2",
+            ],
+        )
+
+    def test_paragraph_shaped_table_caption_is_folded(self) -> None:
+        # 回归（2026-08-31，GB_T_43726-2024 表4）：MinerU 把表题注抽成 directive
+        # 前的普通段落（"表4 安装配合面的同轴度"，可隔"单位为毫米"行），渲染出
+        # 「表4 安装配合面的同轴度」+「表4」双题注。应折进表格 caption。
+        csm = """---
+csm-version: "1.0"
+document-type: standard
+document-identifier: "GB/T 43726—2024"
+standard-number: "GB/T 43726—2024"
+title: "无刷直流力矩电动机通用技术条件"
+language: zh-CN
+source:
+  mode: mineru
+  original-file-name: "GB_T_43726-2024.pdf"
+---
+
+# 无刷直流力矩电动机通用技术条件
+
+## 1 范围
+
+本文件规定了电机的技术要求。
+
+## 5.6 安装配合面的同轴度
+
+除另有规定外，组装式电机安装配合面的同轴度应符合表4的规定。
+
+表4 安装配合面的同轴度
+单位为毫米
+<!-- ssir:table id="mineru-table-t4" header-rows="1" caption-number="4" -->
+| 机座号 | 25~55(不含55) | 160~320 |
+| --- | --- | --- |
+| 安装配合面的同轴度 | ≤0.03 | ≤0.08 |
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "table4.canonical.md"
+            path.write_text(csm, encoding="utf-8")
+            ssir = parse_csm(path)
+        table = ssir["tables"][0]
+        self.assertEqual(table.get("caption"), "安装配合面的同轴度")
+        # 正文里不应残留被折走的题注段落
+        leftovers = [
+            content.get("textContent", "")
+            for node in self._nodes(ssir["structuralRoot"])
+            for content in node.get("contentElements", [])
+            if content.get("presentationType") == "paragraph" and str(content.get("textContent", "")).startswith("表")
+        ]
+        self.assertEqual(leftovers, [])
+
+    def test_table_unit_line_and_spaced_caption_fold_into_table(self) -> None:
+        # 回归（2026-08-31，GB_T_43726-2024 表3/表4/表5/表8）：MinerU 把
+        # "单位为毫米" 抽成 directive 前的独立段落（渲染到题注上方），且题注
+        # 可能带空格（"表 3 轴伸径向圆跳动"）导致不折叠 + 表格自带 "**表3**"
+        # 双题注。两者都应折进 table（caption + unit 属性）。
+        csm = """---
+csm-version: "1.0"
+document-type: standard
+document-identifier: "GB/T 43726—2024"
+standard-number: "GB/T 43726—2024"
+title: "无刷直流力矩电动机通用技术条件"
+language: zh-CN
+source:
+  mode: mineru
+  original-file-name: "GB_T_43726-2024.pdf"
+---
+
+# 无刷直流力矩电动机通用技术条件
+
+## 5.3 径向间隙
+
+表 3 轴伸径向圆跳动
+单位为毫米
+<!-- ssir:table id="mineru-table-t3" header-rows="1" caption-number="3" -->
+| 机座号 | 25~55(不含55) |
+| --- | --- |
+| 轴伸径向圆跳动 | ≤0.02 |
+
+## 5.10 绝缘介电强度
+
+单位为毫安
+<!-- ssir:table id="mineru-table-t8" header-rows="1" caption-number="8" -->
+| 试验电压 | 250V |
+| --- | --- |
+| 峰值漏电流 | ≤0.5 |
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "units.canonical.md"
+            path.write_text(csm, encoding="utf-8")
+            ssir = parse_csm(path)
+        tables = {t.get("number"): t for t in ssir["tables"]}
+        self.assertEqual(tables["3"].get("caption"), "轴伸径向圆跳动")
+        self.assertEqual(tables["3"].get("unit"), "毫米")
+        # 表8 夹具只有单位行无题注：unit 折叠、无 caption
+        self.assertIsNone(tables["8"].get("caption"))
+        self.assertEqual(tables["8"].get("unit"), "毫安")
+        # 单位行/题注段落不应残留在正文里
+        leftovers = [
+            content.get("textContent", "")
+            for node in self._nodes(ssir["structuralRoot"])
+            for content in node.get("contentElements", [])
+            if content.get("presentationType") == "paragraph"
+            and ("单位为" in str(content.get("textContent", "")) or str(content.get("textContent", "")).startswith("表"))
+        ]
+        self.assertEqual(leftovers, [])
+
     def test_normalize_writes_canonical_without_changing_body_semantics(self) -> None:
         raw = (
             b'\xef\xbb\xbf---\r\n'

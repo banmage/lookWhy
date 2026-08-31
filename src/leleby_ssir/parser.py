@@ -90,7 +90,61 @@ TABLE_BARE_CAPTION_RE = re.compile(r"^\*\*表([^\s]+)\*\*$")
 # Heading-shaped table caption ("## 表4 物理性能要求") — MinerU 偶尔把表题注
 # 提升为 ## 标题且位于 ssir:table directive 之前；解析时降级为表格 caption，
 # 避免渲染出「表4 物理性能要求」+「表4」双题注（GEN-032/033、GBT-B08）。
-TABLE_HEADING_CAPTION_RE = re.compile(r"^表([^\s]+)\s+(.+)$")
+# 允许 "表" 与编号之间有空格（OCR 排法 "表 3 轴伸径向圆跳动"，2026-08-31）。
+TABLE_HEADING_CAPTION_RE = re.compile(r"^表\s*([^\s]+)\s+(.+)$")
+
+# 单位为毫米 等单位行：位于表题注与表格之间，题注折叠时的 lookahead 可跳过，
+# 且折进 table directive 的 unit 属性（渲染为右对齐"单位为毫米"紧贴表格）。
+TABLE_UNIT_LINE_RE = re.compile(r"^单位\s*[为:：]\s*(\S{1,8})$")
+
+
+def _clause_digit_placements(digits: str, max_depth: int = 4) -> list[tuple[int, ...]]:
+    """All ways to split a digit run into 1..max_depth non-empty segments.
+
+    章条号点分隔修复（CSM-OCR-002）的候选空间：把 "7421" 拆成
+    (7,4,2,1)、(7,4,21)、(7,42,1)、(74,2,1)… 每段无前导零。
+    """
+    placements: list[tuple[int, ...]] = []
+    if not digits:
+        return placements
+
+    def rec(start: int, segments: list[int]) -> None:
+        if start == len(digits):
+            placements.append(tuple(segments))
+            return
+        if len(segments) >= max_depth:
+            return
+        for end in range(start + 1, len(digits) + 1):
+            segment = digits[start:end]
+            if len(segment) > 1 and segment[0] == "0":
+                continue
+            rec(end, segments + [int(segment)])
+
+    rec(0, [])
+    return placements
+
+
+def _clause_continuation(placement: tuple[int, ...], stack: list[int]) -> list[int] | None:
+    """Return the new numbering stack if placement continues stack, else None.
+
+    合法续接（GB/T 1.1 6.1.1 层次编号规则，GBT-H02/H03）：
+    - 同级兄弟 +1（含章级：新章 = 当前章 + 1）；
+    - 子条：父号 + ".1"；
+    - 回退：弹出若干层后最后一段 + 1（如 5.2.3 → 5.3）。
+    """
+    if not stack:
+        return list(placement)
+    depth = len(placement)
+    if depth == len(stack):
+        if placement[:-1] == tuple(stack[:-1]) and placement[-1] == stack[-1] + 1:
+            return list(placement)
+    elif depth == len(stack) + 1:
+        if placement[:-1] == tuple(stack) and placement[-1] == 1:
+            return list(placement)
+    elif depth < len(stack):
+        if placement[:-1] == tuple(stack[: depth - 1]) and placement[-1] == stack[depth - 1] + 1:
+            return list(placement)
+    return None
 
 SUPPORTED_DIRECTIVES = {
     "block",
@@ -197,6 +251,7 @@ class CSMParser:
             issues.append(CSMIssue("CSM-STRUCT-001", "warning", warning))
         fatal_errors.extend(self._repair_tables(blocks, issues))
         self._repair_list_markers(blocks, issues)
+        self._repair_clause_numbers(blocks, issues)
         self._repair_lost_list_markers(blocks, issues)
         self._repair_text_spacing(blocks, issues)
         fatal_errors.extend(self._classify_body_errors(parse_errors, issues))
@@ -275,6 +330,7 @@ class CSMParser:
         warnings: list[str] = []
         pending: dict[str, Directive] = {}
         pending_table_caption: tuple[str, str] | None = None
+        pending_table_unit: str | None = None
         directive_ids: set[str] = set()
         last_table: Block | None = None
         i = 0
@@ -320,12 +376,19 @@ class CSMParser:
                         errors.append(f"line {line_no(i)}: ssir:{name} requires id")
                     directive = Directive(name=name, attrs=attrs, line=line_no(i))
                     if name == "table":
-                        # 表题注被提升为标题（heading-shaped caption）已暂存，
-                        # 在此合并进 table attrs；已有显式 caption 时以显式为准。
+                        # 表题注被提升为标题/普通段落（heading-/paragraph-shaped
+                        # caption）已暂存，在此合并进 table attrs；已有显式
+                        # caption 时以显式为准，且编号不一致的暂存题注不合并
+                        # （防把正文"表5 …"误并进表4 的 directive）。
                         if pending_table_caption is not None:
-                            attrs.setdefault("caption-number", pending_table_caption[0])
-                            attrs.setdefault("caption", pending_table_caption[1])
+                            if "caption-number" not in attrs or attrs["caption-number"] == pending_table_caption[0]:
+                                attrs.setdefault("caption-number", pending_table_caption[0])
+                                attrs.setdefault("caption", pending_table_caption[1])
                             pending_table_caption = None
+                        # "单位为毫米" 等单位行折进 unit 属性（渲染右对齐紧贴表格）。
+                        if pending_table_unit is not None:
+                            attrs.setdefault("unit", pending_table_unit)
+                            pending_table_unit = None
                     if name == "table-merge":
                         if last_table is None:
                             errors.append(f"line {line_no(i)}: ssir:table-merge must follow a table")
@@ -606,6 +669,54 @@ class CSMParser:
                     i += 1
                     continue
 
+            # 表题注被抽成普通段落（"表4 安装配合面的同轴度"，GEN-032/033 变体）：
+            # 位于 ssir:table directive 之前（可跨空行与"单位为毫米"等单位行）时，
+            # 与 heading-shaped 题注一样折进 pending_table_caption，避免渲染出
+            # 「表4 安装配合面的同轴度」+「表4」双题注。判定收窄防误伤正文：
+            # 单行、无句末标点、长度 ≤ 40、后随（跳过空行/单位行）表格。
+            paragraph_caption = TABLE_HEADING_CAPTION_RE.match(line.strip())
+            if paragraph_caption and not any(mark in line for mark in "。；，："):
+                lookahead = i + 1
+                while lookahead < len(lines):
+                    stripped = lines[lookahead].strip()
+                    if not stripped:
+                        lookahead += 1
+                        continue
+                    if TABLE_UNIT_LINE_RE.match(stripped):
+                        lookahead += 1
+                        continue
+                    break
+                next_line = lines[lookahead].strip() if lookahead < len(lines) else ""
+                next_table = next_line.startswith("<!-- ssir:table ")
+                if not next_table and next_line.startswith("|") and lookahead + 1 < len(lines):
+                    next_table = bool(TABLE_SEPARATOR_RE.match(lines[lookahead + 1].strip()))
+                if next_table and len(line.strip()) <= 40:
+                    pending_table_caption = (paragraph_caption.group(1), paragraph_caption.group(2))
+                    warnings.append(
+                        f"line {line_no(i)}: paragraph-shaped table caption was folded into the table caption "
+                        f"({paragraph_caption.group(1)} {paragraph_caption.group(2)!r})."
+                    )
+                    i += 1
+                    continue
+
+            # "单位为毫米" 等单位行（GEN-032：右对齐置于表格上方紧贴表框）：
+            # 独立成段且后随（可跨空行）ssir:table directive 时折进 unit 属性，
+            # 否则它会渲染成题注上方的正文段落（位置错误）。
+            unit_line = TABLE_UNIT_LINE_RE.match(line.strip())
+            if unit_line:
+                lookahead = i + 1
+                while lookahead < len(lines) and not lines[lookahead].strip():
+                    lookahead += 1
+                next_line = lines[lookahead].strip() if lookahead < len(lines) else ""
+                if next_line.startswith("<!-- ssir:table "):
+                    pending_table_unit = unit_line.group(1)
+                    warnings.append(
+                        f"line {line_no(i)}: table unit line was folded into the table "
+                        f"(unit={unit_line.group(1)!r})."
+                    )
+                    i += 1
+                    continue
+
             start = i
             # 段落行尾清理：MinerU 行尾常残留 Markdown 硬换行（两个尾随空格），
             # 会导致渲染时段落中途断行（如 "……25%时，  \n审查结论应为不通过"）。
@@ -803,6 +914,58 @@ class CSMParser:
                     repaired=True,
                     repair_action=f"Rewrote marker {original} to {corrected} in memory.",
                 )
+
+    @staticmethod
+    def _repair_clause_numbers(blocks: list[Block], issues: list[CSMIssue]) -> None:
+        """Re-insert decimal points that a broken text layer dropped from clause
+        numbers (CSM-OCR-002).
+
+        文本层损坏型 PDF（如 GB_T_43726-2024）经 MinerU auto 抽取后，标题里的
+        点号整段丢失：7.4.2 → 742、5.10 → 510、5.2.1 → 521（数字本身完好，
+        只是少了分隔点；同一文档内 7.4.2.2 又可能带点——损坏逐行不一致）。
+        本修复用编号连续性约束为每个标题选择唯一合法的拆点：
+        - 章级编号连续（1,2,3…，新章 = 当前章 + 1）；
+        - 条级编号 = 父号前缀 + 连续兄弟（N.1, N.2…）或子条（父号 + .1）。
+        无法唯一/合法拆点时保持原样（不猜测），由 GBT-H03 合规检查记录。
+        """
+        heading_blocks = [block for block in blocks if block.kind == "heading"]
+        stack: list[int] = []
+        for block in heading_blocks:
+            match = re.match(r"^(\d[\d.]*)(\s*)(.*)$", block.text)
+            if not match:
+                continue
+            raw_number, separator, title = match.group(1), match.group(2), match.group(3)
+            placements = _clause_digit_placements(raw_number.replace(".", ""))
+            if not placements:
+                continue
+            chosen: tuple[int, ...] | None = None
+            if not stack:
+                # 文档首个编号标题：章号取单段（"1 范围" → 1）。
+                single = (int(placements[0][0]),) if len(placements[0]) == 1 else None
+                if single is not None:
+                    chosen = single
+            else:
+                for placement in placements:
+                    if _clause_continuation(placement, stack) is not None:
+                        chosen = placement
+                        break
+            if chosen is None:
+                continue
+            new_number = ".".join(str(segment) for segment in chosen)
+            if new_number == raw_number:
+                stack = list(chosen)
+                continue
+            block.text = f"{new_number}{separator}{title}"
+            stack = list(chosen)
+            CSMParser._issue(
+                issues,
+                "CSM-OCR-002",
+                f"Clause number {raw_number!r} lost its decimal separators; restored as "
+                f"{new_number!r} (continuity with neighbouring headings).",
+                line=block.start_line,
+                repaired=True,
+                repair_action=f"Rewrote heading number {raw_number} to {new_number} in memory.",
+            )
 
     @staticmethod
     def _repair_lost_list_markers(blocks: list[Block], issues: list[CSMIssue]) -> None:
