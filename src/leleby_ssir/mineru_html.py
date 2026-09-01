@@ -47,12 +47,21 @@ def html_table_to_csm(html: str, table_id: str, caption: str | None) -> str:
                 del pending_spans[col]
             col += 1
         for cell in tr.find_all(["th", "td"], recursive=False):
+            # 单元格内嵌图（GBT-X02 表中图）：MinerU 把表单元格里的 <img> 以
+            # markdown 图片语法附在单元格文本后（如 表2 锋利度试验区域 的
+            # 试验区域分割/插入角度列示意图），随文本一起流转 CSM/SSIR，
+            # 渲染端再拆分为单元格内 Image flowable。src 为相对路径
+            # （images/<hash>.jpg），末尾统一重写为 assets/images/。
+            cell_imgs = [str(img.get("src", "")) for img in cell.find_all("img") if img.get("src")]
             text = " ".join(cell.get_text(" ", strip=True).split()).replace("|", r"\|")
             # GB 表格中"不适用"用一字线 —（U+2014）；OCR 常把它误读为
             # 汉字"一/二"、斜杠"/"、全角减号"－"等。单独成格的这些符号
             # 不可能是合法数据，统一归一为 "—"，保证表格横杠一致（GBT-C17）。
             if text in {"一", "二", "/", "－", "–", "﹣"}:
                 text = "—"
+            for src in cell_imgs:
+                if src:
+                    text += f" ![](images/{Path(str(src)).name})"
             colspan = max(int(str(cell.get("colspan", "1"))), 1)
             rowspan = max(int(str(cell.get("rowspan", "1"))), 1)
             row.append({"text": text, "colspan": colspan, "rowspan": rowspan})

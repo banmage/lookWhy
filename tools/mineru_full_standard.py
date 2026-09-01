@@ -1028,6 +1028,312 @@ def extract(args: argparse.Namespace, state: dict[str, Any]) -> None:
         _log(f"State saved: {args.state_file}")
 
 
+_ELLIPSIS_CHARS = ("…", "⋯")  # U+2026 与 U+22EF（中线省略号，部分字体映射）
+_FULLWIDTH_DIGITS = str.maketrans("０１２３４５６７８９．", "0123456789.")
+
+
+def _text_layer_content_lines(pdf: Path) -> list[dict[str, Any]]:
+    """Extract content lines (page/x0/y0/text) from the source PDF text layer.
+
+    通用后验的输入基础：文本层是版面真值的唯一权威来源（MinerU OCR 可能丢弃
+    纯符号行——如"……"占位行——而文本层完整保留；中文虽可能乱码，但行数、
+    坐标、数字、拉丁与标点符号可信）。
+    """
+    try:
+        import pymupdf
+    except ImportError:
+        return []
+    lines: list[dict[str, Any]] = []
+    with pymupdf.open(pdf) as document:
+        for page_index in range(len(document)):
+            page = document[page_index]
+            for block in page.get_text("dict")["blocks"]:  # type: ignore[index]
+                for line in block.get("lines", []):  # type: ignore[union-attr]
+                    text = "".join(span["text"] for span in line["spans"]).strip()  # type: ignore[index]
+                    if not text:
+                        continue
+                    y0 = line["bbox"][1]  # type: ignore[index]
+                    x0 = line["bbox"][0]  # type: ignore[index]
+                    if y0 < 80:
+                        continue  # 页眉（标准号眉线）
+                    if y0 > 740 and re.fullmatch(r"[0-9０-９IVXⅣⅤⅧ]+", text):
+                        continue  # 页脚页码（奇偶页左右交替，只按内容形态过滤）
+                    lines.append({"page": page_index + 1, "x0": x0, "y0": y0, "text": text})
+    return lines
+
+
+def _is_short_ellipsis(text: str) -> bool:
+    """Pure ellipsis line (1-6 个 …/⋯)。目录点线（40+ 个 …）不属于内容占位。"""
+    t = text.replace(" ", "")
+    return 1 <= len(t) <= 6 and set(t) <= set(_ELLIPSIS_CHARS)
+
+
+def _clause_skeleton(text: str) -> str | None:
+    """行首条号骨架：５．８ → 5.8、６ → 6。仅当行首（可带破折号/空白）是
+    点分数字链**且后随空白或行尾**时返回——乱码行中段碎片（如 "7b…"）的
+    伪编号不匹配，避免把省略号锚到错误位置。"""
+    t = text.translate(_FULLWIDTH_DIGITS)
+    # 后随空白时空白后不得再是数字（"１ 01" 型目录页码行不算条号）；
+    # 后随行尾也可（孤立的章号行）。
+    match = re.match(r"^[\s—–\-]*(\d+(?:\.\d+){0,3})(?=\s(?![0-9０-９])|$)", t)
+    return match.group(1) if match else None
+
+
+def _raw_line_starts_with_number(line: str, skeleton: str) -> bool:
+    """raw 行（可带 markdown 标题前缀）是否以该条号骨架开头且不吞掉更长编号。"""
+    s = line.lstrip("#").strip()
+    return bool(re.match(rf"^{re.escape(skeleton)}(?=[^\d.]|$)", s))
+
+
+def _restore_ellipsis_lines(body: str, pdf: Path) -> str:
+    """Generic restoration of OCR-dropped pure-ellipsis lines (GEN-092 后验补盲)。
+
+    现象（GB_T_20001.6-2017 等规程/指南标准的示例文档）：MinerU OCR 丢弃
+    纯"……"占位行（5.3/5.4.1/5.4.2/5.4.3/5.7.1 a)/5.8/5.9/6.2 末尾等），
+    源 PDF 文本层完整保留。恢复分两类：
+
+    - 正文省略号：以省略号行之后的**下一个带条号骨架的文本层行**为锚（锚定到
+      raw 中该骨架的最后一个出现位置，靠单调游标保持插入顺序），把"……"插到
+      该行之前；无后随锚且位于最后一页末行时追加到文末（6.2 末尾型）。
+    - 表格单元格省略号：文本层同一 x 带内、以省略号行为中心按行距向外延展的
+      连续行 = 单元格原始行列表；把 raw 单元格文本按"……"切段后，用文本层
+      各行长度对中段做贪心对齐（末行允许 ±2 容差，容纳 OCR 丢弃上标等），
+      行间以 <br> 连接（渲染端转 <br/>，roundtrip 三侧一致）。
+
+    保守原则：锚点/长度无法可靠匹配时不改（不猜测）；raw 已在插入点附近有
+    短省略号行时跳过（防重复）。
+    """
+    text_lines = _text_layer_content_lines(pdf)
+    if not text_lines:
+        return body
+    ellipsis_indexes = [i for i, line in enumerate(text_lines) if _is_short_ellipsis(line["text"])]
+    if not ellipsis_indexes:
+        return body
+
+    raw_lines = body.split("\n")
+    insert_before: list[tuple[int, str]] = []  # (raw 行号, 插入文本)，逆序应用
+    cursor = 0
+    consumed: set[int] = set()
+
+    def _table_like(line_index: int) -> bool:
+        """省略号行是否位于表格单元格内：同页存在 **≥2 个** |Δy|≤40 且
+        |Δx|≥60 的其他内容行（表格网格的同行多列特征；单条缩进行/居中行
+        如示例引导语不会误判）。"""
+        me = text_lines[line_index]
+        hits = 0
+        for other in text_lines:
+            if other["page"] != me["page"]:
+                continue
+            if abs(other["y0"] - me["y0"]) <= 40 and abs(other["x0"] - me["x0"]) >= 60:
+                hits += 1
+                if hits >= 2:
+                    return True
+        return False
+
+    # 第一遍：正文省略号（非表格），记录插入点。
+    for e in ellipsis_indexes:
+        if _table_like(e):
+            continue
+        # 下一个带条号骨架的文本层行——必须与省略号同页（跨页会把前言/引言
+        # 中的省略号锚到正文章节，如 p3 前言省略号误锚到 p5 "2 规范性引用文件"）。
+        f_index = None
+        for j in range(e + 1, len(text_lines)):
+            if text_lines[j]["page"] != text_lines[e]["page"]:
+                break
+            if _clause_skeleton(text_lines[j]["text"]):
+                f_index = j
+                break
+        if f_index is None:
+            # 无后随锚：仅当它是整份文档最后一页的末行内容时追加到文末
+            # （如 6.2 末尾的"……"）。
+            last_content = text_lines[-1]
+            if text_lines[e] is last_content or (
+                text_lines[e]["page"] == last_content["page"]
+                and text_lines[e]["y0"] >= last_content["y0"]
+            ):
+                marker = next(
+                    (ri for ri in range(len(raw_lines) - 1, -1, -1) if raw_lines[ri].startswith("<!-- /ssir:mineru-pages -->")),
+                    len(raw_lines),
+                )
+                insert_before.append((marker, "……"))
+                cursor = len(raw_lines)
+            continue
+        skeleton = _clause_skeleton(text_lines[f_index]["text"])
+        if skeleton is None:
+            continue
+        # raw 中该骨架的最后一个出现位置（须在游标之后）——同号重复时
+        # 省略号属于较早出现与较晚出现之间的位置，取后者。
+        found = None
+        for ri in range(len(raw_lines) - 1, cursor - 1, -1):
+            if _raw_line_starts_with_number(raw_lines[ri], skeleton):
+                found = ri
+                break
+        if found is None:
+            continue
+        if any(_is_short_ellipsis(raw_lines[k].strip()) for k in range(max(0, found - 3), found)):
+            cursor = found + 1
+            continue
+        insert_before.append((found, "……"))
+        cursor = found + 1
+        consumed.add(e)
+
+    # 第二遍：表格单元格省略号。
+    table_ellipsis = [i for i in ellipsis_indexes if i not in consumed and _table_like(i)]
+    # 按页 + x 带分组（同一单元格的省略号行同页同 x、y 递增）。
+    clusters: list[list[int]] = []
+    for e in table_ellipsis:
+        placed = False
+        for cluster in clusters:
+            ref = text_lines[cluster[0]]
+            line = text_lines[e]
+            if line["page"] == ref["page"] and abs(line["x0"] - ref["x0"]) <= 20:
+                cluster.append(e)
+                placed = True
+                break
+        if not placed:
+            clusters.append([e])
+    table_replacements: list[tuple[int, str, str]] = []
+    for cluster in clusters:
+        cluster.sort(key=lambda i: text_lines[i]["y0"])
+        ref = text_lines[cluster[0]]
+        ellipsis_ys = {text_lines[i]["y0"] for i in cluster}
+        # 单元格完整行列表：以省略号行为中心、同 x 带内按行距 ≤28pt 连续延展。
+        cell_lines = _cell_vertical_run(
+            [
+                line for line in text_lines
+                if line["page"] == ref["page"] and abs(line["x0"] - ref["x0"]) <= 25
+            ],
+            ellipsis_ys,
+        )
+        if len(cell_lines) < 2:
+            continue
+        lengths = [len(line["text"]) for line in cell_lines]
+        ellipsis_lengths = {len(line["text"]) for line in cell_lines if line["y0"] in ellipsis_ys}
+        # 在 raw 中找含同数量"……"的表格单元格。
+        raw_index: int | None = None
+        cell_text: str | None = None
+        for ri in range(len(raw_lines)):
+            if not raw_lines[ri].strip().startswith("|"):
+                continue
+            cells = [c.strip() for c in raw_lines[ri].strip().strip("|").split("|")]
+            for cell in cells:
+                if cell.count("……") == len(cluster):
+                    raw_index = ri
+                    cell_text = cell
+                    break
+            if raw_index is not None:
+                break
+        if raw_index is None or cell_text is None:
+            continue
+        rebuilt = _rebuild_cell_lines(cell_text, lengths, ellipsis_lengths)
+        if rebuilt is None or rebuilt == cell_text:
+            continue
+        table_replacements.append((raw_index, cell_text, rebuilt))
+
+    if not insert_before and not table_replacements:
+        return body
+
+    for ri, cell_text, rebuilt in table_replacements:
+        raw_lines[ri] = raw_lines[ri].replace(cell_text, rebuilt)
+    for ri, text in sorted(insert_before, key=lambda item: item[0], reverse=True):
+        raw_lines.insert(ri, text)
+    return "\n".join(raw_lines)
+
+
+def _cell_vertical_run(cell_lines: list[dict[str, Any]], ellipsis_ys: set[float]) -> list[dict[str, Any]]:
+    """从省略号行出发、同 x 带内按 y 相邻（间距 ≤28pt）连续延展的单元格行。"""
+    if not cell_lines:
+        return []
+    selected = [line for line in cell_lines if line["y0"] in ellipsis_ys]
+    if not selected:
+        return []
+    selected = sorted(selected, key=lambda line: line["y0"])
+    top = selected[0]["y0"]
+    bottom = selected[-1]["y0"]
+    ordered = sorted(cell_lines, key=lambda line: line["y0"])
+    # 两省略号行之间的行天然属于该单元格，先全部纳入。
+    grown = [line for line in ordered if top <= line["y0"] <= bottom]
+    # 向上延展
+    for line in reversed(ordered):
+        if line["y0"] >= top:
+            continue
+        if top - line["y0"] <= 28 and line not in grown:
+            grown.append(line)
+            top = line["y0"]
+    # 向下延展
+    for line in ordered:
+        if line["y0"] <= bottom:
+            continue
+        if line["y0"] - bottom <= 28 and line not in grown:
+            grown.append(line)
+            bottom = line["y0"]
+    return sorted(grown, key=lambda line: line["y0"])
+
+
+def _rebuild_cell_lines(cell_text: str, lengths: list[int], ellipsis_lengths: set[int]) -> str | None:
+    """把 raw 表格单元格文本按文本层行结构重排为 <br> 连接的多行。
+
+    - 先按"……"切段（省略号行独占一行，这是本修复的核心诉求）；
+    - 每个中段按文本层对应行的字符长度贪心切分（末行容差 ±2，容纳 OCR
+      丢弃上标字母等）；长度对不上时回退为仅"……"分行。
+    """
+    segments = cell_text.split("……")
+    # 省略号行在文本层长度序列里的下标 = 段间锚点。
+    ellipsis_positions = [i for i, ln in enumerate(lengths) if ln in ellipsis_lengths]
+    if not ellipsis_positions:
+        return None
+    # 每段的文本层长度 = 相邻省略号位置之间的非省略号行长度。
+    run_lengths: list[list[int]] = []
+    prev = -1
+    for pos in ellipsis_positions:
+        run_lengths.append([ln for ln in lengths[prev + 1:pos] if ln not in ellipsis_lengths])
+        prev = pos
+    run_lengths.append([ln for ln in lengths[prev + 1:] if ln not in ellipsis_lengths])
+    if len(segments) != len(run_lengths):
+        return None
+    rebuilt: list[str] = []
+    for seg_index, segment in enumerate(segments):
+        lines = _greedy_split(segment, run_lengths[seg_index]) if run_lengths[seg_index] else [segment]
+        if lines is None:
+            # 回退：仅把省略号分行，中段保持原样。
+            rebuilt = []
+            for idx, segment_text in enumerate(segments):
+                if segment_text:
+                    rebuilt.append(segment_text)
+                if idx < len(segments) - 1:
+                    rebuilt.append("……")
+            return "<br>".join(rebuilt)
+        rebuilt.extend(lines)
+        if seg_index < len(segments) - 1:
+            rebuilt.append("……")
+    return "<br>".join(rebuilt)
+
+
+def _greedy_split(segment: str, lengths: list[int]) -> list[str] | None:
+    """按字符长度序列贪心切分（末行容差 ±2）。无法对齐返回 None。"""
+    if not segment and not lengths:
+        return []
+    if len(lengths) == 1:
+        return [segment] if abs(len(segment) - lengths[0]) <= 2 else None
+    lines: list[str] = []
+    pos = 0
+    for index, ln in enumerate(lengths):
+        if index == len(lengths) - 1:
+            rest = len(segment) - pos
+            if abs(rest - ln) <= 2:
+                lines.append(segment[pos:])
+                pos = len(segment)
+            else:
+                return None
+        else:
+            end = pos + ln
+            if end > len(segment):
+                return None
+            lines.append(segment[pos:end])
+            pos = end
+    return lines if pos == len(segment) else None
+
+
 def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
     # 规则对应: GEN-005（按原始页序合并、带页码范围标记）、GEN-010（页眉页脚回收）、
     # GEN-030（附录标题重组）、GEN-019（显式 front-matter 优先）。
@@ -1181,7 +1487,11 @@ def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
     if not re.search(r"(?m)^#\s", body):
         body = f"# {title}\n\n{body}"
     lines.extend([body, ""])
-    destination.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    merged_text = "\n".join(lines).rstrip() + "\n"
+    # 通用省略号恢复（GEN-092 后验补盲）：OCR 常丢弃纯"……"占位行与表格
+    # 单元格行结构，源 PDF 文本层完整保留——merge 阶段从文本层恢复。
+    merged_text = _restore_ellipsis_lines(merged_text, args.input)
+    destination.write_text(merged_text, encoding="utf-8")
     provenance = paths["provenance"]
     _write_json(provenance, {
         "sourcePdf": str(args.input.resolve()), "sourceSha256": state["sourceSha256"], "pageCount": state["pageCount"],
@@ -1223,8 +1533,10 @@ def finalize(args: argparse.Namespace, merged: Path) -> Path | None:
     if subprocess.run(parsed, cwd=ROOT).returncode:
         print("SSIR parsing needs review; normalized CSM remains available.", file=sys.stderr)
         return None
-    _log(f"SSIR JSON written: {ssir}")
+    _log(f"SSIR JSON written: {ssir}\n")
     _stamp_example_styles(ssir, args.input)
+    _stamp_figure_source_sizes(ssir, args.input)
+    _stamp_side_by_side_layout(ssir, args.output_dir / "parts")
     return ssir
 
 
@@ -1273,6 +1585,346 @@ def _stamp_example_styles(ssir_path: Path, source_pdf: Path) -> None:
     visit(data.get("structuralRoot", {}).get("children", []) or [])
     ssir_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     _log(f"Example style detected from source PDF: {style} (stroke={stroke_rects}, fill={fill_rects})")
+
+
+def _stamp_figure_source_sizes(ssir_path: Path, source_pdf: Path) -> None:
+    """Record each figure's original layout size (pt) from the source PDF.
+
+    MinerU 裁剪图常以高于原版的像素密度导出（GB_T_23132-2024 实测约 2.1-3x），
+    渲染端按固有 72dpi 尺寸输出会远超原图（图1 42x76pt 被放大到 126x212pt）。
+    本步骤把每张图在源 PDF 中的版面矩形尺寸写入 SSIR figure 的
+    sourceWidth/sourceHeight（pt），渲染端据此还原原图尺寸（GEN-076）。
+
+    匹配依据：裁剪图保持宽高比，源 PDF 图像矩形与资产宽高比接近
+    （|Δaspect| < 0.12）且像素密度比在合理范围（[1.2, 4.0] px/pt）者胜出；
+    每个源矩形只分配给一个资产（贪心：全局最接近宽高比者优先），防止
+    两个相似裁剪图抢同一矩形（表2 旋转式 试验区域分割/插入角度 两张方形图）。
+    **封面徽标/装饰小图不参与匹配**（第 1 页上高度 < 100pt 的矩形——标准封面
+    的徽标与 logo，非内容图；正文图不会出现在封面），否则宽高比接近的
+    内容图会误配到封面徽标矩形（如 表2 往复式 试验区域分割图 2.04 宽高比
+    误配封面 GB_logo 113.7x56.9）。
+
+    两类图片匹配不到独立矩形：
+    - 子图裁剪（图2 卷曲判定图被拆分出的 a)/b) 无编号图块）：宽高比与整图
+      矩形不符 → 回退到**文档像素密度估计**：取已匹配资产的 px/pt 中位数
+      （OCR 重渲染页密度整本稳定，~200dpi/72 ≈ 2.78；扫描型 PDF 无任何匹配
+      时直接默认 2.78），size = 像素/密度，仍接近原图尺寸；
+    - 表格单元格内图（GBT-X02 表中图，`![](ref)` 挂在 table cell 文本上，
+      如 表2 试验区域分割/插入角度示意图）：同样参与匹配与密度回退，尺寸
+      写入 table["cellImageSizes"] = {ref: [w, h]}，渲染端按原尺寸（上限
+      单元格宽）显示。
+
+    注意 assetRef 是相对文档根的（<docroot>/assets/images/...），SSIR 位于
+    03_ssir/ 子目录——必须沿祖先目录向上找（同 pdf_renderer._resolve_asset）。
+    此前只按 ssir_path.parent / ref 解析导致所有图都拿不到尺寸（03_ssir/
+    下没有 assets/），是"图太大"的直接根因。
+    """
+    try:
+        import fitz  # type: ignore
+        from PIL import Image as PILImage  # type: ignore
+    except Exception:
+        return
+    try:
+        data = json.loads(ssir_path.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    figures = data.get("figures") or []
+    if not figures:
+        return
+    try:
+        with fitz.open(source_pdf) as document:
+            # (rw, rh, page_index)；第 1 页（封面）的徽标/装饰小图
+            # （高 < 100pt）不参与匹配——封面徽标由 config/emblems/ 独立处理，
+            # 非内容图；宽高比接近的内容图误配到徽标矩形会得到错误尺寸。
+            rects: list[tuple[float, float, int]] = []
+            for page_index, page in enumerate(document):
+                for info in page.get_image_info():
+                    r = info["bbox"]
+                    rw, rh = r[2] - r[0], r[3] - r[1]
+                    if rw >= 10 and rh >= 10 and not (page_index == 0 and rh < 100):
+                        rects.append((rw, rh, page_index))
+    except Exception:
+        return
+    if not rects:
+        return
+
+    def _resolve_asset(ref: str) -> Path:
+        # assetRef 相对文档根；SSIR 在 03_ssir/ 时沿祖先目录向上找。
+        for parent in ssir_path.parents:
+            candidate = parent / ref
+            if candidate.is_file():
+                return candidate
+        return ssir_path.parent / ref
+
+    def _pixel_size(asset: Path) -> tuple[int, int] | None:
+        try:
+            with PILImage.open(asset) as im:
+                aw, ah = im.size
+        except Exception:
+            return None
+        if aw < 20 or ah < 20:
+            return None
+        return aw, ah
+
+    # 候选图片：figures 注册表 + 表格单元格内图（GBT-X02 表中图）。
+    cell_image_re = re.compile(r"!\[(?:[^\]]*)\]\(([^)]+)\)")
+    # (kind, owner, ref, (aw, ah))
+    candidates: list[tuple[str, dict[str, Any], str, tuple[int, int]]] = []
+    seen_refs: set[str] = set()
+    for figure in figures:
+        ref = figure.get("assetRef")
+        if not ref or ref in seen_refs:
+            continue
+        asset = _resolve_asset(ref)
+        size = _pixel_size(asset) if asset.is_file() else None
+        if size:
+            seen_refs.add(ref)
+            candidates.append(("figure", figure, ref, size))
+    for table in data.get("tables") or []:
+        for row in table.get("rows") or []:
+            for cell in row.get("cells") or []:
+                for match in cell_image_re.finditer(str(cell.get("text", ""))):
+                    ref = match.group(1)
+                    if ref in seen_refs:
+                        continue
+                    asset = _resolve_asset(ref)
+                    size = _pixel_size(asset) if asset.is_file() else None
+                    if size:
+                        seen_refs.add(ref)
+                        candidates.append(("table", table, ref, size))
+    if not candidates:
+        return
+
+    # 贪心匹配：全局最小 |Δaspect| 的 (候选, 矩形) 对先占位，矩形不重复分配。
+    used: set[int] = set()
+    matched: dict[str, tuple[float, float]] = {}
+    density_ratios: list[float] = []
+    remaining = list(candidates)
+    while remaining:
+        best_pair: tuple[float, int, int] | None = None
+        for ci, (kind, owner, ref, (aw, ah)) in enumerate(remaining):
+            aspect = aw / ah
+            for ri, (rw, rh, _page_index) in enumerate(rects):
+                if ri in used:
+                    continue
+                aspect_diff = abs(aspect - rw / rh)
+                if aspect_diff >= 0.12:
+                    continue
+                res_w = aw / rw
+                res_h = ah / rh
+                if not (1.2 <= res_w <= 4.0 and 1.2 <= res_h <= 4.0):
+                    continue
+                if best_pair is None or aspect_diff < best_pair[0]:
+                    best_pair = (aspect_diff, ci, ri)
+        if best_pair is None:
+            break
+        _, ci, ri = best_pair
+        kind, owner, ref, (aw, ah) = remaining.pop(ci)
+        rw, rh, _page_index = rects[ri]
+        used.add(ri)
+        matched[ref] = (rw, rh)
+        density_ratios.append(aw / rw)
+        density_ratios.append(ah / rh)
+    # 无匹配（扫描型 PDF：源页是整页位图，宽高比/密度对不上任何内容裁剪图）时
+    # 回退到 MinerU OCR 重渲染默认 200dpi/72 ≈ 2.78 px/pt（GB_T_23132-2024
+    # 实测匹配中位数 2.77 一致）。
+    density = sorted(density_ratios)[len(density_ratios) // 2] if density_ratios else (200 / 72)
+
+    stamped = 0
+    for kind, owner, ref, (aw, ah) in candidates:
+        if ref in matched:
+            rw, rh = matched[ref]
+        elif density:
+            rw, rh = aw / density, ah / density
+        else:
+            continue
+        if kind == "figure":
+            owner["sourceWidth"] = round(rw, 1)
+            owner["sourceHeight"] = round(rh, 1)
+        else:
+            owner.setdefault("cellImageSizes", {})[ref] = [round(rw, 1), round(rh, 1)]
+        stamped += 1
+    if stamped:
+        ssir_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        _log(f"Figure source sizes stamped from source PDF: {stamped}/{len(candidates)} images (density={density and round(density, 2)} px/pt)")
+
+
+def _stamp_side_by_side_layout(ssir_path: Path, parts_dir: Path) -> None:
+    """Detect side-by-side figure/annotations from MinerU geometry and mark them
+    as a side-by-side group so the renderer lays them out on one row (无边框定位
+    容器，等价 HTML div 布局——GB_T_23132-2024 图2 的 a)/b) 并列子图型).
+
+    依据 MinerU OCR 中间产物 middle.json 的版面几何（preproc_blocks 的 bbox，
+    pt 坐标，与源 PDF 同页面尺寸）：同一页内 **y 区间重叠、x 区间分离**的多个
+    image block 判定为并列组；组内按 x 升序分配 sideBySideColumn。图块附带
+    的图内文字 span（L≤0.4 mm 等）按 span bbox 的 x 中心归属列。命中后把
+    SSIR content（figure 引用与相邻文字段）写入 sideBySideGroup/sideBySideColumn。
+
+    通用性：不依赖具体文档——任何"同一水平带内并排的 2-3 块内容"都命中；
+    无并列证据的图保持原样（单列不组）。
+    """
+    try:
+        data = json.loads(ssir_path.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    if not parts_dir.is_dir():
+        return
+    middle_files = sorted(parts_dir.rglob("*_middle.json"))
+    if not middle_files:
+        return
+    # 收集每页的 image block 几何（含图内文字 span 的 bbox 与内容）。
+    # page_blocks[page_idx] = {"images": [(image_path_basename, x0,y0,x1,y1), ...],
+    #                          "spans": [(text, x0,y0,x1,y1), ...]}
+    page_blocks: dict[int, dict[str, list[tuple]]] = {}
+    for middle in middle_files:
+        try:
+            raw = json.loads(middle.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for info in raw.get("pdf_info") or []:
+            page_idx = info.get("page_idx")
+            if page_idx is None:
+                continue
+            page = page_blocks.setdefault(page_idx, {"images": [], "spans": []})
+            for block in info.get("preproc_blocks") or []:
+                if block.get("type") != "image":
+                    continue
+                bbox = block.get("bbox")
+                if not bbox or len(bbox) != 4:
+                    continue
+                image_path = None
+                for sub in block.get("blocks") or []:
+                    for line in sub.get("lines") or []:
+                        for span in line.get("spans") or []:
+                            if span.get("type") == "image" and span.get("image_path"):
+                                image_path = Path(span["image_path"]).name
+                            elif span.get("type") == "text" and span.get("content"):
+                                sb = span.get("bbox")
+                                if sb and len(sb) == 4:
+                                    page["spans"].append((str(span["content"]).strip(), sb[0], sb[1], sb[2], sb[3]))
+                if image_path:
+                    page["images"].append((image_path, bbox[0], bbox[1], bbox[2], bbox[3]))
+    if not page_blocks:
+        return
+
+    # 图块 assetRef 索引（basename）。
+    ref_by_basename: dict[str, str] = {}
+    for figure in data.get("figures") or []:
+        ref = figure.get("assetRef")
+        if ref:
+            ref_by_basename.setdefault(Path(ref).name, figure["id"])
+
+    # 遍历 SSIR 树找 content 元素（figureRef / textContent 匹配用）。
+    contents: list[dict] = []
+
+    def _walk(node: dict) -> None:
+        for content in node.get("contentElements") or []:
+            contents.append(content)
+        for child in node.get("children") or []:
+            _walk(child)
+
+    _walk(data.get("structuralRoot") or {})
+    content_by_figure = {c.get("figureRef"): c for c in contents if c.get("presentationType") == "figure"}
+
+    # 每页检测并列组：image blocks 两两 y 重叠（>60% 小高）且 x 分离 → 组内按 x 排序。
+    def _norm(t: str) -> str:
+        return re.sub(r"\s+", "", t).replace("（", "(").replace("）", ")")
+
+    def _content_search_text(content: dict) -> list[str]:
+        """content 的可搜索文本：段落取 textContent；列项取 marker+text。"""
+        if content.get("presentationType") == "list":
+            return [_norm(f"{item.get('marker', '')}{item.get('text', '')}") for item in content.get("listItems") or []]
+        return [_norm(str(content.get("textContent", "")))]
+
+    stamped_group = 0
+    for page_idx in sorted(page_blocks):
+        images = sorted(page_blocks[page_idx]["images"], key=lambda item: item[1])  # 按 x0
+        spans = page_blocks[page_idx]["spans"]
+        used: set[int] = set()
+        for i, (name_i, x0i, y0i, x1i, y1i) in enumerate(images):
+            if i in used:
+                continue
+            group = [i]
+            used.add(i)
+            # 贪心：与已组内任一成员 y 重叠且 x 分离的都并入（上限 3 列——用户
+            # 描述"并列的两部分或三部分内容"；4+ 并排的罕见版面不猜测）。
+            changed = True
+            while changed:
+                changed = False
+                for j, (name_j, x0j, y0j, x1j, y1j) in enumerate(images):
+                    if j in used or len(group) >= 3:
+                        continue
+                    for k in group:
+                        _, _, y0k, _, y1k = images[k]
+                        x0k, x1k = images[k][1], images[k][3]
+                        overlap = min(y1k, y1j) - max(y0k, y0j)
+                        small_h = min(y1k - y0k, y1j - y0j)
+                        x_separated = x1k <= x0j or x1j <= x0k
+                        if small_h > 0 and overlap > 0.6 * small_h and x_separated:
+                            group.append(j)
+                            used.add(j)
+                            changed = True
+                            break
+                    if changed:
+                        break
+            if len(group) < 2:
+                continue
+            group.sort(key=lambda k: images[k][1])  # x 升序 → 列序
+            group_x0 = min(images[k][1] for k in group)
+            group_x1 = max(images[k][3] for k in group)
+            group_id = f"p{page_idx:03d}-g{stamped_group:02d}"
+            # image → 对应 figure content。
+            fig_col: dict[str, int] = {}
+            for col, k in enumerate(group):
+                name = images[k][0]
+                figure_id = ref_by_basename.get(name)
+                if figure_id:
+                    fig_col[figure_id] = col
+            if not fig_col:
+                continue
+            # span 归属列：x 中心与各列图 x 区间距离最近者。
+            col_ranges = []
+            for k in group:
+                col_ranges.append((images[k][1], images[k][3]))
+            span_col: dict[str, int] = {}
+            for span in spans:
+                text, sx0, sy0, sx1, sy1 = span
+                center = (sx0 + sx1) / 2
+                best_col, best_dist = 0, 1e18
+                for col, (cx0, cx1) in enumerate(col_ranges):
+                    dist = 0.0 if cx0 <= center <= cx1 else min(abs(center - cx0), abs(center - cx1))
+                    if dist < best_dist:
+                        best_col, best_dist = col, dist
+                if best_dist < (group_x1 - group_x0) / len(col_ranges):
+                    span_col[text] = best_col
+            # 写标：figure content。
+            hit = False
+            for figure_id, col in fig_col.items():
+                content = content_by_figure.get(figure_id)
+                if content is not None:
+                    content["sideBySideGroup"] = group_id
+                    content["sideBySideColumn"] = col
+                    hit = True
+            # 写标：图内文字（与 span 文本一致的段落/列项，含全角括号归一）。
+            # 只打标与本组 figure 同父节点的 content，避免跨节点误组。
+            parent_ids = {c.get("parentNodeId") for c in contents if c.get("sideBySideGroup") == group_id}
+            for text, col in span_col.items():
+                n = _norm(text)
+                for content in contents:
+                    if content.get("sideBySideGroup") or content.get("parentNodeId") not in parent_ids:
+                        continue
+                    if n in _content_search_text(content):
+                        content["sideBySideGroup"] = group_id
+                        content["sideBySideColumn"] = col
+                        hit = True
+                        break
+            if hit:
+                stamped_group += 1
+                _log(f"Side-by-side group {group_id}: page {page_idx + 1}, {len(group)} columns "
+                     f"({' + '.join(images[k][0][:8] for k in group)})")
+    if stamped_group:
+        ssir_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        _log(f"Side-by-side layout stamped: {stamped_group} group(s)")
 
 
 def compare(original: Path, generated: Path, output: Path) -> None:

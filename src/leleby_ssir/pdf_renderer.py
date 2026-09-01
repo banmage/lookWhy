@@ -573,6 +573,9 @@ def _styles(base: Any, profile: dict[str, Any], font: str, body_font: str, cente
         # 附录示例框外的「示例N：」题注：黑体顶格，位于框上方（不进框）。
         "example-label": ParagraphStyle("gbt-example-label", parent=base["BodyText"], fontName=font, fontSize=10.5, leading=16, alignment=left, leftIndent=0, firstLineIndent=0, spaceBefore=8, spaceAfter=2, wordWrap="CJK"),
         "table-unit": ParagraphStyle("gbt-table-unit", parent=base["BodyText"], fontName=body_font, fontSize=9, leading=12, alignment=2, firstLineIndent=0, spaceBefore=2, spaceAfter=0),
+        # 并列定位容器单元格（sideBySideGroup，无边框表格）：图内标注文字
+        # 按列居中（L≤0.4 mm / a) 合格断面 等），不缩进、宋体。
+        "side-cell": ParagraphStyle("gbt-side-cell", parent=base["BodyText"], fontName=body_font, fontSize=body["size-pt"], leading=body["leading-pt"], alignment=center, firstLineIndent=0, leftIndent=0, spaceAfter=2, wordWrap="CJK"),
     }
 
 
@@ -603,8 +606,25 @@ def _example_box(flowables: list[Any], mode: str, colors: Any, Table: Any, Table
 
     每个 flowable 占一行：reportlab Table 按行跨页拆分，每页片段绘制
     闭合框/背景，与原标准示例框跨页续排的表现一致。
+
+    KeepTogether 不能进表格行：其 wrap 恒返回 0xffffff（16,777,215pt，
+    强制拆分的哨兵高度），单列表格会把该行撑到 ~16.7M pt → LayoutError
+    （GB_T_20001.6-2017 附录示例框图崩溃：图 4.1/图 4.2 的
+    KeepTogether([image, caption]) 进框即炸）。展开其内容，每个子
+    flowable 单独成行；子内容里的 PageBreak 同样剔除。
     """
-    rows = [[flowable] for flowable in flowables]
+    from reportlab.platypus import KeepTogether, PageBreak
+
+    rows: list[list[Any]] = []
+    for flowable in flowables:
+        if isinstance(flowable, KeepTogether):
+            # reportlab stubs don't declare the private _content attribute.
+            subs = getattr(flowable, "_content", [])
+            for sub in subs:
+                if not isinstance(sub, PageBreak):
+                    rows.append([sub])
+        else:
+            rows.append([flowable])
     table = Table(rows, colWidths=[None])
     commands = [
         ("LEFTPADDING", (0, 0), (-1, -1), 10),
@@ -650,6 +670,136 @@ def _append_nodes(story: list[Any], nodes: list[dict[str, Any]], registries: dic
         index += 1
 
 
+def _append_content_sequence(story: list[Any], contents: list[dict[str, Any]], registries: dict[str, dict[str, dict[str, Any]]], styles: dict[str, Any], font: str, report: PDFRenderReport, asset_dir: Path, colors: Any, Table: Any, TableStyle: Any, Paragraph: Any, Spacer: Any, Image: Any) -> None:
+    """Append a node's contentElements with two layout rules:
+
+    1. **并列定位容器**（sideBySideGroup，pipeline 打标）：同组 content 渲染为
+       一行无边框表格（等价 HTML div 布局），各列按源 PDF 几何并排——GB_T_23132-2024
+       图2 的 a)/b) 子图及其图内标注（L≤0.4 mm / a) 合格断面 等）左右并列；
+       列内图居中、标注文字居中（side-cell 样式）。
+    2. **图注行间距**（通用要求）：上一行是图的说明（figure content 或
+       "图 N …" 题注段落），下一行紧接另一表头名称（table 或 "表 N …" 段落）
+       → 两行之间空一行/更大间距以示内容区分。
+    """
+    contents = sorted(contents, key=_order)
+    index = 0
+    prev_figure_note = False
+    while index < len(contents):
+        content = contents[index]
+        group = content.get("sideBySideGroup")
+        if group:
+            members: list[dict[str, Any]] = []
+            while index < len(contents) and contents[index].get("sideBySideGroup") == group:
+                members.append(contents[index])
+                index += 1
+            _append_side_by_side(story, members, registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image)
+            prev_figure_note = True  # 并列组整体是"图的说明"
+            continue
+        # 图注行（图题/图）后紧跟表头名称 → 空一行/更大间距（通用要求）。
+        if prev_figure_note and _is_table_caption_shape(content):
+            story.append(Spacer(1, 10))
+        _append_content(story, content, registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image)
+        prev_figure_note = _is_figure_note_shape(content)
+        index += 1
+
+
+def _is_figure_note_shape(content: dict[str, Any]) -> bool:
+    kind = content.get("presentationType")
+    if kind == "figure":
+        return True
+    if kind in {"paragraph", "note", "list"}:
+        text = str(content.get("textContent") or "")
+        if kind == "list":
+            items = content.get("listItems") or []
+            text = " ".join(str(item.get("text") or "") for item in items)
+        return bool(re.match(r"^图\s*\d+\.?\d*", text.strip()))
+    return False
+
+
+def _is_table_caption_shape(content: dict[str, Any]) -> bool:
+    kind = content.get("presentationType")
+    if kind == "table":
+        return True
+    if kind in {"paragraph", "note"}:
+        return bool(re.match(r"^表\s*\d+\.?\d*", str(content.get("textContent") or "").strip()))
+    return False
+
+
+def _append_side_by_side(story: list[Any], members: list[dict[str, Any]], registries: dict[str, dict[str, dict[str, Any]]], styles: dict[str, Any], font: str, report: PDFRenderReport, asset_dir: Path, colors: Any, Table: Any, TableStyle: Any, Paragraph: Any, Spacer: Any, Image: Any) -> None:
+    """Render a side-by-side group as one borderless table row (div 定位等价物)。
+
+    每列是一个单元格（flowables 垂直堆叠）：图按 sourceWidth 原尺寸居中，
+    图内标注/说明文字用 side-cell 样式列内居中。无 GRID/BOX 命令 → 无表格线。
+    """
+    from reportlab.platypus import KeepTogether
+
+    columns: dict[int, list[dict[str, Any]]] = {}
+    for content in members:
+        columns.setdefault(int(content.get("sideBySideColumn", 0)), []).append(content)
+    col_keys = sorted(columns)
+    if not col_keys:
+        return
+    col_flowables: list[list[Any]] = []
+    col_widths: list[float] = []
+    for col in col_keys:
+        cell: list[Any] = []
+        widest = 0.0
+        for content in sorted(columns[col], key=_order):
+            kind = content.get("presentationType")
+            if kind == "figure":
+                figure = registries["figures"][content["figureRef"]]
+                asset = figure.get("assetRef")
+                asset_path = _resolve_asset(asset_dir, asset) if asset else Path("")
+                if asset and asset_path.is_file():
+                    image = Image(str(asset_path))
+                    source_width = figure.get("sourceWidth")
+                    source_height = figure.get("sourceHeight")
+                    if source_width and source_height:
+                        scale = min(1.0, 455 / float(source_width), 520 / float(source_height))
+                        draw_w = float(source_width) * scale
+                        draw_h = float(source_height) * scale
+                    else:
+                        scale = min(1.0, 455 / image.imageWidth, 520 / image.imageHeight)
+                        draw_w = image.imageWidth * scale
+                        draw_h = image.imageHeight * scale
+                    image.drawWidth = draw_w
+                    image.drawHeight = draw_h
+                    image.hAlign = "CENTER"
+                    cell.append(image)
+                    widest = max(widest, draw_w)
+                else:
+                    report.warnings.append(f"Missing figure asset in side-by-side group: {figure.get('id')}")
+            elif kind in {"paragraph", "note", "quote", "example", "warning"}:
+                text = str(content.get("textContent") or "")
+                if text.strip():
+                    cell.append(Paragraph(_markup(text.strip()), styles["side-cell"]))
+            elif kind == "list":
+                for item in sorted(content.get("listItems", []), key=_order):
+                    marker = _list_marker(str(item.get("marker", "-")))
+                    cell.append(Paragraph(_markup(f"{marker} {item.get('text', '')}".strip()), styles["side-cell"]))
+        col_flowables.append(cell)
+        col_widths.append(widest or 60)
+    # 列宽：按各列最宽图原尺寸比例分配版心宽（455pt），无图列给保底宽度。
+    total = sum(col_widths)
+    avail = 455 - 8 * len(col_keys)  # 单元格左右 padding
+    if total <= 0:
+        col_widths = [avail / len(col_keys)] * len(col_keys)
+    elif total <= avail:
+        col_widths = [w * avail / total for w in col_widths]
+    else:
+        col_widths = [w * avail / total for w in col_widths]
+    grid = Table([col_flowables], colWidths=col_widths)
+    grid.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+    ]))
+    story.append(KeepTogether([grid]))
+    story.append(Spacer(1, 4))
+
+
 def _append_node(story: list[Any], node: dict[str, Any], registries: dict[str, dict[str, dict[str, Any]]], styles: dict[str, Any], font: str, report: PDFRenderReport, asset_dir: Path, colors: Any, Table: Any, TableStyle: Any, Paragraph: Any, Spacer: Any, Image: Any, marker_factory: Any = None, PageBreak: Any = None, example_default: str = "frame", example_leading: bool = False) -> None:
     # 规则对应: GBT-B02（章条编号顶格、空一字接排标题）、GBT-B05（附录另起一面、编号/
     # 性质/标题各占一行居中）、GBT-B06/B07（图题表题五号黑体居中）、GEN-073（整体性保护）。
@@ -668,8 +818,7 @@ def _append_node(story: list[Any], node: dict[str, Any], registries: dict[str, d
         if status:
             story.append(Paragraph(_markup(status), styles["annex-status"]))
         story.append(Paragraph(_markup(title), styles["annex-title"]))
-        for content in sorted(node.get("contentElements", []), key=_order):
-            _append_content(story, content, registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image)
+        _append_content_sequence(story, node.get("contentElements", []), registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image)
         _append_nodes(story, node.get("children", []), registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, marker_factory, PageBreak, example_default)
         return
     heading_style = styles["section"] if depth == 1 else styles["subclause"] if depth >= 3 else styles["clause"] if depth else styles["front"]
@@ -685,9 +834,21 @@ def _append_node(story: list[Any], node: dict[str, Any], registries: dict[str, d
     if marker_factory:
         story.append(marker_factory(node))
     story.append(Paragraph(_markup(heading), heading_style))
-    for content in sorted(node.get("contentElements", []), key=_order):
-        _append_content(story, content, registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image)
-    _append_nodes(story, node.get("children", []), registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, marker_factory, PageBreak, example_default)
+    _append_content_sequence(story, node.get("contentElements", []), registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image)
+    children = node.get("children", [])
+    if children:
+        if node.get("exampleContent"):
+            # 示例文档内部层级扁平化（2026-08-31，GB_T_20001.6-2017 附录
+            # 规程标准编写示例）：示例文档自身的 5 → 5.1 → 5.4.1 章节树也是
+            # exampleContent 标记的兄弟节点，走 _append_nodes 的分组逻辑会再
+            # 包一层 _example_box → Table 套 Table：reportlab 表格单元格内
+            # 的表格不能跨页拆分，整表高度超帧 → LayoutError（36 行 x 1194pt
+            # 撞 688pt 帧高）。示例内部标题/内容逐节点直接追加进当前框
+            # （黑体顶格 example-content），不产生嵌套框。
+            for child in children:
+                _append_node(story, child, registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, marker_factory, PageBreak, example_default)
+        else:
+            _append_nodes(story, children, registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, marker_factory, PageBreak, example_default)
 
 
 def _draw_cover_publication(canvas: Any, left: float, right: float, issued: str, effective: str, issuer: str, bottom: float, font: str) -> None:
@@ -904,8 +1065,14 @@ def _cover_story(common: dict[str, Any], standard: dict[str, Any], styles: dict[
 
 
 def _list_marker(marker: str) -> str:
-    """GB/T 1.1-2020 6.6.3 列项符号归一：- / — → ——，• → ·，其余原样保留。"""
-    if marker in ("-", "—"):
+    """GB/T 1.1-2020 6.6.3 列项符号归一。
+
+    - 破折号族（-、—、——、———、– 等 OCR 长度/全半角变体）→ ——（第一层次）；
+    - • → ·（第二层次间隔号）。
+    解析层多数派统一未覆盖的平手列表（如 ['-', '—']、['———', '————']）在
+    渲染层兜底归一，保证同一列表视觉一致（GBT-C12）。
+    """
+    if marker and all(ch in "-—–" for ch in marker):
         return "——"
     if marker == "•":
         return "·"
@@ -993,11 +1160,16 @@ def _append_content(story: list[Any], content: dict[str, Any], registries: dict[
     kind = content.get("presentationType")
     if kind in {"paragraph", "quote", "warning", "example"}:
         text = str(content.get("textContent", ""))
+        # GB/T 1.1 figure caption paragraph: "图 2 尼龙丝卷曲判定" 等题注被
+        # MinerU 抽成独立段落时按图题渲染（黑体居中，同 figure caption）。
+        figure_caption_match = re.match(r"^(图\s*\d+\.?\d*[^\n]*)$", text.strip())
         # GB/T 1.1 table caption block: "表 X.Y 题名\n单位为毫米" — the unit
         # line renders small and flush right, directly above the table frame.
         caption_match = re.match(r"^(表\s*[A-Z]?\d*\.?\d*[^\n]*)\n(单位为[^\s]{1,4})\s*$", text.strip())
         unit_only = re.fullmatch(r"单位为[^\s]{1,4}", text.strip())
-        if caption_match:
+        if figure_caption_match:
+            story.append(Paragraph(_markup(figure_caption_match.group(1).strip()), styles["caption"]))
+        elif caption_match:
             story.append(Paragraph(_markup(caption_match.group(1).strip()), styles["caption"]))
             from reportlab.lib.styles import ParagraphStyle
             unit_style = styles.get("table-unit") or ParagraphStyle(
@@ -1030,7 +1202,7 @@ def _append_content(story: list[Any], content: dict[str, Any], registries: dict[
             list_style = styles["list-sub"] if (marker in ("·",) or marker.rstrip(")）").isdigit()) else styles["list"]
             story.append(Paragraph(_markup(f"{marker} {item.get('text', '')}"), list_style))
     elif kind == "table":
-        _append_table(story, registries["tables"][content["tableRef"]], styles, colors, Table, TableStyle, Paragraph)
+        _append_table(story, registries["tables"][content["tableRef"]], styles, colors, Table, TableStyle, Paragraph, asset_dir=asset_dir, Image=Image)
     elif kind == "formula":
         formula = registries["formulas"][content["formulaRef"]]
         asset = formula.get("assetRef")
@@ -1057,9 +1229,23 @@ def _append_content(story: list[Any], content: dict[str, Any], registries: dict[
         asset_path = _resolve_asset(asset_dir, asset) if asset else Path("")
         if asset and asset_path.is_file():
             image = Image(str(asset_path))
-            scale = min(455 / image.imageWidth, 520 / image.imageHeight)
-            image.drawWidth = image.imageWidth * scale
-            image.drawHeight = image.imageHeight * scale
+            # 图尺寸：优先使用抽取时从源 PDF 记录的原始版面尺寸
+            # （sourceWidth/sourceHeight，pt；_stamp_figure_source_sizes 在
+            # 流水线 finalize 阶段写入），使渲染图与原图尺寸相当（GEN-076）。
+            # 无记录时按图片固有尺寸（72dpi）缩放，但**只缩小不放大**——
+            # MinerU 裁剪图常以高于原版的像素密度导出，放大会远超原图尺寸。
+            source_width = figure.get("sourceWidth")
+            source_height = figure.get("sourceHeight")
+            if source_width and source_height:
+                scale = min(1.0, 455 / float(source_width), 520 / float(source_height))
+                draw_w = float(source_width) * scale
+                draw_h = float(source_height) * scale
+            else:
+                scale = min(1.0, 455 / image.imageWidth, 520 / image.imageHeight)
+                draw_w = image.imageWidth * scale
+                draw_h = image.imageHeight * scale
+            image.drawWidth = draw_w
+            image.drawHeight = draw_h
             image.hAlign = "CENTER"
             figure_flowables: list[Any] = [image]
         else:
@@ -1077,9 +1263,9 @@ def _append_content(story: list[Any], content: dict[str, Any], registries: dict[
         story.append(Paragraph(_markup(unknown.get("rawContent", "")), styles["body"]))
 
 
-def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any], colors: Any, Table: Any, TableStyle: Any, Paragraph: Any) -> None:
+def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any], colors: Any, Table: Any, TableStyle: Any, Paragraph: Any, *, asset_dir: Path | None = None, Image: Any = None) -> None:
     # 规则对应: GBT-B07（表编号表题居中置于表上、表头框线、数字小五号宋体）、
-    # GBT-X02（不准许分表/表中套表；转页重复表头 repeatRows）、GEN-033（无编号无题名不输出题注）。
+    # GBT-X02（不准许分表/表中套表；转页重复表头 repeatRows；表中图）、GEN-033（无编号无题名不输出题注）。
     from reportlab.platypus import Spacer
 
     number = str(table.get("number") or "").strip()
@@ -1098,11 +1284,61 @@ def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any
         )
         story.append(Paragraph(_markup(f"单位为{unit}"), unit_style))
     rows = sorted(table.get("rows", []), key=lambda row: row["rowIndex"])
-    data = [[Paragraph(_markup(_table_cell_superscripts(cell.get("text", ""))), styles["table"]) for cell in sorted(row.get("cells", []), key=lambda cell: cell["colIndex"])] for row in rows]
-    if not data:
+
+    cell_image_re = re.compile(r"!\[(?:[^\]]*)\]\(([^)]+)\)")
+    # 表中图原始版面尺寸（pt）：_stamp_figure_source_sizes 在流水线 finalize
+    # 写入 table["cellImageSizes"] = {ref: [w, h]}，渲染端按原尺寸（上限
+    # 单元格宽、不放大）显示，使表中图与原图尺寸相当（GEN-076 / GBT-X02）。
+    cell_image_sizes = table.get("cellImageSizes") or {}
+
+    def _render_cell(cell_text: str, cell_width: float) -> list[Any]:
+        # 单元格行结构（merge 阶段从源文本层恢复的 <br>，如 表1 "术语和定义
+        # <br>……<br>程序确立…"）在 _markup 转义后恢复为真实 <br/>，使省略号
+        # 等独占一行（GBT-B08 表格版式）。\x00BR\x00 哨兵走 _markup 不被转义。
+        # 表中图（GBT-X02）：mineru_html 把单元格内 <img> 附成
+        # "![](assets/images/<hash>.jpg)" 文本，此处拆出为单元格内 Image
+        # flowable（优先按原版面尺寸、上限单元格宽缩放、不放大），图片前后
+        # 文本各自成段。
+        flowables: list[Any] = []
+        position = 0
+        for match in cell_image_re.finditer(cell_text):
+            text_part = cell_text[position:match.start()]
+            if text_part.strip():
+                marked = text_part.replace("<br>", "\x00BR\x00")
+                flowables.append(Paragraph(_markup(_table_cell_superscripts(marked)).replace("\x00BR\x00", "<br/>"), styles["table"]))
+            if Image is not None and asset_dir is not None:
+                image_path = _resolve_asset(asset_dir, match.group(1))
+                if image_path.is_file():
+                    image = Image(str(image_path))
+                    src = cell_image_sizes.get(match.group(1))
+                    if src:
+                        scale = min(
+                            1.0,
+                            src[0] / image.imageWidth,
+                            src[1] / image.imageHeight,
+                            (cell_width - 8) / image.imageWidth,
+                            200 / image.imageHeight,
+                        )
+                    else:
+                        scale = min(1.0, (cell_width - 8) / image.imageWidth, 200 / image.imageHeight)
+                    image.drawWidth = image.imageWidth * scale
+                    image.drawHeight = image.imageHeight * scale
+                    image.hAlign = "CENTER"
+                    flowables.append(image)
+            position = match.end()
+        tail = cell_text[position:]
+        if tail.strip() or not flowables:
+            marked = tail.replace("<br>", "\x00BR\x00")
+            flowables.append(Paragraph(_markup(_table_cell_superscripts(marked)).replace("\x00BR\x00", "<br/>"), styles["table"]))
+        return flowables
+
+    if not rows or not rows[0].get("cells"):
         return
+    col_count = max(len(sorted(row.get("cells", []), key=lambda cell: cell["colIndex"])) for row in rows)
     width = 455
-    grid = Table(data, colWidths=[width / max(len(data[0]), 1)] * len(data[0]), repeatRows=sum(1 for row in rows if row.get("isHeader")))
+    cell_width = width / max(col_count, 1)
+    data = [[_render_cell(cell.get("text", ""), cell_width) for cell in sorted(row.get("cells", []), key=lambda cell: cell["colIndex"])] for row in rows]
+    grid = Table(data, colWidths=[cell_width] * col_count, repeatRows=sum(1 for row in rows if row.get("isHeader")))
     commands: list[tuple[Any, ...]] = [("GRID", (0, 0), (-1, -1), 0.5, colors.black), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("LEFTPADDING", (0, 0), (-1, -1), 4), ("RIGHTPADDING", (0, 0), (-1, -1), 4), ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]
     if rows and rows[0].get("isHeader"):
         commands.append(("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F2F2F2")))
@@ -1116,8 +1352,11 @@ def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any
         # frame (reportlab LayoutError).  Span it across the whole grid so the
         # note flows at full width.
         cells = sorted(row.get("cells", []), key=lambda c: c["colIndex"])
-        filled = [c for c in cells if str(c.get("text", "")).strip()]
-        if len(cells) > 2 and len(filled) == 1 and len(str(filled[0].get("text", ""))) >= 20:
+        # 排除表中图标记（![](...)）后再判断"仅一个长文本格"——纯图单元格
+        # 不应触发通栏 SPAN。
+        plain_text = lambda cell: cell_image_re.sub("", str(cell.get("text", "")))
+        filled = [c for c in cells if plain_text(c).strip()]
+        if len(cells) > 2 and len(filled) == 1 and len(plain_text(filled[0])) >= 20:
             r = row["rowIndex"]
             commands.append(("SPAN", (0, r), (-1, r)))
     grid.setStyle(TableStyle(commands))

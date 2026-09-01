@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import sys
 import tempfile
 import unittest
@@ -9,7 +10,68 @@ from leleby_ssir.pdf_extractor import extract_pdf_to_csm
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
-from mineru_full_standard import _detect_broken_text_layer, _latin_loss_check  # noqa: E402
+from mineru_full_standard import _detect_broken_text_layer, _latin_loss_check, _restore_ellipsis_lines  # noqa: E402
+
+
+class RestoreEllipsisTests(unittest.TestCase):
+    """merge 阶段从源 PDF 文本层恢复 OCR 丢弃的纯省略号行（GEN-092 后验补盲）。"""
+
+    @staticmethod
+    def _make_pdf(directory: Path, pages: list[list[tuple[float, float, str]]]) -> Path:
+        import pymupdf
+
+        path = directory / "synthetic.pdf"
+        document = pymupdf.open()
+        for page_lines in pages:
+            page = document.new_page()
+            for x, y, text in page_lines:
+                # 内置 CJK 字体（helv 无汉字/省略号字形，抽取会变成 ·）。
+                page.insert_text((x, y), text, fontsize=10, fontname="china-s")
+        document.save(path)
+        document.close()
+        return path
+
+    def test_body_ellipsis_inserted_before_next_clause_anchor(self) -> None:
+        # 5.7.1 a) 之后、5.8 标题之前的纯"……"行被 OCR 丢弃 → 从文本层恢复。
+        with tempfile.TemporaryDirectory() as directory:
+            pdf = self._make_pdf(Path(directory), [
+                [
+                    (72, 100, "5.7.1 基础苗培养的操作如下："),
+                    (92, 115, "a）在超净工作台上切段。"),
+                    (72, 130, "……"),
+                    (72, 150, "5.8 扩繁"),
+                ],
+            ])
+            raw = "## 5.7 基础苗培养\n\n5.7.1 基础苗培养的操作如下：\n\na）在超净工作台上切段。\n\n## 5.8扩繁\n"
+            out = _restore_ellipsis_lines(raw, pdf)
+            self.assertIn("……", out)
+            self.assertLess(out.index("a）在超净工作台上切段。"), out.index("……"))
+            self.assertLess(out.index("……"), out.index("## 5.8扩繁"))
+
+    def test_table_cell_ellipsis_rebuilt_with_br_lines(self) -> None:
+        # 表1 型：单元格被 OCR 压成单行，文本层保留 术语和定义/……/程序确立/
+        # ……/规范性附录 的逐行结构 → 恢复为 <br> 连接（渲染端转 <br/>）。
+        with tempfile.TemporaryDirectory() as directory:
+            pdf = self._make_pdf(Path(directory), [
+                [
+                    (100, 200, "术语和定义"),
+                    (100, 210, "……"),
+                    (100, 220, "程序确立"),
+                    (100, 230, "……"),
+                    (100, 240, "规范性附录"),
+                    (300, 205, "条文"),
+                    (300, 215, "图表"),
+                    (300, 225, "注脚注"),
+                    (300, 235, "文字"),
+                ],
+            ])
+            raw = (
+                "| 要素类型 | 要素的编排 | 表述形式 |\n"
+                "| --- | --- | --- |\n"
+                "| 规范性技术要素 | 术语和定义……程序确立……规范性附录 | 条文图表注脚注 |\n"
+            )
+            out = _restore_ellipsis_lines(raw, pdf)
+            self.assertIn("术语和定义<br>……<br>程序确立<br>……<br>规范性附录", out)
 
 
 class PdfExtractorTests(unittest.TestCase):
@@ -202,6 +264,87 @@ class TextLayerQualityTests(unittest.TestCase):
             source = Path(directory) / "sparse.pdf"
             self._make_pdf(source, ["1 范围", "本文件规定了技术要求。"])
             self.assertIsNone(_latin_loss_check(["1 范围", "本文件规定了技术要求。"], source))
+
+
+class FigureSourceSizeStampTests(unittest.TestCase):
+    """图尺寸打标（2026-09-01，GEN-076 落实）：_stamp_figure_source_sizes 从源
+    PDF 版面矩形还原原图尺寸，供渲染端按原比例显示（GB_T_23132-2024 图/表2 型）。"""
+
+    def setUp(self) -> None:
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+        self.assets = self.root / "doc" / "assets" / "images"
+        self.assets.mkdir(parents=True)
+
+    def tearDown(self) -> None:
+        self.directory.cleanup()
+
+    @staticmethod
+    def _png(path: Path, size: tuple[int, int], color: tuple[int, int, int]) -> None:
+        from PIL import Image
+        Image.new("RGB", size, color).save(path)
+
+    def test_figure_and_table_cell_sizes_stamped_from_source_pdf(self) -> None:
+        # 布局：第 1 页封面徽标 110x55（高 < 100pt，不参与匹配）；第 2 页
+        # 内容图 W 100x50（宽高比 2.0，与徽标同宽高比——若不排除徽标会误配）、
+        # S 100x100、干扰矩形 200x100。SSIR 放在 03_ssir/ 子目录、资产在文档根
+        # assets/——验证祖先目录解析（此前只按 ssir 同目录解析，所有图都拿不到
+        # 尺寸）。D（宽高比 2.667）无匹配矩形 → 密度回退。
+        from mineru_full_standard import _stamp_figure_source_sizes
+        import fitz
+
+        img_w = self.assets / "img_w.png"
+        img_s = self.assets / "img_s.png"
+        img_d = self.assets / "img_d.png"
+        img_t = self.assets / "img_t.png"
+        self._png(img_w, (280, 140), (200, 30, 30))   # aspect 2.0, density 2.8
+        self._png(img_s, (280, 280), (30, 200, 30))   # aspect 1.0
+        self._png(img_d, (400, 150), (30, 30, 200))   # aspect 2.667, 无匹配矩形
+        self._png(img_t, (200, 200), (200, 200, 30))  # aspect 1.0, 表单元格图
+        source = self.root / "source.pdf"
+        doc = fitz.open()
+        doc.new_page(width=595, height=842)
+        doc[0].insert_image(fitz.Rect(400, 30, 510, 85), filename=str(img_w))  # 封面徽标
+        doc.new_page(width=595, height=842)
+        doc[1].insert_image(fitz.Rect(100, 500, 200, 550), filename=str(img_w))  # W: 100x50
+        doc[1].insert_image(fitz.Rect(250, 500, 350, 600), filename=str(img_s))  # S: 100x100
+        doc[1].insert_image(fitz.Rect(100, 300, 300, 400), filename=str(img_w))  # 干扰 200x100
+        doc[1].insert_image(fitz.Rect(400, 300, 500, 400), filename=str(img_t))  # T: 100x100 表中图
+        doc.save(source)
+        doc.close()
+
+        ssir_dir = self.root / "doc" / "03_ssir"
+        ssir_dir.mkdir(parents=True)
+        ssir = ssir_dir / "doc.ssir.json"
+        ssir.write_text(json.dumps({
+            "metadata": {"common": {"title": "T"}, "standard": {"standardNumber": "GB/T 1—2026"}},
+            "figures": [
+                {"id": "f-001", "assetRef": "assets/images/img_w.png"},
+                {"id": "f-002", "assetRef": "assets/images/img_s.png"},
+                {"id": "f-003", "assetRef": "assets/images/img_d.png"},
+            ],
+            "tables": [
+                {"id": "t-001", "rowCount": 2, "colCount": 2, "sourceAnchors": [{"id": "a1", "anchorType": "markdown", "sourceFileId": "s1", "markdownStartLine": 1, "markdownEndLine": 1}],
+                 "rows": [{"rowIndex": 0, "cells": [{"id": "c1", "rowIndex": 0, "colIndex": 0, "text": "a"}, {"id": "c2", "rowIndex": 0, "colIndex": 1, "text": "b"}]},
+                          {"rowIndex": 1, "cells": [{"id": "c3", "rowIndex": 1, "colIndex": 0, "text": "![](assets/images/img_t.png)"}]}]},
+            ],
+        }, ensure_ascii=False), encoding="utf-8")
+        _stamp_figure_source_sizes(ssir, source)
+
+        data = json.loads(ssir.read_text(encoding="utf-8"))
+        by_ref = {fig["assetRef"].split("/")[-1]: fig for fig in data["figures"]}
+        # W 匹配自己的矩形 100x50（而非封面徽标 110x55——徽标被排除）。
+        self.assertEqual(by_ref["img_w.png"]["sourceWidth"], 100.0)
+        self.assertEqual(by_ref["img_w.png"]["sourceHeight"], 50.0)
+        # S 匹配 100x100。
+        self.assertEqual(by_ref["img_s.png"]["sourceWidth"], 100.0)
+        self.assertEqual(by_ref["img_s.png"]["sourceHeight"], 100.0)
+        # D 无匹配矩形 → 按文档像素密度（2.8）回退：400/2.8 x 150/2.8。
+        self.assertAlmostEqual(by_ref["img_d.png"]["sourceWidth"], 400 / 2.8, delta=1.0)
+        self.assertAlmostEqual(by_ref["img_d.png"]["sourceHeight"], 150 / 2.8, delta=1.0)
+        # 表格单元格内图（GBT-X02 表中图）尺寸写入 cellImageSizes。
+        table = data["tables"][0]
+        self.assertEqual(table["cellImageSizes"]["assets/images/img_t.png"], [100.0, 100.0])
 
 
 if __name__ == "__main__":

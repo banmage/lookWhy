@@ -443,7 +443,9 @@ def _check_reference_chapter(document: dict[str, Any], report: ComplianceReport)
         if content.get("presentationType") == "list":
             for item in content.get("listItems", []):
                 marker = str(item.get("marker", ""))
-                if marker and not marker.startswith("-") and marker not in ("—", "——"):
+                # 破折号族（-、—、——、———、– 等 OCR 长度变体）均为无序号列项
+                # 符号，合法；字母/数字/项目符号标记视为给清单加了序号（8.6.3）。
+                if marker and not re.fullmatch(r"[-—–]+", marker):
                     report.findings.append(
                         ComplianceFinding(
                             "GBT-C06", "GB_T_1.1-2020", "should", "reference-list-unordered",

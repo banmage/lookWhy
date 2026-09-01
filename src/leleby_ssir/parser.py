@@ -76,16 +76,25 @@ NUMBERED_ITEM_RE = re.compile(r"^([A-Za-z]+[)）]|\d+[)）])\s*(.*)$")
 EX_HEADER_RE = re.compile(r"^示例\s*\d*\s*[:：]\s*$")
 EX_LEAD_RE = re.compile(r"^示例\s*\d*\s*[:：]")
 NOTE_LEAD_RE = re.compile(r"^注\s*\d*\s*[:：]")
+# 行内注切分：OCR 把术语定义后的「注1：…。注2：…。」合并进定义段时，
+# 在「。注N：」句界处切分为独立块（GBT-X04/B10；GB_T_20001.6 3.1 型）。
+NOTE_SPLIT_RE = re.compile(r"(?<=。)(?=注\s*\d*\s*[:：])")
 # 句末标点后出现点分条号（6.3.5.2 等）→ 把被 OCR 合并进上一句的条号分段
 #（零宽切分点，条号本身保留在下一段开头）。
 CLAUSE_SPLIT_RE = re.compile(r"(?<=[。；])\s*(?=\d+(?:\.\d+)+[\u4e00-\u9fff])")
 # GB/T 1.1 列项符号为破折号（——）或间隔号（·）；OCR 常把 "——" 压成
 # 单个 "-" 或 "—" 且丢失后方空格，故破折号允许无空格（GBT-C12）。
 # CommonMark 的 "*"/"+" 项目符号仍要求后方空格，避免误吞 "**加粗**" 行首。
-# ●/•（U+25CF/U+2022）是规程/规范类标准示例常用的第一层次项目符号
-# （GB_T_20001.6 附录示例 6.1/6.2），OCR 可能全角半角混用，且无 Markdown
-# 强调歧义，故允许无空格。
-UNORDERED_ITEM_RE = re.compile(r"^(?:([-—]+)|([*+]\s+)|([●•])\s*)\s*(.*)$")
+# ●/•/·/○（U+25CF/U+2022/U+00B7/U+25CB）是规程/规范类标准示例常用的
+# 项目符号与 GB/T 1.1 第二层次间隔号；OCR 可能全角半角混用、圆点/短横
+# 互读（GB_T_1.1-2020 前言 8.3 的 ·/• 混用），且无 Markdown 强调歧义，
+# 故允许无空格。
+UNORDERED_ITEM_RE = re.compile(r"^(?:([-—–]+)|([*+]\s+)|([●•·○])\s*)\s*(.*)$")
+# 项目符号族（OCR 常混读）：同一列表内按多数派统一（CSM-OCR-001）。
+_BULLET_MARKERS = ("●", "•", "·", "○")
+# 破折号族：OCR 把同一破折号读成长度不一的横杠（-、—、——、———、–，
+# 全角/半角混用）。与项目符号族一起参与同列表多数派统一（CSM-OCR-001）。
+_DASH_RUN_RE = re.compile(r"^[-—–]+$")
 TABLE_CAPTION_RE = re.compile(r"^\*\*表([^\s]+)\s+(.+?)\*\*$")
 # Bare numbered caption: "**表N**" — 行业标准/企业标准常见排版，题注只有编号
 # 无题名 (GBT-B08 编号必备；题名可省略)。
@@ -242,6 +251,13 @@ def _unescape_attribute(value: str) -> str:
     return value.replace(r'\"', '"').replace(r"\\", "\\")
 
 
+def _starts_with_han(text: str) -> bool:
+    """下一续接行以汉字开头（CJK 句内续接特征）。引用条目/裸标题等以
+    拉丁或数字开头的行不续接，避免吞并（2026-08-31 确立断行修复的
+    窄化条件）。"""
+    return bool(text) and "\u4e00" <= text[0] <= "\u9fff"
+
+
 def _split_table_row(line: str) -> list[str]:
     stripped = line.strip()
     if stripped.startswith("|"):
@@ -326,6 +342,8 @@ class CSMParser:
         for warning in parse_warnings:
             issues.append(CSMIssue("CSM-STRUCT-001", "warning", warning))
         fatal_errors.extend(self._repair_tables(blocks, issues))
+        self._repair_stray_table_images(blocks, issues)
+        self._repair_table_image_layout(blocks, issues)
         self._repair_list_markers(blocks, issues)
         self._repair_clause_numbers(blocks, issues)
         self._repair_heading_levels(blocks, issues)
@@ -846,11 +864,15 @@ class CSMParser:
                         lookahead < len(lines)
                         and not self._starts_new_block(lines, lookahead)
                         and paragraph_lines
-                        and paragraph_lines[-1].endswith(("，", "；", "：", "、", ","))
+                        and not paragraph_lines[-1].endswith(("。", "！", "？"))
+                        and _starts_with_han(lines[lookahead].strip())
                         and not EX_LEAD_RE.match(lines[lookahead].strip())
                         and not NOTE_LEAD_RE.match(lines[lookahead].strip())
                     ):
                         i = lookahead
+                        # 续接标记：跨空行续接的行之间不产生 \n（否则渲染折叠成
+                        # 空格，词语仍可能断行——"确"+"立"型）。\x00 在 join 时移除。
+                        paragraph_lines[-1] += "\x00"
                         continue
                     break
                 if self._starts_new_block(lines, i):
@@ -863,26 +885,38 @@ class CSMParser:
                     continue
                 paragraph_lines.append(lines[i].rstrip())
                 i += 1
-            paragraph_text = "\n".join(paragraph_lines)
+            paragraph_text = "\n".join(paragraph_lines).replace("\x00\n", "")
             # 6.3.5.2 类合并：MinerU 把「……告知乘客。6.3.5.2为了确保……」
             # 挤进同一段，导致条号无法回车顶格（GBT-B02）。在句末标点（。；）
             # 之后出现的点分条号处把段落拆分为两个块。
             block_directive = pending.pop("block", None)
-            parts = [p.strip() for p in CLAUSE_SPLIT_RE.split(paragraph_text) if p.strip()]
-            for part_index, part in enumerate(parts):
-                block = Block(
-                    kind="paragraph",
-                    start_line=line_no(start),
-                    end_line=line_no(i - 1),
-                    text=part,
-                    directive=block_directive if part_index == 0 else None,
-                )
-                if EX_HEADER_RE.match(part):
-                    # 独立「示例N：」行（附录框式示例的标题）提升为标题，
-                    # 使其进入 SSIR 结构树并在示例框内居中（GBT-B11）。
-                    block.kind = "heading"
-                    block.level = 2
-                blocks.append(block)
+            # 行内注切分（GBT-X04 注引导语）：OCR 常把术语定义后的「注1：…。
+            # 注2：…。」合并进定义段（GB_T_20001.6 3.1 型）。在「。注N：」
+            # 句界处切分，使注成为独立块（渲染按 GBT-B10 小五号）。
+            note_parts = [p.strip() for p in NOTE_SPLIT_RE.split(paragraph_text) if p.strip()]
+            if not note_parts:
+                note_parts = [paragraph_text.strip()]
+            for note_part_index, note_part in enumerate(note_parts):
+                parts = [p.strip() for p in CLAUSE_SPLIT_RE.split(note_part) if p.strip()]
+                if not parts:
+                    parts = [note_part]
+                for part_index, part in enumerate(parts):
+                    block = Block(
+                        kind="paragraph",
+                        start_line=line_no(start),
+                        end_line=line_no(i - 1),
+                        text=part,
+                        directive=block_directive if (note_part_index == 0 and part_index == 0) else None,
+                    )
+                    if EX_HEADER_RE.match(part):
+                        # 独立「示例N：」行（附录框式示例的标题）提升为标题，
+                        # 使其进入 SSIR 结构树并在示例框内居中（GBT-B11）。
+                        block.kind = "heading"
+                        block.level = 2
+                    elif NOTE_LEAD_RE.match(part):
+                        # 独立「注：/注1：」行 → note 块（渲染小五号宋体）。
+                        block.kind = "note"
+                    blocks.append(block)
 
         for name, directive in pending.items():
             warnings.append(f"line {directive.line}: ssir:{name} has no following compatible block")
@@ -981,6 +1015,209 @@ class CSMParser:
         return fatal_errors
 
     @staticmethod
+    def _repair_stray_table_images(blocks: list[Block], issues: list[CSMIssue]) -> None:
+        """Fold a stray figure between two parts of a split table into the first
+        part's last row (GBT-X02 表中图；GB_T_23132-2024 表2 型，CSM-TABLE-002).
+
+        MinerU 跨页表格把某行单元格内的图排在 `<table>` 元素之外，读取顺序上
+        表现为：前表 → 裸图 → 续表（题注带"续"）。该图其实是前表最后一行
+        缺失的单元格图（旋转式行 试验区域分割 示意图）。全部条件满足才归位，
+        否则保守不动：
+
+        - 游离块是单张裸图（figure 块、有 asset_ref、无题注文本）；
+        - 其前后相邻块都是表格块；
+        - 两表 directive 的 caption-number 相同，且后表题注含"续"（跨页续表）；
+        - 前表最后一行既含图单元格又含不含图单元格（说明该行确实有图、只是
+          缺了一张——纯文本行不归位，避免把真正独立的图塞进表格）。
+
+        归位目标：前表最后一行第一个不含图、且非首格（行标题列）的单元格；
+        无法唯一确定（如多个候选列）时不猜。修复同时删除游离 figure 块，
+        canonical/SSIR/render 三侧一致（_render_block 按 rows 输出表格、
+        按 asset_ref 输出图，roundtrip 等价保持）。
+        """
+        cell_image_re = re.compile(r"!\[(?:[^\]]*)\]\(([^)]+)\)")
+        for index, block in enumerate(blocks):
+            if block.kind != "figure" or "asset_ref" not in block.data:
+                continue
+            if block.text.strip():
+                continue  # 带题注文本的图不归位（是独立图，不是表中图）
+            if index == 0 or index + 1 >= len(blocks):
+                continue
+            first_table = blocks[index - 1]
+            second_table = blocks[index + 1]
+            if first_table.kind != "table" or second_table.kind != "table":
+                continue
+            first_directive = first_table.directive
+            second_directive = second_table.directive
+            if not first_directive or not second_directive:
+                continue
+            first_number = first_directive.attrs.get("caption-number")
+            second_number = second_directive.attrs.get("caption-number")
+            second_caption = str(second_directive.attrs.get("caption", ""))
+            if not first_number or first_number != second_number or "续" not in second_caption:
+                continue
+            rows: list[list[str]] = first_table.data.get("rows", [])
+            if not rows:
+                continue
+            last_row = rows[-1]
+            if len(last_row) < 2:
+                continue
+            has_image_cell = any(cell_image_re.search(cell) for cell in last_row)
+            if not has_image_cell:
+                continue
+            # 归位到第一个不含图且非首格（行标题列）的单元格；多个候选不猜。
+            target = next(
+                (col for col, cell in enumerate(last_row[1:], start=1) if not cell_image_re.search(cell)),
+                None,
+            )
+            if target is None:
+                continue
+            ref = str(block.data["asset_ref"])
+            last_row[target] = (last_row[target].rstrip() + " " if last_row[target].strip() else "") + f"![]({ref})"
+            CSMParser._issue(
+                issues,
+                "CSM-TABLE-002",
+                f"Stray figure between two parts of a split table (表{first_number}…续) folded into the last row cell {target + 1} of the first part.",
+                line=block.start_line,
+                repaired=True,
+                repair_action="Moved the bare image into the preceding table's last-row cell in memory.",
+            )
+            del blocks[index]
+
+    @staticmethod
+    def _repair_table_image_layout(blocks: list[Block], issues: list[CSMIssue]) -> None:
+        """表中图单元格版式修复（CSM-TABLE-003；GB_T_23132-2024 表2 型）。
+
+        原则：**不把"图在上/文字在下"规定为通用版式**——图与说明文字的
+        上下关系是各表原文自行安排的（GB_T_23132 表2 第2列恰好是 上图下
+        文字，其它表未必）。渲染端（pdf_renderer._render_cell）按数据
+        （cell 文本）顺序忠实复现：cell 为 `![]() 文字` 则图在上文字在下，
+        `文字 ![]()` 则文字在上图在下。本修复只纠正**有明确证据**的提取
+        错误：
+
+        B. **说明文字错列**（有列间证据）：某行某列是"图+文字"，而该列在
+           表内其它数据行都是纯图（该列文字仅此一行）、且该行**前一列**是
+           纯图格——说明文字本属于前一列（图旁的说明），被 MinerU 误归到
+           后一列。把文字移回前一列纯图格之后，原格只留图。保守条件（全部
+           满足才移动，否则不猜）：数据行数 ≥ 2；当前格同时含图与文字；
+           该列文字仅此一行（col_text_count == 1）且该列是图列；前一格是
+           纯图格（文字落点明确）。
+
+        A. **格内顺序**（仅作为 B 的配套，不独立触发）：只有当该表（或与其
+           同 caption-number 的跨页续表）发生了 B 时，才把相关表块的图文混合
+           单元格统一重排为 图在前、文字在后——B 移动的文字以"图前文字后"
+           落位，同表（含跨页两部分）其它图文混合单元格保持同向才一致。
+           **未发生 B 的表不重排**，严格按提取顺序渲染（原文若为文字在上
+           图在下，数据保持原样，渲染也保持原样）。
+
+        渲染端保持中立：_render_cell 按 cell 文本顺序流式输出（文字段 →
+        图），数据怎么排就怎么渲染。
+        """
+        cell_image_re = re.compile(r"!\[(?:[^\]]*)\]\(([^)]+)\)")
+        # 拆分用无捕获组版本：re.split 遇到捕获组会把捕获内容也放进结果
+        # （导致裸 assetRef 泄漏进文字片段）。
+        cell_image_split_re = re.compile(r"!\[[^\]]*\]\([^)]+\)")
+
+        def _plain(cell: str) -> str:
+            return cell_image_re.sub("", cell).strip()
+
+        def _images(cell: str) -> list[str]:
+            return [m.group(0) for m in cell_image_re.finditer(cell)]
+
+        def _reorder_images_first(cell: str) -> str:
+            """把全部图片标记提到文字之前（图在上、说明文字在下）。"""
+            images = _images(cell)
+            if not images:
+                return cell
+            texts = [part.strip() for part in cell_image_split_re.split(cell) if part.strip()]
+            if not texts:
+                return cell
+            # 已满足"图在前"时不重排（避免无谓改动）。
+            first_text = cell_image_split_re.split(cell)[0]
+            if not first_text.strip():
+                return cell
+            joined = " ".join(images) + " " + " ".join(texts)
+            return joined.strip()
+
+        table_blocks = [block for block in blocks if block.kind == "table"]
+        tables_info: list[tuple[Block, list[list[str]], str | None]] = []
+        for block in table_blocks:
+            rows = block.data.get("rows", [])
+            header_rows = int(block.data.get("header_rows", 1) or 1)
+            number = None
+            if block.directive:
+                number = block.directive.attrs.get("caption-number")
+            tables_info.append((block, rows, number))
+
+        # B. 列错位：文字归位到前一列纯图格；收集发生过移动的表（及同号续表）。
+        moved_numbers: set[str] = set()
+        for block, rows, number in tables_info:
+            header_rows = int(block.data.get("header_rows", 1) or 1)
+            data_rows = rows[header_rows:]
+            if not data_rows:
+                continue
+            width = len(rows[0]) if rows else 0
+            col_text_count = [0] * width
+            col_image_count = [0] * width
+            for row in data_rows:
+                for c, cell in enumerate(row):
+                    if c >= width:
+                        continue
+                    if _plain(cell):
+                        col_text_count[c] += 1
+                    if _images(cell):
+                        col_image_count[c] += 1
+            if len(data_rows) < 2:
+                continue
+            moved = False
+            for row in data_rows:
+                for c in range(1, len(row)):
+                    cell = row[c]
+                    if not cell or not _images(cell) or not _plain(cell):
+                        continue
+                    # 该列文字仅此一行（col_text_count==1，当前格必含文字）、
+                    # 且该列是图列 → 说明文字疑似被误归到后一列。
+                    if col_text_count[c] != 1 or col_image_count[c] == 0:
+                        continue
+                    prev = row[c - 1]
+                    if not _images(prev) or _plain(prev):
+                        continue  # 前一格不是纯图格 → 无明确落点，不猜
+                    text = _plain(cell)
+                    row[c - 1] = (prev.rstrip() + " " if prev.strip() else "") + text
+                    row[c] = " ".join(_images(cell))
+                    moved = True
+                    CSMParser._issue(
+                        issues,
+                        "CSM-TABLE-003",
+                        f"Cell text at data-row {data_rows.index(row) + 1} col {c + 1} belongs to the image column {c} (image-first layout); moved after the image.",
+                        line=block.start_line,
+                        repaired=True,
+                        repair_action="Moved the text after the image in the previous cell; left only the image in the original cell.",
+                    )
+            if moved and number:
+                moved_numbers.add(number)
+
+        # A. 格内顺序——仅当本表（或同号跨页续表）发生列错位（B）时统一。
+        for block, rows, number in tables_info:
+            if number is None or number not in moved_numbers:
+                continue
+            header_rows = int(block.data.get("header_rows", 1) or 1)
+            data_rows = rows[header_rows:]
+            for row in data_rows:
+                for c, cell in enumerate(row):
+                    reordered = _reorder_images_first(cell)
+                    if reordered != cell:
+                        row[c] = reordered
+                        CSMParser._issue(
+                            issues,
+                            "CSM-TABLE-003",
+                            f"Cell (row {data_rows.index(row) + 1}, col {c + 1}) reordered to image-first layout (figure above, caption text below).",
+                            line=block.start_line,
+                            repaired=True,
+                            repair_action="Moved image markdown before the caption text in the table cell.",
+                        )
+
+    @staticmethod
     def _repair_list_markers(blocks: list[Block], issues: list[CSMIssue]) -> None:
         """Correct OCR glyph-confused list markers in context (CSM-OCR-001).
 
@@ -1000,6 +1237,38 @@ class CSMParser:
             items: list[dict[str, str]] = block.data["items"]
             markers = [str(item["marker"]) for item in items]
             if len(markers) < 3:
+                continue
+            # 符号族统一（CSM-OCR-001 扩展）：OCR 把 ●/•/·/○ 混读（源 PDF
+            # 同一列表通常全用同一符号，如 GB_T_20001.6 6.1/6.2 全 ● 但 OCR
+            # 把部分读成 •），也把同一破折号读成长度不一的横杠（GB_T_1.1-2020
+            # 前言 8.3 列项混用 -/—/——/———，GB_T_20001.4/5/6/10 前言清单
+            # 同样常见）。破折号族与项目符号族同属"符号型标记"：同一条款下
+            # 列表符号应一致，按多数派统一（≥2 且严格多于其余），消除个别
+            # 误识项（GBT-C12 列表层次）。字母/数字编号（a）/1））属另一
+            # 维度，不参与符号统一，留给下方字形混淆纠正；真嵌套列项
+            # （第一层次 —— 项下挂第二层次 · 子项）在扁平块里通常 1:1/2:2
+            # 平手，多数派不明确时保守不统一，渲染层仍按层次区分样式。
+            symbol_counts: dict[str, int] = {}
+            for marker in markers:
+                if marker in _BULLET_MARKERS or _DASH_RUN_RE.match(marker):
+                    symbol_counts[marker] = symbol_counts.get(marker, 0) + 1
+            if len(symbol_counts) >= 2:
+                majority = max(symbol_counts, key=lambda k: symbol_counts[k])  # type: ignore[arg-type]
+                minority = sum(symbol_counts.values()) - symbol_counts[majority]
+                if symbol_counts[majority] >= 2 and symbol_counts[majority] > minority:
+                    for target, marker in enumerate(markers):
+                        if marker in _BULLET_MARKERS or _DASH_RUN_RE.match(marker):
+                            if marker != majority:
+                                items[target]["marker"] = majority
+                                CSMParser._issue(
+                                    issues,
+                                    "CSM-OCR-001",
+                                    f"List marker {marker!r} unified to {majority!r} "
+                                    f"(majority of sibling list symbols).",
+                                    line=int(items[target].get("line", 0)) or None,
+                                    repaired=True,
+                                    repair_action=f"Rewrote marker {marker} to {majority} in memory.",
+                                )
                 continue
             letter_indexes = [i for i, m in enumerate(markers) if letter_re.match(m)]
             digit_indexes = [i for i, m in enumerate(markers) if digit_re.match(m)]

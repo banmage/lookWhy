@@ -559,6 +559,15 @@
         "unknownRef": {
           "type": "string",
           "pattern": "^ssir:[A-Za-z0-9._:/-]+/unknown/[A-Za-z0-9_-]+$"
+        },
+        "sideBySideGroup": {
+          "type": "string",
+          "description": "并列组 id（pipeline finalize 阶段按源 PDF 几何打标）：同组 content 在渲染时排入同一行，各列并排（无边框定位容器，等价 HTML div 布局）。"
+        },
+        "sideBySideColumn": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "并列组内列序号（0-based，按源 PDF x 坐标升序）。"
         }
       },
       "required": [
@@ -774,6 +783,18 @@
           "type": "string",
           "description": "表头右上方的单位行（如 \"毫米\"，渲染为右对齐\"单位为毫米\"紧贴表格上方，GB/T 1.1 表题注块）。"
         },
+        "cellImageSizes": {
+          "type": "object",
+          "description": "表中图（GBT-X02）尺寸映射：单元格内联图片 assetRef → 其在源 PDF 页面的原始版面尺寸 [宽, 高]（pt）。由流水线 finalize 的 _stamp_figure_source_sizes 写入；渲染端按原尺寸显示（上限单元格宽，不放大）。",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 2
+          }
+        },
         "rowCount": {
           "type": "integer",
           "minimum": 0
@@ -908,6 +929,14 @@
         },
         "assetRef": {
           "type": "string"
+        },
+        "sourceWidth": {
+          "type": "number",
+          "description": "Original layout width in points on the source PDF page (stamped by _stamp_figure_source_sizes; renderer uses it to reproduce the original figure size)."
+        },
+        "sourceHeight": {
+          "type": "number",
+          "description": "Original layout height in points on the source PDF page."
         },
         "altText": {
           "type": "string"

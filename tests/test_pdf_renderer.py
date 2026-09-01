@@ -1,6 +1,6 @@
 import unittest
 
-from leleby_ssir.pdf_renderer import _clause_leading_number, _footnote_superscripts, _heading_depth, _heading_parts, _latex_to_text, _list_marker, _markup, _ocr_l_one, _starts_new_page, _strip_pagebreaks, _table_cell_superscripts, _toc_label
+from leleby_ssir.pdf_renderer import _append_nodes, _clause_leading_number, _example_box, _footnote_superscripts, _heading_depth, _heading_parts, _latex_to_text, _list_marker, _markup, _ocr_l_one, _starts_new_page, _strip_pagebreaks, _table_cell_superscripts, _toc_label
 
 
 class PdfRendererHeadingTests(unittest.TestCase):
@@ -106,14 +106,20 @@ class UntitledClauseFlushTests(unittest.TestCase):
         self.assertEqual(_clause_leading_number("A.2 试验应在 20 ℃ 下进行。"), "A.2")
 
     def test_list_marker_normalisation_maps_ocr_dashes(self) -> None:
-        # GB/T 1.1-2020 6.6.3：- / — 渲染为 ——，• 归一为 ·，其余原样保留。
+        # GB/T 1.1-2020 6.6.3：破折号族（-、—、——、———、– 等 OCR 长度变体）
+        # 一律渲染为 ——，• 归一为 ·，其余原样保留。
         self.assertEqual(_list_marker("-"), "——")
         self.assertEqual(_list_marker("—"), "——")
         self.assertEqual(_list_marker("——"), "——")
+        self.assertEqual(_list_marker("———"), "——")
+        self.assertEqual(_list_marker("————"), "——")
+        self.assertEqual(_list_marker("–"), "——")
+        self.assertEqual(_list_marker("-—"), "——")
         self.assertEqual(_list_marker("•"), "·")
         self.assertEqual(_list_marker("a)"), "a)")
         self.assertEqual(_list_marker("1)"), "1)")
         self.assertEqual(_list_marker("·"), "·")
+        self.assertEqual(_list_marker("●"), "●")
 
     def test_table_cell_superscripts_marks_footnote_references(self):
         # GB/T 1.1 表脚注：匝间绝缘ᵃ —— OCR 还原成普通字符后渲染回上角标（GBT-C18）。
@@ -204,6 +210,147 @@ class ExampleBoxPageBreakTests(unittest.TestCase):
     def test_strip_pagebreaks_noop_without_pagebreak_type(self) -> None:
         box = ["a", "b"]
         self.assertEqual(_strip_pagebreaks(box, None), box)
+
+
+class ExampleBoxKeepTogetherTests(unittest.TestCase):
+    """Figures inside annex example boxes must not crash the box table.
+
+    Regression (2026-08-31, GB_T_20001.6-2017 附录示例框 图 4.1/图 4.2):
+    _append_content wraps figure + caption in reportlab KeepTogether, whose
+    wrap() hardcodes 0xffffff (~16.7M pt) to force a split.  The example-box
+    table puts every flowable in its own row, so the KeepTogether row becomes
+    ~16.7M pt tall -> reportlab LayoutError.  _example_box must unwrap
+    KeepTogether so each sub-flowable gets its own row.
+    """
+
+    @staticmethod
+    def _box(*flowables):
+        from reportlab.lib import colors
+        from reportlab.platypus import Table, TableStyle
+
+        return _example_box(list(flowables), "frame", colors, Table, TableStyle)
+
+    def test_keep_together_contents_become_individual_rows(self) -> None:
+        from reportlab.platypus import KeepTogether, Spacer
+
+        image, caption = Spacer(1, 10), Spacer(1, 20)
+        table = self._box(KeepTogether([image, caption]), Spacer(1, 30))
+        cells = table._cellvalues
+        self.assertEqual(len(cells), 3)
+        self.assertFalse(any(isinstance(row[0], KeepTogether) for row in cells))
+
+    def test_pagebreak_inside_keep_together_is_stripped(self) -> None:
+        from reportlab.platypus import KeepTogether, PageBreak, Spacer
+
+        table = self._box(KeepTogether([Spacer(1, 10), PageBreak()]))
+        cells = table._cellvalues
+        self.assertEqual(len(cells), 1)
+        self.assertFalse(isinstance(cells[0][0], PageBreak))
+
+    def test_plain_flowables_keep_their_rows(self) -> None:
+        from reportlab.platypus import Spacer
+
+        table = self._box(Spacer(1, 10), Spacer(1, 20))
+        self.assertEqual(len(table._cellvalues), 2)
+
+
+class NestedExampleContentTests(unittest.TestCase):
+    """Nested exampleContent nodes must flatten into the current box.
+
+    Regression (2026-08-31, GB_T_20001.6-2017 附录 规程标准编写示例): the
+    example document's own clause tree (5 繁育程序 → 5.1 田间选择 → 5.4.1
+    茎尖培养基的制备) is emitted as exampleContent-marked sibling nodes.
+    _append_node recursed via _append_nodes, whose grouping logic wrapped the
+    children in a second _example_box -> Table inside a Table cell.  Tables in
+    cells cannot split across pages, so a 36-row / 1194pt inner table blew past
+    the 688pt frame -> reportlab LayoutError.  Example-internal children are
+    now appended one by one into the current box (no nested box).
+    """
+
+    @staticmethod
+    def _render_story(nodes):
+        from pathlib import Path
+
+        from reportlab.lib import colors
+        from reportlab.lib.styles import ParagraphStyle
+        from reportlab.platypus import Image, Paragraph, Spacer, Table, TableStyle
+
+        styles = {}
+        for name in ("example-label", "example-title", "example-content", "body",
+                     "body-flush", "caption", "table-unit", "note", "list", "list-sub",
+                     "formula", "section", "subclause", "clause", "front"):
+            styles[name] = ParagraphStyle(name, fontName="Helvetica", fontSize=10)
+        from leleby_ssir.pdf_renderer import PDFRenderReport
+
+        report = PDFRenderReport(
+            input_file="test.pdf", output_file="test.render.pdf",
+            profile_file="", profile_id="", font_file="",
+        )
+        story: list = []
+        _append_nodes(
+            story, nodes,
+            registries={"tables": {}, "figures": {}, "formulas": {}},
+            styles=styles, font="Helvetica", report=report, asset_dir=Path("."),
+            colors=colors, Table=Table, TableStyle=TableStyle, Paragraph=Paragraph,
+            Spacer=Spacer, Image=Image, marker_factory=None, PageBreak=None,
+            example_default="frame",
+        )
+        return story
+
+    def test_nested_example_content_produces_single_flat_box(self) -> None:
+        nodes = [
+            {
+                "nodeType": "clause", "number": "5", "title": "马铃薯脱毒试管苗繁育",
+                "exampleContent": True, "contentElements": [], "children": [
+                    {
+                        "nodeType": "clause", "number": "5.1", "title": "田间选择",
+                        "exampleContent": True, "contentElements": [
+                            {"presentationType": "paragraph", "textContent": "选择无病毒症状的种薯。"},
+                        ], "children": [],
+                    },
+                    {
+                        "nodeType": "clause", "number": "5.2", "title": "病毒检测筛选",
+                        "exampleContent": True, "contentElements": [], "children": [],
+                    },
+                ],
+            },
+        ]
+        story = self._render_story(nodes)
+        # 只有一个外层示例框表格，框内不再嵌套表格。
+        self.assertEqual(len(story), 1)
+        box = story[0]
+        for row in box._cellvalues:
+            self.assertFalse(isinstance(row[0], type(box)),
+                             f"nested box table found in cell: {row[0]!r}")
+        texts = [str(cell[0].getPlainText()) for cell in box._cellvalues]
+        self.assertIn("5 马铃薯脱毒试管苗繁育", texts)
+        self.assertIn("5.1 田间选择", texts)
+        self.assertIn("5.2 病毒检测筛选", texts)
+
+
+class TableCellLineBreakTests(unittest.TestCase):
+    """表单元格行结构（<br>，merge 阶段从源文本层恢复）渲染为真实换行。
+
+    Regression (2026-08-31, GB_T_20001.6-2017 表1)：单元格 "术语和定义
+    ……程序确立程序指示b追溯/证实方法……规范性附录" 被 OCR 压成单行，恢复为
+    <br> 连接的多行后，_markup 必须把它转成 <br/>（不能折叠为空格），且
+    行尾脚注标记 b 仍触发上标。
+    """
+
+    def test_br_becomes_line_break_and_footnote_superscript_fires(self) -> None:
+        cell = "术语和定义<br>……<br>程序确立<br>程序指示b<br>追溯/证实方法<br>……<br>规范性附录"
+        marked = cell.replace("<br>", "\x00BR\x00")
+        out = _markup(_table_cell_superscripts(marked)).replace("\x00BR\x00", "<br/>")
+        self.assertIn("<br/>", out)
+        self.assertIn("<super>b</super>", out)
+        self.assertEqual(out.count("<br/>"), 6)
+
+    def test_plain_cells_unaffected(self) -> None:
+        cell = "规格mm"
+        marked = cell.replace("<br>", "\x00BR\x00")
+        out = _markup(_table_cell_superscripts(marked)).replace("\x00BR\x00", "<br/>")
+        self.assertNotIn("<br/>", out)
+        self.assertNotIn("<super>", out)
 
 
 if __name__ == "__main__":

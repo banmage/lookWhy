@@ -810,6 +810,223 @@ extensions: {}
         self.assertEqual(ssir["tables"][0]["rows"][1]["cells"][2]["text"], "")
         self.assertTrue(any(issue.code == "CSM-TABLE-001" and issue.repaired for issue in report.issues))
 
+    def test_stray_figure_between_split_table_parts_folds_into_last_row(self) -> None:
+        # GB_T_23132-2024 表2 型（CSM-TABLE-002）：MinerU 跨页表格把某行单元格
+        # 内的图排在 <table> 元素外，读取顺序上前表 → 裸图 → 续表（题注带"续"）。
+        # 修复：裸图折回前表最后一行第一个不含图且非首格的单元格。
+        csm = '''---
+csm-version: "1.0"
+document-type: standard
+document-identifier: "GB/T 23132—2024"
+standard-number: "GB/T 23132—2024"
+title: "表中图归位"
+language: zh-CN
+source: {mode: mineru, provenance: none}
+extensions: {}
+---
+
+# 表中图归位
+
+## 1 范围
+
+本文件规定电动剃须刀。
+
+<!-- ssir:table id="mineru-table-p001-002" header-rows="1" caption-number="2" caption="锋利度试验区域" -->
+| 类型 | 试验区域分割 | 插入角度 |
+| --- | --- | --- |
+| 旋转式 | 单环旋转式取1、2、3区域 | ![](assets/images/5252cb2b.jpg) |
+
+![](assets/images/89e2bc42.jpg)
+
+<!-- ssir:table id="mineru-table-p001-003" header-rows="1" caption-number="2" caption="锋利度试验区域（续）" -->
+| 类型 | 试验区域分割 | 插入角度 |
+| --- | --- | --- |
+| 往复式 | ![](assets/images/1e30288f.jpg) | ![](assets/images/5fff4593.jpg) |
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stray-table-image.csm.md"
+            path.write_text(csm, encoding="utf-8")
+            ssir, report = parse_csm_with_report(path)
+        first = next(t for t in ssir["tables"] if t["caption"] == "锋利度试验区域")
+        last_row = sorted(first["rows"], key=lambda r: r["rowIndex"])[-1]
+        cells = sorted(last_row["cells"], key=lambda c: c["colIndex"])
+        # 图折回试验区域分割（col 1）单元格，插入角度（col 2）原有图保留。
+        self.assertIn("89e2bc42", cells[1]["text"])
+        self.assertIn("5252cb2b", cells[2]["text"])
+        # 游离图不再作为 figure 存在。
+        self.assertFalse(any("89e2bc42" in str(fig.get("assetRef", "")) for fig in ssir["figures"]))
+        self.assertTrue(any(issue.code == "CSM-TABLE-002" and issue.repaired for issue in report.issues))
+
+    def test_stray_figure_not_folded_when_no_image_cell_in_last_row(self) -> None:
+        # 前表最后一行全是纯文本（没有含图单元格）→ 不归位（无法确认图属于表格，
+        # 保守保留为独立图）。
+        csm = '''---
+csm-version: "1.0"
+document-type: standard
+document-identifier: "Q/TEST 003—2026"
+standard-number: "Q/TEST 003—2026"
+title: "不误归位"
+language: zh-CN
+source: {mode: user-markdown, provenance: none}
+extensions: {}
+---
+
+# 不误归位
+
+## 1 范围
+
+本文件规定测试产品。
+
+<!-- ssir:table id="t1" header-rows="1" caption-number="1" caption="示例" -->
+| 项目 | 值 |
+| --- | --- |
+| 温度 | 40 |
+
+![](assets/images/stray.jpg)
+
+<!-- ssir:table id="t2" header-rows="1" caption-number="1" caption="示例（续）" -->
+| 项目 | 值 |
+| --- | --- |
+| 湿度 | 60 |
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "no-fold.csm.md"
+            path.write_text(csm, encoding="utf-8")
+            ssir, report = parse_csm_with_report(path)
+        self.assertFalse(any(issue.code == "CSM-TABLE-002" for issue in report.issues))
+        # 图仍保留为独立 figure。
+        self.assertTrue(any("stray" in str(fig.get("assetRef", "")) for fig in ssir["figures"]))
+        table = ssir["tables"][0]
+        cell_texts = [c.get("text", "") for r in table["rows"] for c in r.get("cells", [])]
+        self.assertFalse(any("stray" in t for t in cell_texts))
+
+    def test_table_cell_image_text_kept_as_extracted_without_column_move_evidence(self) -> None:
+        # CSM-TABLE-003 原则：不把"图在上/文字在下"规定为通用版式。未发生列错位
+        # （B）的表严格按提取顺序渲染——`文字 ![]()`（文字在图前）保持原样，
+        # 不做格内重排。
+        csm = '''---
+csm-version: "1.0"
+document-type: standard
+document-identifier: "GB/T 23132—2024"
+standard-number: "GB/T 23132—2024"
+title: "格内顺序保持"
+language: zh-CN
+source: {mode: mineru, provenance: none}
+extensions: {}
+---
+
+# 格内顺序保持
+
+## 1 范围
+
+本文件规定电动剃须刀。
+
+<!-- ssir:table id="t1" header-rows="1" caption-number="1" caption="试验区域" -->
+| 类型 | 试验区域分割 | 插入角度 |
+| --- | --- | --- |
+| 旋转式 | 单环旋转式取1、2、3区域 ![](assets/images/a.jpg) | ![](assets/images/b.jpg) |
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "img-order-kept.csm.md"
+            path.write_text(csm, encoding="utf-8")
+            ssir, report = parse_csm_with_report(path)
+        table = ssir["tables"][0]
+        data_row = sorted(table["rows"], key=lambda r: r["rowIndex"])[-1]
+        cells = sorted(data_row["cells"], key=lambda c: c["colIndex"])
+        # 无列错位证据 → 不重排：文字保持在前（提取原样）。
+        self.assertIn("单环旋转式取1、2、3区域", cells[1]["text"])
+        self.assertIn("![](assets/images/a.jpg)", cells[1]["text"])
+        self.assertNotIn("CSM-TABLE-003", [issue.code for issue in report.issues])
+
+    def test_misplaced_cell_text_moved_to_image_column(self) -> None:
+        # CSM-TABLE-003 列错位：GB_T_23132 表2（续）往复式行——说明文字
+        # "单片往复式取2个区域；…"被 MinerU 误归到第3列（插入角度，该列其它
+        # 行均为纯图），第2列（试验区域分割）是纯图格 → 文字移回第2列图后，
+        # 第3列只留图。
+        csm = '''---
+csm-version: "1.0"
+document-type: standard
+document-identifier: "GB/T 23132—2024"
+standard-number: "GB/T 23132—2024"
+title: "列错位归位"
+language: zh-CN
+source: {mode: mineru, provenance: none}
+extensions: {}
+---
+
+# 列错位归位
+
+## 1 范围
+
+本文件规定电动剃须刀。
+
+<!-- ssir:table id="t1" header-rows="1" caption-number="2" caption="锋利度试验区域（续）" -->
+| 类型 | 试验区域分割 | 插入角度 |
+| --- | --- | --- |
+| 往复式 | ![](assets/images/1e30288f.jpg) | 单片往复式取2个区域；双片往复式按照单片往 ![](assets/images/5fff4593.jpg) |
+| 修剪器 | 划分为2个区域 ![](assets/images/06cf2e4d.jpg) | ![](assets/images/16f5c3a2.jpg) |
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "misplaced.csm.md"
+            path.write_text(csm, encoding="utf-8")
+            ssir, report = parse_csm_with_report(path)
+        table = ssir["tables"][0]
+        by_row = {r["rowIndex"]: r for r in table["rows"]}
+        wangfu = sorted(by_row[1]["cells"], key=lambda c: c["colIndex"])
+        xiu = sorted(by_row[2]["cells"], key=lambda c: c["colIndex"])
+        # 往复式：第2列 = 图 + 文字（图在前），第3列 = 纯图。
+        self.assertTrue(wangfu[1]["text"].startswith("![](assets/images/1e30288f.jpg)"))
+        self.assertIn("单片往复式取2个区域", wangfu[1]["text"])
+        self.assertEqual(wangfu[1]["text"].count("assets/images/1e30288f.jpg"), 1)
+        self.assertEqual(wangfu[2]["text"].strip(), "![](assets/images/5fff4593.jpg)")
+        # 修剪器：第2列 = 图 + 文字（重排为图在前），第3列 = 纯图（不受影响）。
+        self.assertTrue(xiu[1]["text"].startswith("![](assets/images/06cf2e4d.jpg)"))
+        self.assertIn("划分为2个区域", xiu[1]["text"])
+        self.assertEqual(xiu[2]["text"].strip(), "![](assets/images/16f5c3a2.jpg)")
+        self.assertTrue(any(issue.code == "CSM-TABLE-003" and issue.repaired for issue in report.issues))
+
+    def test_cell_text_not_moved_when_column_has_text_in_other_rows(self) -> None:
+        # 列错位不误伤：第2列在多数行都含文字（旋转式/修剪器），第3列文字仅
+        # 旋转式一行 → 保守不动（该列文字不是"仅此一行"），且整表不发生 B →
+        # 格内顺序也保持提取原样（不强行重排为图在前）。
+        csm = '''---
+csm-version: "1.0"
+document-type: standard
+document-identifier: "Q/TEST 004—2026"
+standard-number: "Q/TEST 004—2026"
+title: "不误移文字"
+language: zh-CN
+source: {mode: mineru, provenance: none}
+extensions: {}
+---
+
+# 不误移文字
+
+## 1 范围
+
+本文件规定测试产品。
+
+<!-- ssir:table id="t1" header-rows="1" caption-number="1" caption="示例" -->
+| 类型 | 试验区域分割 | 插入角度 |
+| --- | --- | --- |
+| 旋转式 | 单环旋转式取1、2、3区域 ![](assets/images/a.jpg) | 角度说明 ![](assets/images/b.jpg) |
+| 修剪器 | 划分为2个区域 ![](assets/images/c.jpg) | ![](assets/images/d.jpg) |
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "no-move.csm.md"
+            path.write_text(csm, encoding="utf-8")
+            ssir, report = parse_csm_with_report(path)
+        table = ssir["tables"][0]
+        by_row = {r["rowIndex"]: r for r in table["rows"]}
+        rotary = sorted(by_row[1]["cells"], key=lambda c: c["colIndex"])
+        # 旋转式第3列文字保留在第3列（未被移走）。
+        self.assertIn("角度说明", rotary[2]["text"])
+        self.assertIn("![](assets/images/b.jpg)", rotary[2]["text"])
+        # 旋转式第2列保持提取顺序（文字在前、图在后）——整表无 B，不做格内重排。
+        self.assertIn("单环旋转式", rotary[1]["text"])
+        self.assertIn("![](assets/images/a.jpg)", rotary[1]["text"])
+        self.assertNotIn("CSM-TABLE-003", [issue.code for issue in report.issues])
+
     def test_product_optional_sections_do_not_block_conversion(self) -> None:
         csm = '''---
 csm-version: "1.0"
@@ -902,6 +1119,169 @@ U_N = U_0 / sqrt(3)
         yield node
         for child in node.get("children", []):
             yield from CSMToSSIRTests._nodes(child)
+
+
+class NoteAndListMarkerTests(unittest.TestCase):
+    """2026-08-31 GB_T_20001.6 第二轮：注字号、确立断行、●/• 符号统一。"""
+
+    @staticmethod
+    def _parse(body: str):
+        csm = (
+            "---\n"
+            'csm-version: "1.0"\n'
+            "document-type: standard\n"
+            "document-identifier: ssir:TEST-1\n"
+            'title: "测试"\n'
+            "---\n\n"
+            f"# 测试\n\n{body}\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "t.canonical.md"
+            path.write_text(csm, encoding="utf-8")
+            return parse_csm_with_report(path)
+
+    @staticmethod
+    def _elements(ssir: dict):
+        for node in CSMToSSIRTests._nodes(ssir["structuralRoot"]):
+            yield from node.get("contentElements", [])
+
+    def test_standalone_note_line_becomes_note_element(self) -> None:
+        # 3.2 的独立「注：」行必须是 note CE，渲染才走小五号（GBT-B10）。
+        ssir, _ = self._parse(
+            "## 3 术语和定义\n\n"
+            "### 3.1 指示型条款\n\n"
+            "表达需要履行的行动的条款。\n\n"
+            "注：指示型条款用祈使句表达。"
+        )
+        notes = [ce for ce in self._elements(ssir) if ce["presentationType"] == "note"]
+        self.assertEqual(len(notes), 1)
+        self.assertEqual(notes[0]["textContent"], "注：指示型条款用祈使句表达。")
+
+    def test_inline_numbered_notes_split_into_note_elements(self) -> None:
+        # 3.1 术语定义里被 OCR 合并进定义段的「注1：…。注2：…。」应在
+        # 句界切分为独立 note（GB_T_20001.6 3.1 型）。
+        ssir, _ = self._parse(
+            "## 3 术语和定义\n\n"
+            "### 3.1 规程标准\n\n"
+            "为活动规定明确程序的标准。注1：过程包括设计、制造。注2：不产生试验结果。"
+        )
+        notes = [ce for ce in self._elements(ssir) if ce["presentationType"] == "note"]
+        self.assertEqual(len(notes), 2)
+        self.assertEqual(notes[0]["textContent"], "注1：过程包括设计、制造。")
+        self.assertEqual(notes[1]["textContent"], "注2：不产生试验结果。")
+        paras = [ce for ce in self._elements(ssir) if ce["presentationType"] == "paragraph"]
+        self.assertEqual(paras[0]["textContent"], "为活动规定明确程序的标准。")
+
+    def test_blank_line_paragraph_joins_non_sentence_final_line(self) -> None:
+        # 6.2「使用词语"确\n\n立"」：MinerU 在词语中间插空行，上行不以连接性
+        # 标点结尾（旧规则不合并）——应合并为一句（"确立"不再断行）。
+        ssir, _ = self._parse(
+            "## 6 要素的编写\n\n"
+            "### 6.2 范围\n\n"
+            "范围的典型表述形式为：使用词语“确\n\n"
+            "立”；表述行为指示和转换条件时，使用词语“规定”。"
+        )
+        paras = [ce for ce in self._elements(ssir) if ce["presentationType"] == "paragraph"]
+        joined = "".join(ce["textContent"] for ce in paras)
+        self.assertIn("“确立”", joined)
+        self.assertNotIn("“确\n", joined)
+
+    def test_bullet_markers_unified_to_majority(self) -> None:
+        # 6.1「其他」前符号不一致：源 PDF 全 ●，OCR 把末项读成 •——按多数派统一。
+        ssir, report = self._parse(
+            "### 6.1 标记方法\n\n"
+            "标记的内容包括：\n\n"
+            "● 做标记时植株的性状；\n"
+            "● 标记的编号；\n"
+            "● 标记时间；\n"
+            "• 其他。"
+        )
+        lists = [ce for ce in self._elements(ssir) if ce["presentationType"] == "list"]
+        markers = [item["marker"] for content in lists for item in content["listItems"]]
+        self.assertEqual(set(markers), {"●"})
+        repair = [i for i in report.issues if i.code == "CSM-OCR-001"]
+        self.assertTrue(any("unified to" in (i.message or "") for i in repair))
+
+    def test_interpunct_items_parse_as_list_and_unify_to_majority(self) -> None:
+        # 回归（2026-08-31，GB_T_1.1-2020 前言 8.3）：OCR 把第二层次间隔号
+        # · 与 • 混读。· 行此前不解析为列表项（UNORDERED_ITEM_RE 缺 U+00B7），
+        # 沦为独立段落、兄弟 • 被并入相邻字母列表。应解析为列表项，且
+        # b)/c) 两个子列表同块时 · 按多数派统一为 •（同一条款符号一致）。
+        ssir, report = self._parse(
+            "## 8 要素的编写\n\n"
+            "### 8.3 前言\n\n"
+            "a） 文件起草所依据的标准。\n"
+            "b） 文件与其他文件的关系。需要说明以下两方面的内容：\n\n"
+            "• 与其他标准的关系；\n"
+            "• 分为部分的文件说明其所属的部分。\n\n"
+            "c） 文件与代替文件的关系。需要说明以下两方面的内容：\n\n"
+            "· 给出被代替、废止的所有文件的编号和名称；\n"
+            "• 列出与前一版本相比的主要技术变化。\n"
+        )
+        lists = [ce for ce in self._elements(ssir) if ce["presentationType"] == "list"]
+        markers = [item["marker"] for content in lists for item in content["listItems"]]
+        self.assertIn("•", markers)
+        self.assertNotIn("·", markers)
+        item_texts = [str(item.get("text", "")) for content in lists for item in content["listItems"]]
+        replaced = item_texts.index("给出被代替、废止的所有文件的编号和名称；")
+        self.assertEqual(
+            [item["marker"] for content in lists for item in content["listItems"]][replaced],
+            "•",
+        )
+        repair = [i for i in report.issues if i.code == "CSM-OCR-001"]
+        self.assertTrue(any("unified to" in (i.message or "") for i in repair))
+
+    def test_dash_marker_variants_unified_to_majority(self) -> None:
+        # 回归（2026-08-31）：OCR 把同一破折号读成长度不一的横杠（-、—、——、
+        # ———）。同一条款列项符号应按多数派统一（GB_T_1.1-2020 前言 8.3 与
+        # GB_T_20001.4/5/6/10 前言清单均出现 -/—/—— 混用）。
+        ssir, report = self._parse(
+            "## 6 要素的编写\n\n"
+            "### 6.3 列项\n\n"
+            "列项符号如下：\n\n"
+            "- 第一项；\n"
+            "- 第二项；\n"
+            "—— 第三项。\n"
+        )
+        lists = [ce for ce in self._elements(ssir) if ce["presentationType"] == "list"]
+        markers = [item["marker"] for content in lists for item in content["listItems"]]
+        self.assertEqual(markers, ["-", "-", "-"])
+        repair = [i for i in report.issues if i.code == "CSM-OCR-001"]
+        self.assertTrue(any("unified to" in (i.message or "") for i in repair))
+
+    def test_dash_interpunct_cross_family_unified_to_majority(self) -> None:
+        # 同一条款下列表符号混用破折号与间隔号（GB_T_20001.6 同类案例：
+        # ●/• 混读）：按多数派符号纠正个别误识项（· → ——）。
+        ssir, report = self._parse(
+            "## 6 规程的表述\n\n"
+            "### 6.1 示例\n\n"
+            "繁育程序包括：\n\n"
+            "—— 马铃薯脱毒试管苗繁育程序；\n"
+            "—— 甘薯脱毒试管苗繁育程序；\n"
+            "· 其他。\n"
+        )
+        lists = [ce for ce in self._elements(ssir) if ce["presentationType"] == "list"]
+        markers = [item["marker"] for content in lists for item in content["listItems"]]
+        self.assertEqual(markers, ["——", "——", "——"])
+        repair = [i for i in report.issues if i.code == "CSM-OCR-001"]
+        self.assertTrue(any("unified to" in (i.message or "") for i in repair))
+
+    def test_symbol_marker_ties_are_not_unified(self) -> None:
+        # 平手（2:2）无法确认多数派，保守不统一——真嵌套列项（第一层次 ——
+        # 项下挂第二层次 · 子项）不误伤；渲染层 _list_marker 仍会归一显示。
+        ssir, report = self._parse(
+            "### 6.1 标记方法\n\n"
+            "标记的内容包括：\n\n"
+            "—— 第一项；\n"
+            "· 第二项。\n"
+            "—— 第三项；\n"
+            "· 第四项。\n"
+        )
+        lists = [ce for ce in self._elements(ssir) if ce["presentationType"] == "list"]
+        markers = [item["marker"] for content in lists for item in content["listItems"]]
+        self.assertEqual(markers, ["——", "·", "——", "·"])
+        repair = [i for i in report.issues if i.code == "CSM-OCR-001"]
+        self.assertFalse(any("unified to" in (i.message or "") for i in repair))
 
 
 if __name__ == "__main__":
