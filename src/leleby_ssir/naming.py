@@ -104,7 +104,7 @@ REP_NORMALIZE_REPORT = "normalize-report"  # 02_canonical：纠错报告
 REP_SSIR = "ssir"                        # 03_ssir：结构化语义 JSON
 REP_SEMANTIC = "semantic"                # 03_ssir：TTL/JSON-LD 知识图谱投影（可选）
 REP_PARSE_REPORT = "parse-report"        # 03_ssir：解析报告
-REP_RENDER = "render"                    # 04_render：发布 PDF（.pdf）/中间渲染 CSM（.md）
+REP_RENDER = "render"                    # 04_render：发布 PDF（.pdf）/中间渲染 CSM（.md）/doc_1 docx（.docx）
 REP_RENDER_REPORT = "render-report"      # 04_render：渲染报告
 REP_RENDER_COMPARISON = "render-comparison"  # 04_render：原稿 vs 渲染 PDF 统计
 REP_VERIFY = "verify"                    # 05_verify：从渲染结果再抽取的 SSIR（回环输入）
@@ -128,6 +128,7 @@ _REPRESENTATION_SUFFIXES = (
     ".semantic.ttl",
     ".canonical.md",
     ".render.md",
+    ".render.docx",
     ".render.pdf",
     ".ssir.json",
     ".verify.json",

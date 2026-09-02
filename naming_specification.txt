@@ -98,7 +98,7 @@
 | 表示（representation） | 扩展名 | 阶段目录 | 说明 |
 |------------------------|--------|----------|------|
 | `source`           | `.pdf` / `.docx` / `.rtf` / `.txt` / `.md` | `00_source` | 用户上传的原始文件（永不修改），附 `<ID>.checksum.sha256` |
-| `raw`              | `.md`  | `01_extract` | MinerU/OCR 直接输出的未加工 Markdown（合并后） |
+| `raw`              | `.md`  | `01_extract` | 原始未加工 Markdown（MinerU 合并后）；docx 输入时为 docx 导入生成的 canonical 级 CSM |
 | `extract-report`   | `.json` | `01_extract` | 抽取报告（后端、页数、警告） |
 | `provenance`       | `.json` | `01_extract` | 来源 sidecar（源文件、SHA-256、分块锚点） |
 | `canonical`        | `.md`  | `02_canonical` | 经安全纠错后的权威 CSM（唯一人工可编辑版本） |
@@ -106,7 +106,7 @@
 | `ssir`             | `.json` | `03_ssir` | 从 canonical 解析得到的 SSIR 主文件 |
 | `semantic`         | `.ttl` / `.jsonld` | `03_ssir` | 从 SSIR 导出的知识图谱/本体（可选，`--format ttl`） |
 | `parse-report`     | `.json` | `03_ssir` | 解析报告 |
-| `render`           | `.pdf`（发布版）/ `.md`（中间渲染 CSM） | `04_render` | 从 SSIR 渲染的输出；`.render.md` 是回环验证输入 |
+| `render`           | `.pdf`（发布版）/ `.md`（中间渲染 CSM）/ `.docx`（doc_1，同 SSIR 渲染、与 PDF 技术内容等价） | `04_render` | 从 SSIR 渲染的输出；`.render.md` 是回环验证输入 |
 | `render-report`    | `.json` | `04_render` | 渲染报告 |
 | `render-comparison` | `.json` | `04_render` | 原稿与渲染 PDF 的页数/文本量对比 |
 | `verify`           | `.json` | `05_verify` | 从 `render.md` 再解析得到的 SSIR（回环验证输入） |
@@ -171,6 +171,7 @@ out/mineru/{input}/                # 文档根（docroot）；--output-dir 可�
 │   └── {STANDARD_ID}.parse-report.json
 ├── 04_render/                     # 渲染产物
 │   ├── {STANDARD_ID}.render.pdf
+│   ├── {STANDARD_ID}.render.docx  # doc_1：同一 SSIR 的 Word 渲染（与 PDF 技术内容等价）
 │   ├── {STANDARD_ID}.render.md     # 中间渲染 CSM（回环验证输入）
 │   ├── {STANDARD_ID}.render-report.json
 │   └── {STANDARD_ID}.render-comparison.json
@@ -182,6 +183,14 @@ out/mineru/{input}/                # 文档根（docroot）；--output-dir 可�
 ```
 
 > **重要**：`02_canonical` 是唯一需要人工干预的文件；其余阶段均由工具自动生成。
+
+> **docx 输入闭环（2026-09）**：`04_render/{ID}.render.docx`（doc_1）放回
+> `corpus/golden/{ID}.docx` 后，流水线默认 **docx/doc 优先**输入（未找到再回退
+> PDF 做 MinerU 识别），从零重建整套阶段目录：`00_source/{ID}.source.docx` +
+> 校验和 → `01_extract/{ID}.raw.md`（docx 导入生成的 canonical 级 CSM，位图落
+> 文档根 `assets/images/`）→ normalize → parse → roundtrip → render（PDF +
+> doc_1 docx）。文件名带 `.render.docx`（如 `{ID}.render.docx`）时自动剥去
+> `.render` representation token。详见 `src/leleby_ssir/docx_importer.py`。
 
 ### 4.3 多租户目标架构（未来）
 `platform/`（管理员资产：规则、内置标准、本体、模板、徽标）、
@@ -228,6 +237,7 @@ SSIR 中引用资源使用相对路径（从文档根出发）：
     "ssir": "03_ssir/Q_XKBZ_002-2026.ssir.json",
     "renderMd": "04_render/Q_XKBZ_002-2026.render.md",
     "render": "04_render/Q_XKBZ_002-2026.render.pdf",
+    "renderDocx": "04_render/Q_XKBZ_002-2026.render.docx",
     "verify": "05_verify/Q_XKBZ_002-2026.verify.json",
     "roundtrip": "05_verify/Q_XKBZ_002-2026.roundtrip.json"
   }

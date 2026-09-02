@@ -66,6 +66,7 @@ def _parser() -> argparse.ArgumentParser:
     render.add_argument("--profile", type=Path, help="rendering profile YAML")
     render.add_argument("--report", type=Path, help="rendering report path")
     render.add_argument("--toc-depth", type=_toc_depth, default=2, metavar="LEVEL|all", help="maximum numbered TOC level (default: 2; use all to expand every level)")
+    render.add_argument("--docx-output", type=Path, help="optional .docx twin output (doc_1, content-equivalent to the PDF, rendered from the same SSIR)")
     return parser
 
 
@@ -83,11 +84,19 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"output": str(args.output), "backend": report.backend, "pages": report.page_count, "status": report.status, "warnings": len(report.warnings), "sidecar": report.sidecar_file}, ensure_ascii=False))
             return 0
         if getattr(args, "command", None) == "pdf" and args.pdf_command == "render":
+            from .docx_renderer import render_docx_file
             from .pdf_renderer import render_pdf_file
             report = render_pdf_file(args.input, args.output, profile_path=args.profile, toc_depth=args.toc_depth)
             report_path_arg = args.report or report_path(args.output, REP_RENDER_REPORT)
             report.write_json(report_path_arg)
-            print(json.dumps({"output": str(args.output), "report": str(report_path_arg), "pageCount": report.page_count, "warnings": len(report.warnings)}, ensure_ascii=False))
+            docx_path = ""
+            if args.docx_output:
+                docx_warnings = render_docx_file(args.input, args.docx_output, toc_depth=args.toc_depth)
+                docx_path = str(args.docx_output)
+                if docx_warnings:
+                    for warning in docx_warnings:
+                        print(f"warning: {warning}", file=sys.stderr)
+            print(json.dumps({"output": str(args.output), "docx": docx_path, "report": str(report_path_arg), "pageCount": report.page_count, "warnings": len(report.warnings)}, ensure_ascii=False))
             return 0
         if args.csm_command == "validate":
             document = validate_csm(args.input, strict=args.strict)

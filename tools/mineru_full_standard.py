@@ -64,6 +64,17 @@ def _page_count(pdf: Path) -> int:
 # （条号 4.2.1→421、标准号 GB/T2423.→"GB/T2423." 或整段丢失）。
 _ORPHAN_NUMBER_DOT_RE = re.compile(r"^\d{1,3}\.$")
 _TRUNCATED_STANDARD_RE = re.compile(r"^(?:GB/T|GB|JB/T|DB\d{1,2}/T|T/|Q/)\S*\.$")
+# 标题编号整体丢失特征（2026-09-01，Q_TQDZ_004-2026 等企业标准）：PDF 文本层里
+# 二级标题行的编号（7.1、9.1…）不存在——pymupdf 逐字符确认"外观检查"行只有 4 个
+# 汉字，而视觉层（OCR 识别）编号齐全（7.1 外观检查、9.3 运输）。这是文本层
+# "半坏"的另一种形态：章节号/条号（6.2.1、9.2.2）完好，唯独标题行编号丢失。
+# 判别（对语料库 33 份 PDF 实测）：损坏文档（Q_TQDZ/Q_HKF/Q_XKBZ）的裸汉字短行
+# （2-12 字、无数字无标点）中 ≥50% 后跟长正文行（≥15 字，即"标题+正文段落"
+# 版式），且文档存在带点条款行（x.y 编号体系）；健康文档（GB_T_1.1-2020、
+# T_ZZB_2224、DB11_T_1000.1、GB_3100 系列等）裸短行多为表格单元格/术语，
+# 后跟长正文比例 <25% 或没有带点条款行（Q_YYJD 无 x.y 体系不误报）。
+_BARE_HAN_HEAD_RE = re.compile(r"^[\u4e00-\u9fff]{2,12}$")
+_NUMBERED_CLAUSE_RE = re.compile(r"^\d+(?:\.\d+)+\s")
 # 标准号提及（文本层/raw 覆盖率对比用，2026-08-31）：宽匹配，前缀 + 数字/字母
 # 即算一次提及。GB_T_15835-2011 类文档（文本层健康但 MinerU 抽取丢拉丁）的
 # 特征是文本层标准号远多于抽取结果——用于 _latin_loss_check 的自动 OCR 判定。
@@ -72,15 +83,19 @@ _STANDARD_MENTION_RE = re.compile(
 )
 
 
+
 def _detect_broken_text_layer(pdf: Path, sample_pages: int = 30) -> str | None:
     """Return a reason string when the source PDF's text layer shows the typical
     damage pattern that makes text-based extraction (auto/txt) lose digits and
     Latin runs; return None for healthy text layers and for scanned PDFs
     (no text layer at all — MinerU auto already OCRs those).
 
-    信号（对语料库实测，2026-08-31）：
+    信号（对语料库实测，2026-08-31 / 2026-09-01）：
     - 孤立"4."/"2."行（条号被拆到独立行）：健康文本层 0 条，损坏文档 130+ 条；
-    - 截断的标准号 "GB/T2423."（点号处切断）：健康 0 条，损坏文档 4+ 条。
+    - 截断的标准号 "GB/T2423."（点号处切断）：健康 0 条，损坏文档 4+ 条；
+    - 标题行编号整体丢失（Q_TQDZ_004-2026 等企标）：裸汉字短行（2-12 字）中
+      ≥50% 后跟长正文行、且存在带点条款编号体系 → 文本层缺标题编号，
+      MinerU 文本抽取只能得到无编号裸标题（7.1 外观检查 → "外观检查"）。
     """
     try:
         import fitz  # type: ignore
@@ -88,10 +103,14 @@ def _detect_broken_text_layer(pdf: Path, sample_pages: int = 30) -> str | None:
         return None
     orphan_dots = 0
     truncated_standards = 0
+    bare_heads = 0
+    bare_heads_followed = 0
+    numbered_clauses = 0
     with fitz.open(pdf) as document:
         scanned = min(sample_pages, len(document))
         for page_index in range(scanned):
-            for line in document[page_index].get_text().splitlines():
+            lines = str(document[page_index].get_text()).splitlines()
+            for i, line in enumerate(lines):
                 stripped = line.strip()
                 if not stripped:
                     continue
@@ -99,10 +118,34 @@ def _detect_broken_text_layer(pdf: Path, sample_pages: int = 30) -> str | None:
                     orphan_dots += 1
                 elif _TRUNCATED_STANDARD_RE.match(stripped):
                     truncated_standards += 1
+                if _NUMBERED_CLAUSE_RE.match(stripped):
+                    numbered_clauses += 1
+                elif _BARE_HAN_HEAD_RE.match(stripped):
+                    bare_heads += 1
+                    # 裸短行后 3 行内首个非空行：是长正文段落（标题-正文版式）
+                    # 还是表格单元格/空行（健康文档的裸短行常是表格内容）。
+                    following = ""
+                    for j in range(i + 1, min(i + 4, len(lines))):
+                        following = lines[j].strip()
+                        if following:
+                            break
+                    if len(following) >= 15:
+                        bare_heads_followed += 1
         if orphan_dots >= 30 or truncated_standards >= 3:
             return (
                 f"text layer damage detected: {orphan_dots} orphaned number-dot lines, "
                 f"{truncated_standards} truncated standard numbers in the first {scanned} pages"
+            )
+        if (
+            bare_heads >= 5
+            and numbered_clauses >= 5
+            and bare_heads_followed >= 4
+            and bare_heads_followed * 2 >= bare_heads
+        ):
+            return (
+                f"text layer damage detected: {bare_heads_followed}/{bare_heads} bare Han "
+                f"heading lines followed by body text while {numbered_clauses} numbered "
+                f"clause lines exist (heading numbers lost in the text layer)"
             )
     return None
 
@@ -178,15 +221,16 @@ def _range_dir(output_dir: Path, start: int, end: int) -> Path:
     return output_dir / "parts" / f"pages-{start + 1:03d}-{end + 1:03d}"
 
 
-def _stage_paths(output_dir: Path, stem: str) -> dict[str, Path]:
+def _stage_paths(output_dir: Path, stem: str, *, source_ext: str = "pdf") -> dict[str, Path]:
     """阶段目录布局（naming_specification.txt 第 4 节）：每个表示一个子目录。
 
     00_source/ 01_extract/ 02_canonical/ 03_ssir/ 04_render/ 05_verify/；
     资产统一放文档根 assets/（SSIR 的 assetRef 相对路径以
     ``assets/images/...`` 引用，渲染器自 03_ssir/ 向上查找）。
+    ``source_ext`` 区分源文档类型（pdf → MinerU 识别；docx → docx 导入）。
     """
     return {
-        "source": output_dir / "00_source" / f"{stem}.source.pdf",
+        "source": output_dir / "00_source" / f"{stem}.source.{source_ext}",
         "checksum": output_dir / "00_source" / f"{stem}.checksum.sha256",
         "raw": output_dir / "01_extract" / f"{stem}.raw.md",
         "extract_report": output_dir / "01_extract" / f"{stem}.extract-report.json",
@@ -197,6 +241,7 @@ def _stage_paths(output_dir: Path, stem: str) -> dict[str, Path]:
         "parse_report": output_dir / "03_ssir" / f"{stem}.parse-report.json",
         "render_pdf": output_dir / "04_render" / f"{stem}.render.pdf",
         "render_md": output_dir / "04_render" / f"{stem}.render.md",
+        "render_docx": output_dir / "04_render" / f"{stem}.render.docx",
         "render_report": output_dir / "04_render" / f"{stem}.render-report.json",
         "render_comparison": output_dir / "04_render" / f"{stem}.render-comparison.json",
         "verify": output_dir / "05_verify" / f"{stem}.verify.json",
@@ -207,7 +252,8 @@ def _stage_paths(output_dir: Path, stem: str) -> dict[str, Path]:
 def _write_manifest(args: argparse.Namespace, state: dict[str, Any], title: str = "", number: str = "", status: str = "in-progress") -> None:
     """写文档索引 manifest.json（naming_specification.txt 第 6 节）。"""
     stem = args.output_stem or args.input.stem
-    paths = _stage_paths(args.output_dir, stem)
+    paths = _stage_paths(args.output_dir, stem,
+                         source_ext="docx" if getattr(args, "input_kind", "") == "docx" else "pdf")
     manifest: dict[str, Any] = {
         "documentId": stem,
         "title": title or state.get("title", ""),
@@ -225,6 +271,7 @@ def _write_manifest(args: argparse.Namespace, state: dict[str, Any], title: str 
             "ssir": str(paths["ssir"].relative_to(args.output_dir)),
             "renderMd": str(paths["render_md"].relative_to(args.output_dir)),
             "render": str(paths["render_pdf"].relative_to(args.output_dir)),
+            "renderDocx": str(paths["render_docx"].relative_to(args.output_dir)),
             "verify": str(paths["verify"].relative_to(args.output_dir)),
             "roundtrip": str(paths["roundtrip"].relative_to(args.output_dir)),
         },
@@ -1534,9 +1581,11 @@ def finalize(args: argparse.Namespace, merged: Path) -> Path | None:
         print("SSIR parsing needs review; normalized CSM remains available.", file=sys.stderr)
         return None
     _log(f"SSIR JSON written: {ssir}\n")
-    _stamp_example_styles(ssir, args.input)
-    _stamp_figure_source_sizes(ssir, args.input)
-    _stamp_side_by_side_layout(ssir, args.output_dir / "parts")
+    if args.input.suffix.lower() == ".pdf":
+        # 版面几何印记仅对 PDF 源有效（读取源 PDF 的矢量几何/裁剪尺寸）。
+        _stamp_example_styles(ssir, args.input)
+        _stamp_figure_source_sizes(ssir, args.input)
+        _stamp_side_by_side_layout(ssir, args.output_dir / "parts")
     return ssir
 
 
@@ -1948,13 +1997,14 @@ def main() -> int:
     # 规则对应（流水线阶段 → 规则层）: extract=GEN-002/003；merge=GEN-005/010—019/030；
     # normalize=GEN-031—034；build=GEN-050/052；verify=GEN-051/090/091 + 三层合规
     # （GEN→GBT→P10，见 compliance.py）；render=GEN-070—076。
-    parser = argparse.ArgumentParser(description="Run a resumable full MinerU extraction, SSIR parsing, round-trip verification and optional PDF rendering for a national-standard PDF.")
+    parser = argparse.ArgumentParser(description="Run the full standard pipeline: Word (.docx/.doc, default) or PDF → MinerU PDF recognition (when the input is PDF) → SSIR parse → round-trip verification → optional rendering (PDF + content-equivalent docx).")
     parser.add_argument("file", nargs="?", type=str, default=None,
-                        help="standard file name resolved under corpus/golden/ (e.g. T_ZZB_2224-2021 or T_ZZB_2224-2021.pdf). "
-                             "Shortcut mode: implies --stage all --roundtrip --render so one command runs extraction, rendering and round-trip verification.")
-    parser.add_argument("--input", type=Path, help="PDF input of the national standard to extract (alternative to the positional file name; full path or relative path)");
+                        help="standard file name resolved under corpus/golden/ (e.g. T_ZZB_2224-2021, T_ZZB_2224-2021.docx or T_ZZB_2224-2021.pdf). "
+                             "Word 输入默认优先（docx/doc），未找到再回退 PDF 做 MinerU 识别。 "
+                             "Shortcut mode: implies --stage all --roundtrip --render so one command runs the whole pipeline.")
+    parser.add_argument("--input", type=Path, help="input document of the national standard (alternative to the positional file name; full path or relative path; .docx/.doc/.pdf)")
     parser.add_argument("--output-dir", type=Path, help="output directory (default: out/mineru/<input-stem>)")
-    parser.add_argument("--output-stem", type=str, help="output filename stem for merged CSM/SSIR/PDF artifacts (default: input file name without the .pdf extension)")
+    parser.add_argument("--output-stem", type=str, help="output filename stem for merged CSM/SSIR/PDF artifacts (default: input file name without the extension)")
     parser.add_argument("--front-matter-json", type=Path, help="optional JSON object with additional CSM front matter keys merged into the merged document (e.g. {\"ics\": \"01.120\", \"issuer\": \"...\"})")
     parser.add_argument("--standard-number", type=str, help="standard number written into the CSM front matter (default: inferred from the extraction, e.g. GB/T 10401-2023)")
     parser.add_argument("--title", type=str, help="standard title written into the CSM front matter (default: first H1 from the extraction)")
@@ -1970,25 +2020,31 @@ def main() -> int:
     if args.input and args.file:
         parser.error("pass either a positional file name or --input, not both")
     if args.file:
-        # 快捷模式：文件名默认在 corpus/golden/ 下解析（允许带或不带 .pdf 后缀，
-        # 也允许子路径如 团体标准/T_ZZB_2224-2021.pdf）。
+        # 快捷模式：文件名默认在 corpus/golden/ 下解析。Word 输入默认优先
+        # （docx/doc），未找到才回退 PDF 做 MinerU 识别；也允许子路径。
         file_path = Path(args.file)
         if file_path.is_file():
             args.input = file_path
         else:
             candidate = ROOT / "corpus" / "golden" / args.file
             # 注意：不能用 with_suffix(".pdf")——标准号含点（GB_T_1.1-2020）时
-            # Path 会把 ".1-2020" 当成后缀替换成 GB_T_1.pdf；直接整体拼 .pdf 保留点。
-            if not candidate.is_file():
-                candidate = ROOT / "corpus" / "golden" / f"{args.file}.pdf"
-            if not candidate.is_file():
-                parser.error(f"file not found under corpus/golden/: {args.file!r} (looked for {candidate})")
-            args.input = candidate
-        # 单命令完成全部：提取 + 渲染 + 回环验证（与 README「一条命令」承诺一致）。
+            # Path 会把 ".1-2020" 当成后缀替换成 GB_T_1.pdf；直接整体拼后缀保留点。
+            resolved = None
+            for ext in ("", ".docx", ".doc", ".pdf"):
+                probe = candidate if not ext else ROOT / "corpus" / "golden" / f"{args.file}{ext}"
+                if probe.is_file():
+                    resolved = probe
+                    break
+            if resolved is None:
+                parser.error(f"file not found under corpus/golden/: {args.file!r} (looked for docx/doc, then pdf)")
+            args.input = resolved
+        # 单命令完成全部：导入/提取 + 渲染 + 回环验证（与 README「一条命令」承诺一致）。
         args.roundtrip = True
         args.render = True
-    if not args.input.is_file() or args.input.suffix.lower() != ".pdf":
-        parser.error(f"input must be an existing PDF: {args.input}")
+    suffix = args.input.suffix.lower() if args.input else ""
+    if not args.input or not args.input.is_file() or suffix not in (".pdf", ".docx", ".doc"):
+        parser.error(f"input must be an existing PDF or Word (.docx/.doc) document: {args.input}")
+    args.input_kind = "pdf" if suffix == ".pdf" else "docx"
     if args.chunk_size < 1:
         parser.error("--chunk-size must be positive")
     # 文档根目录（naming_specification.txt §4.2 out/mineru/{input}/）：默认用
@@ -2003,19 +2059,22 @@ def main() -> int:
     # 断点续跑：stem 在上一次 merge 已推导并存入 state，直接复用。
     if not args.output_stem and state.get("outputStem"):
         args.output_stem = state["outputStem"]
-    # 文本层质量预检（2026-08-31）：默认 auto 模式下，若源 PDF 文本层呈典型
-    # 损坏特征（孤立 "4."/"2." 行、截断标准号 "GB/T2423."），MinerU 直接抽取
-    # 会丢点丢数字——自动改走 OCR；显式 --method 时尊重用户选择。
-    if args.method == "auto":
-        damage_reason = _detect_broken_text_layer(args.input)
-        if damage_reason:
-            _log(f"Text-layer quality check: {damage_reason}; forcing --method ocr")
-            args.method = "ocr"
-    _log(f"Input PDF: {args.input.resolve()}")
+    _log(f"Input {'Word document' if args.input_kind == 'docx' else 'PDF'}: {args.input.resolve()}")
     _log(f"Output directory: {args.output_dir.resolve()}")
     _log(f"Stage: {args.stage}; round-trip: {args.roundtrip}; render after parsing: {args.render}")
 
     try:
+        if args.input_kind == "docx":
+            # Word 输入：docx 导入（替代 MinerU 识别）→ finalize → roundtrip/render。
+            return _run_docx_input(args, state)
+        # 文本层质量预检（2026-08-31）：默认 auto 模式下，若源 PDF 文本层呈典型
+        # 损坏特征（孤立 "4."/"2." 行、截断标准号 "GB/T2423."），MinerU 直接抽取
+        # 会丢点丢数字——自动改走 OCR；显式 --method 时尊重用户选择。
+        if args.method == "auto":
+            damage_reason = _detect_broken_text_layer(args.input)
+            if damage_reason:
+                _log(f"Text-layer quality check: {damage_reason}; forcing --method ocr")
+                args.method = "ocr"
         if args.stage in {"extract", "all"}:
             extract(args, state)
         if args.stage == "extract":
@@ -2047,34 +2106,109 @@ def main() -> int:
             return 0
         ssir = finalize(args, merged)
         paths = _stage_paths(args.output_dir, args.output_stem or args.input.stem)
-        if args.roundtrip and ssir:
-            roundtrip = [
-                str(Path(sys.prefix) / "bin" / "ssir"), "csm", "roundtrip",
-                "--input", str(paths["canonical"]), "--render-md-output", str(paths["render_md"]),
-                "--verify-output", str(paths["verify"]), "--report", str(paths["roundtrip"]),
-            ]
-            _log("Running SSIR round-trip verification (canonical -> SSIR -> render.md -> verify)")
-            result = subprocess.run(roundtrip, cwd=ROOT)
-            if result.returncode not in (0, 3):
-                raise RuntimeError("SSIR round-trip verification failed")
-            _log(f"Round-trip result: {result.returncode} (0 = equivalent; 3 = critical information loss)")
-        if args.render and ssir:
-            render = [
-                str(Path(sys.prefix) / "bin" / "ssir"), "pdf", "render",
-                "--input", str(paths["ssir"]), "--output", str(paths["render_pdf"]),
-                "--report", str(paths["render_report"]), "--toc-depth", args.toc_depth,
-            ]
-            _log("Rendering SSIR JSON as a traditional standard-style PDF")
-            if subprocess.run(render, cwd=ROOT).returncode:
-                raise RuntimeError("SSIR PDF renderer failed")
-            compare(args.input, paths["render_pdf"], paths["render_comparison"])
-            _log(f"Generated PDF comparison: {paths['render_comparison']}")
-        _write_manifest(args, state, status="completed")
+        _post_parse_verify_render(args, state, paths, ssir)
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     _log("Workflow completed successfully")
     return 0
+
+
+def _run_docx_input(args: argparse.Namespace, state: dict[str, Any]) -> int:
+    """Word 输入全流程：docx 导入（替代 MinerU 识别）→ finalize → roundtrip/render。
+
+    golden 里只放一个 docx（例如上一轮 04_render/<ID>.render.docx）时，从零
+    重建整套阶段目录：00_source 永久保留原件（.source.docx + 校验和）→
+    01_extract 写入 docx 导入得到的 canonical 级 CSM（assets/images 位图落文档根
+    assets/）→ normalize → parse → roundtrip → render（PDF + doc_1 docx）。
+    规则对应：source=GEN-002；finalize=GEN-031—034/050；render=GEN-070—076。
+    """
+    from leleby_ssir.docx_importer import docx_metadata, docx_to_csm_markdown
+
+    stem = args.output_stem
+    if not stem:
+        stem = args.input.stem
+        # golden 里放回 render.docx 时剥掉 representation token（*.render.docx）。
+        if stem.lower().endswith(".render"):
+            stem = stem[: -len(".render")]
+    args.output_stem = stem
+    state["outputStem"] = stem
+    paths = _stage_paths(args.output_dir, stem, source_ext="docx")
+    for stage_path in paths.values():
+        stage_path.parent.mkdir(parents=True, exist_ok=True)
+    if not paths["source"].is_file():
+        shutil.copy2(args.input, paths["source"])
+    source_sha256 = state.get("sourceSha256") or hashlib.sha256(args.input.read_bytes()).hexdigest()
+    state["sourceSha256"] = source_sha256
+    paths["checksum"].write_text(f"sha256:{source_sha256}\n", encoding="utf-8")
+
+    number = args.standard_number or ""
+    title = args.title or ""
+    if args.stage in {"extract", "all"}:
+        _log(f"Importing Word document into canonical-level CSM: {args.input.resolve()}")
+        fm, md_text, warnings = docx_to_csm_markdown(
+            args.input, assets_root=args.output_dir,
+            title=args.title or None, standard_number=args.standard_number or None,
+        )
+        for warning in warnings:
+            _log(f"docx import warning: {warning}")
+        paths["raw"].write_text(md_text, encoding="utf-8")
+        _write_json(paths["provenance"], {
+            "sourceFile": str(args.input.resolve()), "sourceSha256": source_sha256,
+            "backend": "docx-import", "sourceFormat": args.input.suffix.lower().lstrip("."),
+            "mode": "docx-import", "warnings": warnings,
+        })
+        title = str(fm.get("title") or title or "")
+        number = str(fm.get("standard-number") or number or "")
+        state["title"] = title
+        state["number"] = number
+        state["backend"] = "docx-import"
+        state["pageCount"] = None
+        state["parts"] = []
+        _write_json(args.state_file, state)
+        _log(f"Imported CSM written: {paths['raw']}")
+        _write_manifest(args, state, title=title, number=number)
+        if args.stage == "extract":
+            _log("Extraction (docx import) stage complete. Run with --stage all to normalize/parse and render.")
+            return 0
+    merged = paths["raw"]
+    ssir = finalize(args, merged)
+    paths = _stage_paths(args.output_dir, stem, source_ext="docx")
+    _post_parse_verify_render(args, state, paths, ssir)
+    return 0
+
+
+def _post_parse_verify_render(args: argparse.Namespace, state: dict[str, Any],
+                              paths: dict[str, Path], ssir: Path | None) -> None:
+    """parse 之后公共尾部：roundtrip → render（PDF + doc_1 docx）→ manifest。"""
+    if args.roundtrip and ssir:
+        roundtrip = [
+            str(Path(sys.prefix) / "bin" / "ssir"), "csm", "roundtrip",
+            "--input", str(paths["canonical"]), "--render-md-output", str(paths["render_md"]),
+            "--verify-output", str(paths["verify"]), "--report", str(paths["roundtrip"]),
+        ]
+        _log("Running SSIR round-trip verification (canonical -> SSIR -> render.md -> verify)")
+        result = subprocess.run(roundtrip, cwd=ROOT)
+        if result.returncode not in (0, 3):
+            raise RuntimeError("SSIR round-trip verification failed")
+        _log(f"Round-trip result: {result.returncode} (0 = equivalent; 3 = critical information loss)")
+    if args.render and ssir:
+        render = [
+            str(Path(sys.prefix) / "bin" / "ssir"), "pdf", "render",
+            "--input", str(paths["ssir"]), "--output", str(paths["render_pdf"]),
+            "--report", str(paths["render_report"]), "--toc-depth", args.toc_depth,
+            # doc_1：同一 SSIR 渲染的 Word 孪生（与 PDF 技术内容等价）。
+            "--docx-output", str(paths["render_docx"]),
+        ]
+        _log("Rendering SSIR JSON as a traditional standard-style PDF (+ content-equivalent docx)")
+        if subprocess.run(render, cwd=ROOT).returncode:
+            raise RuntimeError("SSIR PDF renderer failed")
+        if args.input_kind == "pdf":
+            compare(args.input, paths["render_pdf"], paths["render_comparison"])
+            _log(f"Generated PDF comparison: {paths['render_comparison']}")
+        if paths["render_docx"].is_file():
+            _log(f"Generated docx twin (doc_1): {paths['render_docx']}")
+    _write_manifest(args, state, status="completed")
 
 
 if __name__ == "__main__":
