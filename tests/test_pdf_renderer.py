@@ -1,6 +1,7 @@
+import re
 import unittest
 
-from leleby_ssir.pdf_renderer import _append_nodes, _clause_leading_number, _example_box, _footnote_superscripts, _heading_depth, _heading_parts, _latex_to_text, _list_marker, _markup, _ocr_l_one, _starts_new_page, _strip_pagebreaks, _table_cell_superscripts, _toc_label
+from leleby_ssir.pdf_renderer import _TABLE_NOTE_CELL_RE, _append_nodes, _cell_text_natural_width, _clause_leading_number, _example_box, _footnote_superscripts, _heading_depth, _heading_parts, _latex_to_text, _list_marker, _markup, _ocr_l_one, _split_table_note_parts, _starts_new_page, _strip_pagebreaks, _table_cell_superscripts, _table_column_widths, _toc_label
 
 
 class PdfRendererHeadingTests(unittest.TestCase):
@@ -36,12 +37,17 @@ class LatexToTextTests(unittest.TestCase):
         self.assertEqual(_latex_to_text(r"\mathrm { k P a }"), "kPa")
 
     def test_subscript_and_fraction_flatten(self):
-        self.assertEqual(_latex_to_text(r"K _ { \mathrm { T } } = \frac { T _ { \mathrm { L } } } { I _ { \mathrm { L } } }"), "KT = (TL)/(IL)")
+        # _latex_to_text 对 _/^ 输出 reportlab 哨兵（\x00SUB\x00/\x00SUP\x00），
+        # 由 _markup 恢复为 <sub>/<super> 标签（2026-09-02，GB_3100-2026）。
+        self.assertEqual(
+            _markup(_latex_to_text(r"K _ { \mathrm { T } } = \frac { T _ { \mathrm { L } } } { I _ { \mathrm { L } } }")),
+            "K<sub>T</sub> = (T<sub>L</sub>)/(I<sub>L</sub>)",
+        )
 
     def test_operators_map_to_unicode(self):
-        self.assertEqual(_latex_to_text(r"\mathrm { m ^ { 3 } / h }"), "m3/h")
         self.assertEqual(_latex_to_text(r"a \cdot b \times c \leq d"), "a·b×c≤d")
         self.assertEqual(_latex_to_text(r"\leqslant 1"), "≤1")
+        self.assertEqual(_markup(_latex_to_text(r"\mathrm { m ^ { 3 } / h }")), "m<super>3</super>/h")
 
 
 class MarkupNormalisationTests(unittest.TestCase):
@@ -50,7 +56,7 @@ class MarkupNormalisationTests(unittest.TestCase):
         out = _markup(text)
         self.assertNotIn("mathrm", out)
         self.assertNotIn("$", out)
-        self.assertIn("KT", out)
+        self.assertIn("K<sub>T</sub>", out)
         self.assertIn("N·m/A", out)
 
     def test_markup_normalises_untitled_clause_number_spacing(self):
@@ -351,6 +357,151 @@ class TableCellLineBreakTests(unittest.TestCase):
         out = _markup(_table_cell_superscripts(marked)).replace("\x00BR\x00", "<br/>")
         self.assertNotIn("<br/>", out)
         self.assertNotIn("<super>", out)
+
+
+class Gb3100SuperscriptTableNoteTests(unittest.TestCase):
+    """GB_3100-2026 六项排版修复回归（2026-09-02）。
+
+    Fix C/D：HTML <sup>/<sub> 与缺字形 Unicode 上标（⁰⁵⁶⁷⁸⁹⁻⁺，Noto Serif
+    CJK SC 无字形）→ reportlab <super>/<sub> 真上标；Fix E：表格平拍指数恢复；
+    Fix F：LaTeX 拍平输出哨兵；Fix H：表注行按「注N：」拆分。
+    """
+
+    def test_html_sup_sub_map_to_reportlab_tags(self) -> None:
+        # Fix C：MinerU 数学幂/原子下标标签 → 真上标/下标（sentinel 恢复）。
+        self.assertEqual(_markup("10<sup>27</sup>"), "10<super>27</super>")
+        self.assertEqual(_markup("N<sub>A</sub>为"), "N<sub>A</sub>为")
+
+    def test_missing_glyph_unicode_superscripts_become_super(self) -> None:
+        # Fix D：正文宋体缺 ⁰⁵⁶⁷⁸⁹⁻⁺ 字形，直接渲染成 .notdef 方框；
+        # 归一为 <super> 内普通字符，相邻上标合并为一个 run。
+        self.assertEqual(_markup("10⁻⁸ s 可写成"), "10<super>−8</super> s 可写成")
+        self.assertEqual(_markup("10⁸称为亿"), "10<super>8</super>称为亿")
+        self.assertEqual(_markup("米·秒⁻¹"), "米·秒<super>−</super>¹")
+
+    def test_table_cell_flat_exponents_recovered(self) -> None:
+        # Fix E：GB_3100-2026 表2/表3/附录B 平拍上标还原（1030→10³⁰、
+        # s−1→s⁻¹、N/m2→N/m²、10-2→10⁻²、10²4→10²⁴；100 不猜）。
+        self.assertEqual(_markup(_table_cell_superscripts("1030")), "10<super>30</super>")
+        self.assertEqual(_markup(_table_cell_superscripts("10-2")), "10<super>−2</super>")
+        self.assertEqual(_markup(_table_cell_superscripts("10²4")), "10<super>24</super>")
+        self.assertEqual(_markup(_table_cell_superscripts("1 Hz = 1 s−1")), "1\xa0Hz = 1\xa0s<super>−1</super>")
+        self.assertEqual(_markup(_table_cell_superscripts("1 Pa = 1 N/m2")), "1\xa0Pa = 1\xa0N/m<super>2</super>")
+        self.assertEqual(_markup(_table_cell_superscripts("100")), "100")
+        self.assertEqual(_markup(_table_cell_superscripts("centi")), "centi")
+
+    def test_latex_emits_sentinels_and_markup_restores_tags(self) -> None:
+        # Fix F：4.2 常量行 LaTeX → 可读文本 + 上标哨兵；数字逐字空格收紧；
+        # \Delta V 命令终止空格折叠（ΔV 同一量符号），J s 拉丁乘积空格保留。
+        self.assertEqual(
+            _markup("$6 . 6 2 6 0 7 0 1 5 \\times 1 0 ^ { - 3 4 } \\mathrm { J } \\mathrm { s } ;$"),
+            "6.62607015×10<super>−34</super> J s ;",
+        )
+        self.assertEqual(_markup("$\\cdot \\Delta V _ { \\mathrm { c s } }$"), "·ΔV<sub>cs</sub>")
+        self.assertEqual(_markup("$K _ { \\mathrm { c d } }$"), "K<sub>cd</sub>")
+
+    def test_table_note_cell_split_into_per_note_parts(self) -> None:
+        # Fix H：表注行（注1：…注2：… 连排）拆成每条注独立文本；行内 <br>
+        # （注6 续句）保留为哨兵，尾部 <br>（下一条注前）整段剥掉。
+        cell = "注1：周、月、年为一般常用时间单位。注2：升的符号中，小写字母l为备用符号。"
+        parts = _split_table_note_parts(cell)
+        self.assertEqual(len(parts), 2)
+        self.assertEqual(parts[0], "注1：周、月、年为一般常用时间单位。")
+        self.assertEqual(parts[1], "注2：升的符号中，小写字母l为备用符号。")
+
+    def test_table_note_cell_keeps_inner_br_and_drops_trailing_sentinel(self) -> None:
+        # 回归（2026-09-02 表4 注7~注10）：跨页吸收回表内的续注以 <br> 分隔，
+        # 拆分后下一条注前的尾部哨兵必须整段剥掉——只 strip NUL 会残留 "BR"
+        # 字面文本（渲染成 Ⓡ-like 字符）；行中 <br>（注6 续句）必须保留。
+        cell = "注6：道尔顿（Da）…它等于处<br>于静止状态和基态的自由碳12原子质量的1/12。<br>注7：电子伏是电子在真空中通过一个1 V的电位差而获得的动能。<br>注8：公顷的国际通用符号为ha。<br>注11：公里为千米的俗称，符号为km。"
+        parts = _split_table_note_parts(cell)
+        self.assertEqual(len(parts), 4)
+        self.assertIn("\x00BR\x00", parts[0])  # 行中续句换行保留
+        self.assertNotIn("BR", parts[1])  # 尾部哨兵不残留 "BR" 字面
+        self.assertNotIn("BR", parts[2])
+        self.assertEqual(parts[1], "注7：电子伏是电子在真空中通过一个1 V的电位差而获得的动能。")
+        self.assertEqual(parts[3], "注11：公里为千米的俗称，符号为km。")
+
+    def test_table_note_cell_requires_note_lead(self) -> None:
+        self.assertFalse(_TABLE_NOTE_CELL_RE.match("规格mm"))
+        self.assertTrue(_TABLE_NOTE_CELL_RE.match("注1：…"))
+        self.assertTrue(_TABLE_NOTE_CELL_RE.match("注：…"))
+
+
+class TableColumnWidthTests(unittest.TestCase):
+    """按内容分配表格列宽（2026-09-03，通用规则：尽量利用版面宽度）。
+
+    GBT-B07 执行侧扩展：列宽 ∝ 列内容自然宽度（CJK≈1em、拉丁≈0.55em），
+    比例充满版心宽 455pt；通栏注行/单长格不挤占单列需求；保底列宽防空列。
+    """
+
+    _IMG = re.compile(r"!\[(?:[^\]]*)\]\(([^)]+)\)")
+
+    @staticmethod
+    def _rows(header: list[str], data: list[list[str]]) -> list[dict]:
+        def _cells(texts: list[str]) -> list[dict]:
+            return [
+                {"colIndex": i, "colspan": 1, "rowspan": 1, "text": t}
+                for i, t in enumerate(texts)
+            ]
+
+        return [
+            {"rowIndex": 0, "isHeader": True, "cells": _cells(header)},
+            *[
+                {"rowIndex": i + 1, "isHeader": False, "cells": _cells(row)}
+                for i, row in enumerate(data)
+            ],
+        ]
+
+    def test_natural_width_cjk_vs_latin(self) -> None:
+        self.assertEqual(_cell_text_natural_width("量的名称", 9.0), 36.0)
+        self.assertAlmostEqual(_cell_text_natural_width("tex", 9.0), 3 * 0.55 * 9.0)
+        # <br> 拆行取最长行（14 个全角字符含句号）
+        self.assertAlmostEqual(
+            _cell_text_natural_width("短。\n这一行明显更长需要更宽的列。", 9.0),
+            14 * 9.0,
+        )
+
+    def test_widths_fill_frame_and_follow_content(self) -> None:
+        # 表4 型：关系列（长公式）明显宽于前三列；列宽和恰等于版心宽。
+        rows = self._rows(
+            ["量的名称", "单位名称", "单位符号", "与SI单位的关系"],
+            [
+                ["时间", "分", "min", "1 min = 60 s"],
+                ["速度", "节", "kn", "1 kn=1 n mile/h=（1852/3600）m/s（只用于航行）"],
+                ["线密度", "特[克斯]", "tex", "1 tex = 10⁻¹ kg/m"],
+            ],
+        )
+        widths = _table_column_widths(rows, 4, 9.0, {}, self._IMG)
+        self.assertAlmostEqual(sum(widths), 455.0, places=6)
+        self.assertGreater(widths[3], widths[0])
+        self.assertGreater(widths[3], 2 * widths[0])  # 关系列显著宽于窄列
+
+    def test_full_width_note_row_does_not_dominate(self) -> None:
+        # 通栏注行（colspan=全部）不挤占单列需求：表头 36pt 需求列仍按内容分配。
+        rows = self._rows(["A", "B", "C", "D"], [])
+        rows.append(
+            {
+                "rowIndex": 99,
+                "isHeader": False,
+                "cells": [
+                    {"colIndex": 0, "colspan": 4, "rowspan": 1, "text": "注1：" + "很长的注内容。" * 40},
+                    {"colIndex": 1, "colspan": 1, "rowspan": 1, "text": ""},
+                    {"colIndex": 2, "colspan": 1, "rowspan": 1, "text": ""},
+                    {"colIndex": 3, "colspan": 1, "rowspan": 1, "text": ""},
+                ],
+            },
+        )
+        widths = _table_column_widths(rows, 4, 9.0, {}, self._IMG)
+        # 注行不撑爆任何单列（通栏摊分后各列仍按表头/数据内容分配）
+        self.assertLess(widths[0], 150)
+        self.assertAlmostEqual(sum(widths), 455.0, places=6)
+
+    def test_empty_column_gets_floor_width(self) -> None:
+        rows = self._rows(["名称", "", "符号"], [["时间", "", "min"], ["长度", "", "m"]])
+        widths = _table_column_widths(rows, 3, 9.0, {}, self._IMG)
+        self.assertGreaterEqual(widths[1], 24.0)
+        self.assertAlmostEqual(sum(widths), 455.0, places=6)
 
 
 if __name__ == "__main__":

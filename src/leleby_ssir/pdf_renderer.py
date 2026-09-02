@@ -1090,6 +1090,28 @@ def _ocr_l_one(markers: list[str]) -> bool:
     return bool(digit_ones) and len(letters) >= 2 and len(letters) + len(digit_ones) == len(markers)
 
 
+# 表注行（GB_3100-2026 表1/表4 型）：MinerU 把表注整进表内最后一行合并
+# 单元格，以「注N：」开头；渲染按表内注版式拆行居左（2026-09-02）。
+_TABLE_NOTE_CELL_RE = re.compile(r"^注\s*\d*\s*[:：]")
+
+
+def _split_table_note_parts(cell_text: str) -> list[str]:
+    """把表注行单元格拆成每条注独立文本（2026-09-02，GB_3100-2026 表1/表4）。
+
+    MinerU 把表注整进表末合并单元格：「注1：…注2：…」连排、跨页吸收回表内的
+    续注以 <br> 分隔。按「注N：」边界拆分；行内 <br>（注6 续句换行）先转
+    \\x00BR\\x00 哨兵保留，尾部哨兵（下一条注前的换行）整段剥掉——只
+    strip NUL 会留下 "BR" 字面文本（哨兵是 \\x00BR\\x00 三字符，2026-09-02
+    表4 注7~注10 实测泄漏成 Ⓡ-like 字符）。
+    """
+    parts: list[str] = []
+    for part in re.split(r"(?=注\s*\d*\s*[:：])", cell_text.replace("<br>", "\x00BR\x00")):
+        part = re.sub(r"(?:\x00BR\x00)+$", "", part).strip("\x00").strip()
+        if part:
+            parts.append(part)
+    return parts
+
+
 def _footnote_superscripts(text: str) -> str:
     """脚注标记渲染为上角标——正文/图脚注安全版（GBT-X04 执行侧）。
 
@@ -1112,10 +1134,14 @@ def _footnote_superscripts(text: str) -> str:
     return text
 
 
+# 半上标字形（²³¹）在 <super> 内归一为数字：字形本身已上标，进 <super> 会双重
+# 缩小（Noto Serif CJK SC 缺 ⁰⁵⁶⁷⁸⁹⁻⁺ 字形，¹²³⁴ 有但不应与普通数字混用）。
+_SUP_GLYPH_TO_DIGIT = {"²": "2", "³": "3", "¹": "1"}
+
+
 def _table_cell_superscripts(text: str) -> str:
     """表格单元格/表注的脚注引用标记渲染为上角标（GBT-C18 / GBT-X04）。
 
-    GB/T 1.1 表脚注：被注释内容后跟上角标字母（匝间绝缘ᵃ），表下方以
     "a 说明" 列出。OCR 把上角标还原为普通字符（半角 a 或全角 ａ），此处：
     - 表注行行首的 "a "（标记+空格）→ 上角标；
     - 汉字后紧跟的全角小写字母 ａ-ｚ → 上角标（全角必为 OCR 标记）；
@@ -1130,6 +1156,29 @@ def _table_cell_superscripts(text: str) -> str:
         "\x00SUP\x00\\1\x00/SUP\x00",
         text,
     )
+    # 上角标还原（2026-09-02，GB_3100-2026 表2/表3/附录B 等）：MinerU 文本抽取
+    # 把上标拍平成普通字符——s−1→s⁻¹、N/m2→N/m²、1030→10³⁰、10-2→10⁻²、
+    # 10²4→10²⁴。只作用于表格单元格（上下文受限，单元格几乎必是单位/量值），
+    # 正文不做（正文的平拍指数要么带 <sup> 标签、要么是 LaTeX，各自处理）。
+    # 1) 单位字母后 −/[-] 数字（s−1、Ω−1、s-1）——字母限定小写+希腊防误伤
+    #    "A-1" 类代号；数字后不再跟数字（"s-10" 整串上标由 {1,2} 覆盖）。
+    text = re.sub(r"(?<=[a-zμΩ])[−-](\d{1,2})(?![0-9])", "\x00SUP\x00−\\1\x00/SUP\x00", text)
+    # 2) 10 的负幂：10-1→10⁻¹、10-30→10⁻³⁰（"10-2" 前面是数字 0，规则 1 不命中）。
+    text = re.sub(r"10[−-](\d{1,2})(?![0-9])", "10\x00SUP\x00−\\1\x00/SUP\x00", text)
+    # 3) 10 的正幂：1030→10³⁰、1024→10²⁴、109→10⁹、102→10²；100→"10"+"0"
+    #    （首位数 0）不猜（防 "100"→10⁰）。
+    text = re.sub(r"10([1-9]\d{0,2})(?![0-9])", "10\x00SUP\x00\\1\x00/SUP\x00", text)
+    # 4) 半上标混合：10²4→10²⁴、10³0→10³⁰（MinerU 部分识别 Unicode 上标）；
+    #    ²³¹ 归一为数字再进 <super>（字形本身已上标，双重缩小且与后续普通
+    #    数字混排不齐）。
+    text = re.sub(
+        r"10([²³¹])(\d)",
+        lambda m: f"10\x00SUP\x00{_SUP_GLYPH_TO_DIGIT[m.group(1)]}{m.group(2)}\x00/SUP\x00",
+        text,
+    )
+    # 5) 单位字母后平印 2/3：N/m2→N/m²、cm3→cm³（排除大写 "A2" 纸型等）。
+    text = re.sub(r"(?<=[a-zμΩ])2(?![0-9A-Za-z])", "\x00SUP\x002\x00/SUP\x00", text)
+    text = re.sub(r"(?<=[a-zμΩ])3(?![0-9A-Za-z])", "\x00SUP\x003\x00/SUP\x00", text)
     return text
 
 
@@ -1286,6 +1335,18 @@ def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any
     rows = sorted(table.get("rows", []), key=lambda row: row["rowIndex"])
 
     cell_image_re = re.compile(r"!\[(?:[^\]]*)\]\(([^)]+)\)")
+    # 表注行样式（2026-09-02，GB_3100-2026 表1/表4 注行）：GB/T 1.1 表内注
+    # 居左、首行空两格、小五号；GBT-B09 的"表内文字居中"对注行是例外。
+    from reportlab.lib.styles import ParagraphStyle
+
+    table_note_style = ParagraphStyle(
+        "gbt-table-note",
+        parent=styles["table"],
+        alignment=0,
+        firstLineIndent=2 * styles["table"].fontSize,
+        leftIndent=0,
+        spaceAfter=0,
+    )
     # 表中图原始版面尺寸（pt）：_stamp_figure_source_sizes 在流水线 finalize
     # 写入 table["cellImageSizes"] = {ref: [w, h]}，渲染端按原尺寸（上限
     # 单元格宽、不放大）显示，使表中图与原图尺寸相当（GEN-076 / GBT-X02）。
@@ -1300,6 +1361,19 @@ def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any
         # flowable（优先按原版面尺寸、上限单元格宽缩放、不放大），图片前后
         # 文本各自成段。
         flowables: list[Any] = []
+        # 表注行（2026-09-02，GB_3100-2026 表1/表4）：单元格以「注N：」开头时，
+        # 把合并进同一格的 注1：…注2：…（以及跨页吸收回表内的续注，<br> 分隔）
+        # 拆成每条注独立一段，居左、首行空两格（GB/T 1.1 表内注版式）。
+        stripped_note = cell_image_re.sub("", cell_text).strip()
+        if _TABLE_NOTE_CELL_RE.match(stripped_note):
+            for note_part in _split_table_note_parts(cell_text):
+                flowables.append(
+                    Paragraph(
+                        _markup(_table_cell_superscripts(note_part)).replace("\x00BR\x00", "<br/>"),
+                        table_note_style,
+                    )
+                )
+            return flowables
         position = 0
         for match in cell_image_re.finditer(cell_text):
             text_part = cell_text[position:match.start()]
@@ -1335,10 +1409,19 @@ def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any
     if not rows or not rows[0].get("cells"):
         return
     col_count = max(len(sorted(row.get("cells", []), key=lambda cell: cell["colIndex"])) for row in rows)
-    width = 455
-    cell_width = width / max(col_count, 1)
-    data = [[_render_cell(cell.get("text", ""), cell_width) for cell in sorted(row.get("cells", []), key=lambda cell: cell["colIndex"])] for row in rows]
-    grid = Table(data, colWidths=[cell_width] * col_count, repeatRows=sum(1 for row in rows if row.get("isHeader")))
+    # 列宽按内容分配（2026-09-03，通用规则：尽量利用版面宽度）：每列需求 =
+    # 该列最宽单元格的自然宽度（CJK≈1em、拉丁≈0.55em；colspan 摊分；通栏
+    # 注行/单长格不参与），按需求比例把版心宽 455pt 全部分配（列宽和恰等于
+    # 版面宽），保底 24pt 防空列退化。跨列单元格的图片按跨列总宽缩放。
+    col_widths = _table_column_widths(rows, col_count, styles["table"].fontSize, cell_image_sizes, cell_image_re)
+
+    def _cell_render_width(cell: dict[str, Any]) -> float:
+        colspan = int(cell.get("colspan", 1) or 1)
+        start = cell["colIndex"]
+        return sum(col_widths[start:start + colspan])
+
+    data = [[_render_cell(cell.get("text", ""), _cell_render_width(cell)) for cell in sorted(row.get("cells", []), key=lambda cell: cell["colIndex"])] for row in rows]
+    grid = Table(data, colWidths=col_widths, repeatRows=sum(1 for row in rows if row.get("isHeader")))
     commands: list[tuple[Any, ...]] = [("GRID", (0, 0), (-1, -1), 0.5, colors.black), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("LEFTPADDING", (0, 0), (-1, -1), 4), ("RIGHTPADDING", (0, 0), (-1, -1), 4), ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]
     if rows and rows[0].get("isHeader"):
         commands.append(("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F2F2F2")))
@@ -1363,6 +1446,88 @@ def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any
     story.extend([grid, Spacer(1, 6)])
 
 
+def _cell_text_natural_width(text: str, font_size: float) -> float:
+    """单元格文本自然宽度估计（2026-09-03，GBT-B07 通用列宽规则执行侧）。
+
+    按行（<br>/哨兵/换行）拆分取最长行；字符宽度：CJK 及全角（U+2E80 起）
+    ≈ 1em、拉丁字母/数字 ≈ 0.55em、空白 ≈ 0.3em、其它 ≈ 0.5em；
+    <sup>/<sub>/<super> 标签剥掉后内容按普通字符计（上标数字窄，近似拉丁）。
+    返回 pt。
+    """
+    widest = 0.0
+    for line in re.split(r"<br>|\x00BR\x00|\n", str(text)):
+        stripped = re.sub(r"<[^>]+>", "", line)
+        stripped = re.sub(r"\x00(?:SUP|SUB|GAP)\x00", "", stripped)
+        width = 0.0
+        for ch in stripped:
+            if ch.isspace():
+                width += 0.3
+            elif ord(ch) >= 0x2E80:  # CJK 部首/统一表意文字/全角/兼容表意
+                width += 1.0
+            elif ch.isascii() and ch.isalnum():
+                width += 0.55
+            else:
+                width += 0.5
+        widest = max(widest, width)
+    return widest * font_size
+
+
+def _table_column_widths(
+    rows: list[dict[str, Any]],
+    col_count: int,
+    font_size: float,
+    cell_image_sizes: dict[str, list[float]],
+    cell_image_re: re.Pattern[str],
+    frame_width: float = 455.0,
+    floor: float = 24.0,
+) -> list[float]:
+    """按内容分配表格列宽（2026-09-03，通用规则：尽量利用版面宽度）。
+
+    每列需求 = 该列最宽单元格的自然宽度（CJK≈1em、拉丁≈0.55em，见
+    _cell_text_natural_width）；colspan 内容按跨列数摊分到各列；整行通栏的
+    注行（colspan=全部）与 OCR 丢 colspan 的单长格（渲染端 SPAN 全宽）不挤占
+    单列需求；表格图片按原版面宽度计。按需求比例把版心宽（frame_width，
+    默认 455pt）全部分配下去——列宽和恰等于版面宽度（尽量利用），保底
+    floor（24pt）防空列/空单元格退化。返回与 col_count 等长的列宽列表。
+    """
+    col_demand = [0.0] * col_count
+    for row in rows:
+        cells = sorted(row.get("cells", []), key=lambda cell: cell["colIndex"])
+        plain_text = lambda cell: cell_image_re.sub("", str(cell.get("text", "")))
+        filled = [c for c in cells if plain_text(c).strip()]
+        lone_full = len(cells) > 2 and len(filled) == 1 and len(plain_text(filled[0])) >= 20
+        for cell in cells:
+            text = str(cell.get("text", ""))
+            colspan = int(cell.get("colspan", 1) or 1)
+            if colspan >= col_count or lone_full:
+                continue
+            # 渲染端 _markup 会把 $...$ LaTeX 拍平为可读文本；需求估算同样拍平，
+            # 否则 LaTeX 命令噪声（\mathrm { D a } 等）把列需求撑大（表4 道尔顿行）。
+            text = re.sub(r"\$([^$\n]+)\$", lambda m: _latex_to_text(m.group(1)), text)
+            demand = _cell_text_natural_width(text, font_size)
+            for m in cell_image_re.finditer(text):
+                src = cell_image_sizes.get(m.group(1))
+                demand = max(demand, src[0] if src else 60.0)
+            per_col = demand / colspan
+            start = cell["colIndex"]
+            for c in range(start, min(start + colspan, col_count)):
+                col_demand[c] = max(col_demand[c], per_col)
+    col_widths = [max(d, floor) for d in col_demand]
+    total = sum(col_widths)
+    if total <= 0:
+        return [frame_width / col_count] * col_count
+    return [w * frame_width / total for w in col_widths]
+
+
+def _latex_sup_content(content: str) -> str:
+    """上标组内容归一：去 ~ 与首尾空白、连字符转 U+2212 减号（字体有字形）。
+
+    reportlab <super> 内仍用普通数字/字母，由渲染端统一抬高缩小；
+    不用 Unicode 上标字形（Noto Serif CJK SC 缺 ⁰⁵⁶⁷⁸⁹⁻⁺，2026-09-02）。
+    """
+    return content.replace("~", "").strip().replace("-", "−")
+
+
 def _latex_to_text(latex: str) -> str:
     """Flatten a LaTeX math snippet into readable plain text for display.
 
@@ -1382,13 +1547,23 @@ def _latex_to_text(latex: str) -> str:
         lambda m: re.sub(r"\s+", "", m.group(1)),
         text,
     )
-    # 2) sub/superscripts: K_{T} -> KT, x^{2} -> x2 (brace-free after step 1).
+    # 2) sub/superscripts: K_{T} -> K<sub>T</sub>, x^{2} -> x<super>2</super>.
     #    Leading whitespace before _ / ^ is consumed so MinerU's spaced
-    #    "K _ { T }" does not leave "K T" in the display text.
-    text = re.sub(r"\s*_\s*\{([^{}]*)\}", lambda m: m.group(1).replace("~", "").strip(), text)
-    text = re.sub(r"\s*\^\s*\{([^{}]*)\}", lambda m: m.group(1).replace("~", "").strip(), text)
+    #    "K _ { T }" does not leave "K T" in the display text.  The ^/_
+    #    groups are emitted as reportlab super/sub sentinels (2026-09-02,
+    #    GB_3100-2026 4.2 型：10^{-34} 若拍平为 "10-34" 会丢上标版式）。
+    text = re.sub(
+        r"\s*_\s*\{([^{}]*)\}",
+        lambda m: "\x00SUB\x00" + m.group(1).replace("~", "").strip() + "\x00/SUB\x00",
+        text,
+    )
+    text = re.sub(
+        r"\s*\^\s*\{([^{}]*)\}",
+        lambda m: "\x00SUP\x00" + _latex_sup_content(m.group(1)) + "\x00/SUP\x00",
+        text,
+    )
     text = re.sub(r"\s*_\s*([A-Za-z0-9])", r"\1", text)
-    text = re.sub(r"\s*\^\s*([A-Za-z0-9])", r"\1", text)
+    text = re.sub(r"\s*\^\s*([A-Za-z0-9])", lambda m: "\x00SUP\x00" + _latex_sup_content(m.group(1)) + "\x00/SUP\x00", text)
     # 3) \frac{a}{b} -> (a)/(b).
     text = re.sub(
         r"\\frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}",
@@ -1422,11 +1597,19 @@ def _latex_to_text(latex: str) -> str:
     # 5) Drop any remaining \command, stray braces, tildes, backslashes.
     text = re.sub(r"\\[a-zA-Z]+\s*", "", text)
     text = text.replace("{", "").replace("}", "").replace("~", "").replace("\\", "")
-    # 6) Tighten spacing: no spaces around binary operators ("a · b" -> "a·b"),
+    # 6) Tighten spacing: no spaces around binary operators (a · b -> a·b),
     #    inside parentheses, or around "/"; keep spaces around "=" for reading.
     text = re.sub(r"\s*([·×≤≥±≈≠/+−])\s*", r"\1", text)
     text = re.sub(r"\(\s+", "(", text)
     text = re.sub(r"\s+\)", ")", text)
+    # LaTeX 命令终止空格（\Delta V 里 \Delta 后、V 前的空格）在命令替换后
+    # 残留——希腊字母与后随拉丁字母同属一个量符号（ΔV、μs、Ωm），排版无空格；
+    # 拉丁-拉丁乘积（J s）的空格保留（真实原文有间隙）。
+    text = re.sub(r"(?<=[ΔαβγδεζηθικλμνξοπρστυφχψωΩ]) (?=[A-Za-z])", "", text)
+    # 7) MinerU 逐字符空格数字（"6 . 6 2 6 0 7 0 1 5"）收紧为规范数值
+    #    （"6.62607015"；2026-09-02，GB_3100-2026 4.2 常量行）。
+    text = re.sub(r"\s+([.,])\s*", r"\1", text)
+    text = re.sub(r"(?<=\d) (?=\d)", "", text)
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -1466,12 +1649,25 @@ def _markup(text: str) -> str:
     # not hard breaks: collapse them to a single space so the PDF re-wraps
     # instead of forcing a break ("……25%时，\n审查结论应为不通过" -> one paragraph).
     text = re.sub(r"[ \t\u3000]*\n[ \t\u3000]*", " ", text)
+    # HTML <sup>/<sub> 标签（MinerU 数学幂/原子下标，如 10<sup>27</sup>、
+    # N<sub>A</sub>）→ reportlab 真上标/下标（2026-09-02，GB_3100-2026）。
+    # 必须在 escape() 之前转成哨兵，escape 之后恢复为真实标签，否则会被
+    # 转义成字面文本 "<sup>…</sup>"。
+    text = re.sub(r"<sup>([^<]*)</sup>", "\x00SUP\x00\\1\x00/SUP\x00", text)
+    text = re.sub(r"<sub>([^<]*)</sub>", "\x00SUB\x00\\1\x00/SUB\x00", text)
     escaped = escape(text)
     # Restore the footnote-superscript sentinels emitted by _table_cell_superscripts
     # (GBT-C18): they must survive XML escaping, so the real <super> tags are
     # re-inserted only after escape().
     escaped = escaped.replace("\x00SUP\x00", "<super>").replace("\x00/SUP\x00", "</super>")
+    escaped = escaped.replace("\x00SUB\x00", "<sub>").replace("\x00/SUB\x00", "</sub>")
     escaped = escaped.replace("\x00GAP\x00", '<font color="white">中</font>')
+    # 正文宋体缺 ⁰⁵⁶⁷⁸⁹⁻⁺ 字形（Noto Serif CJK SC 实测无 glyph，2026-09-02；
+    # ¹²³⁴ 有），Unicode 上标若直接渲染会成 .notdef 方框（PDF 文本层表现为
+    # \x00）——转成 reportlab <super> 真上标（相邻上标合并为一个 run）。
+    for sup_char, plain_char in (("⁰", "0"), ("⁵", "5"), ("⁶", "6"), ("⁷", "7"), ("⁸", "8"), ("⁹", "9"), ("⁻", "−"), ("⁺", "+"), ("ⁱ", "i")):
+        escaped = escaped.replace(sup_char, f"<super>{plain_char}</super>")
+    escaped = re.sub(r"</super><super>", "", escaped)
     escaped = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped)
     escaped = re.sub(r"(?<!\*)\*(.+?)\*", r"<i>\1</i>", escaped)
     return escaped

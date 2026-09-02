@@ -164,16 +164,20 @@ class TextLayerQualityTests(unittest.TestCase):
 
     @staticmethod
     def _make_pdf(path: Path, lines: list[str]) -> None:
-        pdf = canvas.Canvas(str(path))
+        # pymupdf 内置 CJK 字体（china-s = 简体中文），reportlab canvas 默认
+        # helv 无汉字字形（中文会画成 IIII，文本层读回乱码）不可用。
+        import pymupdf
+
+        document = pymupdf.open()
+        page = document.new_page()
         y = 780
         for line in lines:
-            pdf.drawString(72, y, line)
+            page.insert_text((72, y), line, fontsize=10, fontname="china-s")
             y -= 14
             if y < 40:
-                pdf.showPage()
+                page = document.new_page()
                 y = 780
-        pdf.showPage()
-        pdf.save()
+        document.save(path)
 
     def test_damaged_text_layer_is_detected(self) -> None:
         # 模拟 GB_T_43726-2024 文本层：条号被拆成孤立 "4."/"2." 行、
@@ -210,6 +214,39 @@ class TextLayerQualityTests(unittest.TestCase):
             pdf = canvas.Canvas(str(source))
             pdf.showPage()
             pdf.save()
+            self.assertIsNone(_detect_broken_text_layer(source))
+
+    def test_heading_number_loss_is_detected(self) -> None:
+        # 回归（2026-09-01，Q_TQDZ_004-2026 等企业标准）：文本层"半坏"的另一种
+        # 形态——章节号/条号（6.2.1、9.2.2）完好，但标题行编号整体丢失
+        # （"7.1 外观检查" → 裸"外观检查"，视觉层 OCR 可恢复）。判别信号：
+        # 裸汉字短行（2-12 字）中 ≥50% 后跟长正文行（≥15 字）+ 文档存在带点
+        # 条款编号体系。模拟文本层：带点条款 6.2.1/9.2.2 + 多个裸标题后跟正文。
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "heading-loss.pdf"
+            lines = ["1 范围", "本文件规定了电机的技术要求。"]
+            clauses = ["6.2.1 额定电压", "9.2.2 随附文件"] * 3
+            bare_heads = ["外观检查", "绝缘电阻", "噪声测试", "启动性能", "标志", "运输", "贮存"]
+            body = "本文件适用于深圳市天驱电子有限公司生产销售的直流无刷减速电机产品。"
+            lines += clauses
+            for head in bare_heads:
+                lines += [head, body]
+            self._make_pdf(source, lines)
+            reason = _detect_broken_text_layer(source)
+            self.assertIsNotNone(reason)
+            self.assertIn("heading numbers lost in the text layer", reason)
+
+    def test_heading_number_loss_not_detected_without_clause_system(self) -> None:
+        # Q_YYJD_001-2024 类：裸短行存在（表格单元格/术语）但文档没有带点条款
+        # 编号体系（无 x.y 行）→ 不误报。
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "bare-table.pdf"
+            lines = ["1 范围", "本文件规定了电机的技术要求。"]
+            bare_heads = ["项目", "要求", "序号", "引接线"]
+            body = "本文件适用于宁波市镇海元益机电制造有限公司生产的永磁直流无刷电动机产品。"
+            for head in bare_heads:
+                lines += [head, body]
+            self._make_pdf(source, lines)
             self.assertIsNone(_detect_broken_text_layer(source))
 
     def test_latin_loss_detected_when_raw_drops_standard_numbers(self) -> None:

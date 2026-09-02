@@ -7,7 +7,7 @@ import tempfile
 import unittest
 
 from leleby_ssir.exporters import json_bytes, turtle_text
-from leleby_ssir.parser import CSMError, CSMParser
+from leleby_ssir.parser import Block, CSMError, CSMParser, _absorb_table_note_spill
 from leleby_ssir.roundtrip import compare_ssir
 from leleby_ssir.service import normalize_csm, parse_csm, parse_csm_with_report, round_trip_csm
 
@@ -1282,6 +1282,131 @@ class NoteAndListMarkerTests(unittest.TestCase):
         self.assertEqual(markers, ["——", "·", "——", "·"])
         repair = [i for i in report.issues if i.code == "CSM-OCR-001"]
         self.assertFalse(any("unified to" in (i.message or "") for i in repair))
+
+
+class Gb3100ParserFixTests(unittest.TestCase):
+    """GB_3100-2026 解析层修复回归（2026-09-02）。
+
+    Fix A：空行续接收窄到 ，、 结尾（术语行不与定义并段）；
+    Fix B：裸列项（逐行、；收尾）按行拆段（4.2 七个常量）；
+    Fix G：跨页表注外溢吸收回表末注行（表4 注6 续句 + 注7~注11）。
+    """
+
+    @staticmethod
+    def _parse(body: str):
+        csm = (
+            "---\n"
+            'csm-version: "1.0"\n'
+            "document-type: standard\n"
+            "document-identifier: ssir:TEST-1\n"
+            'title: "测试"\n'
+            "---\n\n"
+            f"# 测试\n\n{body}\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "t.canonical.md"
+            path.write_text(csm, encoding="utf-8")
+            return parse_csm_with_report(path)
+
+    @staticmethod
+    def _elements(ssir: dict):
+        for node in CSMToSSIRTests._nodes(ssir["structuralRoot"]):
+            yield from node.get("contentElements", [])
+
+    def test_term_line_and_definition_not_merged(self) -> None:
+        # Fix A（3.7 型）：术语行（拉丁结尾「coherent system of units」）与空行
+        # 后的定义正文必须分成两段——旧规则（不以 。！？ 结尾即续接）会把
+        # 术语行与定义并成一段（用户报告「术语3.7的解释正文没有另起一行」）。
+        ssir, _ = self._parse(
+            "## 3 术语和定义\n\n"
+            "### 3.7 一贯单位制\n\n"
+            "一贯单位制　coherent system of units\n\n"
+            "在给定量制中，每个导出量的单位均为一贯导出单位的单位制。"
+        )
+        paras = [ce for ce in self._elements(ssir) if ce["presentationType"] == "paragraph"]
+        texts = [ce["textContent"] for ce in paras]
+        self.assertEqual(len(texts), 2)
+        self.assertEqual(texts[0], "一贯单位制　coherent system of units")
+        self.assertEqual(texts[1], "在给定量制中，每个导出量的单位均为一贯导出单位的单位制。")
+
+    def test_comma_ending_line_still_joins_after_blank(self) -> None:
+        # Fix A 的另一半：，/、 结尾（MinerU 误插空行的连接点）仍续接为同段。
+        ssir, _ = self._parse(
+            "## 6 要素的编写\n\n"
+            "### 6.2 范围\n\n"
+            "范围的典型表述形式为：使用词语“确，\n\n"
+            "立”；表述行为指示和转换条件时，使用词语“规定”。"
+        )
+        paras = [ce for ce in self._elements(ssir) if ce["presentationType"] == "paragraph"]
+        texts = [ce["textContent"] for ce in paras]
+        self.assertEqual(len(texts), 1)
+        self.assertIn("“确，立”", texts[0])
+
+    def test_enumeration_lines_split_into_separate_paragraphs(self) -> None:
+        # Fix B（4.2 型）：引导语后逐行成列的枚举行（每条以 ；收尾）必须各成
+        # 一段——旧规则把 ；收尾行与下一行续接，七个定义常量挤成一行流。
+        ssir, _ = self._parse(
+            "## 4 SI\n\n"
+            "4.2 SI 是采用如下常量的单位制：\n\n"
+            "铯 133 原子不受干扰的基态超精细跃迁频率为 9 192 631 770 Hz；\n\n"
+            "真空光速 c 为 299 792 458 m/s；\n\n"
+            "普朗克常量 h为 6.62607015×10−34 J s；"
+        )
+        paras = [ce for ce in self._elements(ssir) if ce["presentationType"] == "paragraph"]
+        texts = [ce["textContent"] for ce in paras]
+        self.assertEqual(len(texts), 4)
+        self.assertEqual(texts[1], "铯 133 原子不受干扰的基态超精细跃迁频率为 9 192 631 770 Hz；")
+        self.assertEqual(texts[2], "真空光速 c 为 299 792 458 m/s；")
+        self.assertEqual(texts[3], "普朗克常量 h为 6.62607015×10−34 J s；")
+
+    def test_table_note_spill_absorbed_back_into_note_row(self) -> None:
+        # Fix G（表4 型）：MinerU 把表末注行（注6 未以句末标点收尾）后的续句
+        # 段与注7~注11 注块抽到表格外（渲染时落框外）——吸收回表末注行单元格，
+        # 以 <br> 分行（与 merge 阶段恢复的 <br> 行结构同一约定）；新块停止。
+        table = Block(
+            kind="table",
+            start_line=1,
+            end_line=1,
+            data={
+                "rows": [
+                    ["注6：道尔顿（Da）和统一的原子质量单位（u）是同一单位的可互用名称（和符号），它等于处", "", ""],
+                ]
+            },
+        )
+        continuation = Block(
+            kind="paragraph",
+            start_line=3,
+            end_line=3,
+            text="于静止状态和基态的自由碳12原子质量的1/12。道尔顿的这个值是2018年国际数据委员会（CODATA）平差给出的推荐值。",
+        )
+        note7 = Block(kind="note", start_line=5, end_line=5, text="注7：电子伏是电子在真空中通过一个1 V的电位差而获得的动能。")
+        note11 = Block(kind="note", start_line=7, end_line=7, text="注11：公里为千米的俗称，符号为km。")
+        heading = Block(kind="heading", start_line=9, end_line=9, text="9.2 根据习惯")
+        warnings: list[str] = []
+        result = _absorb_table_note_spill([table, continuation, note7, note11, heading], warnings)
+        cell = result[0].data["rows"][-1][0]
+        self.assertIn("它等于处<br>于静止状态和基态的自由碳12原子质量的1/12", cell)
+        self.assertIn("<br>注7：电子伏", cell)
+        self.assertIn("<br>注11：公里为千米的俗称", cell)
+        # 溢出块被吸收（消费）进表格，剩余 table + 新块 heading 两个
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[1].kind, "heading")
+        self.assertTrue(warnings)
+
+    def test_table_note_spill_not_absorbed_after_complete_sentence(self) -> None:
+        # Fix G 保守边界：表末注行已以句号收尾时，后续普通段落是表格外正文，
+        # 不吸收（防误并）。
+        table = Block(
+            kind="table",
+            start_line=1,
+            end_line=1,
+            data={"rows": [["注1：一般常用时间单位。", "", ""]]},
+        )
+        para = Block(kind="paragraph", start_line=3, end_line=3, text="这是表格后的普通正文段落。")
+        warnings: list[str] = []
+        result = _absorb_table_note_spill([table, para], warnings)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0].data["rows"][-1][0], "注1：一般常用时间单位。")
 
 
 if __name__ == "__main__":

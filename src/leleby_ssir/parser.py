@@ -114,6 +114,80 @@ TABLE_HEADING_CAPTION_RE = re.compile(r"^表\s*([^\s]+)\s+(.+)$")
 BARE_HEADING_CANDIDATE_RE = re.compile(r"^(\d+(?:\.\d+)*)\s+[\u4e00-\u9fff（(]")
 # 段落句末标点（有则不可能为标题；标题行以句号/逗号/分号结尾的极罕见）。
 _BARE_HEADING_TERMINAL_PUNCT = "。；，,、！？"
+# 表注行：表格最后一行合并单元格以「注N：」开头（GB_3100-2026 表1/表4 型，
+# MinerU 把表注整进表内最后一行）。
+_TABLE_NOTE_CELL_RE = re.compile(r"^注\s*\d*\s*[:：]")
+
+
+def _is_bare_enumeration(enum_lines: list[str]) -> bool:
+    """裸列项判定（2026-09-02，GB_3100-2026 4.2 七个定义常量型）。
+
+    MinerU 把源文中逐行排列的枚举行（引导语「…单位制：」+ 每条以 ；/。 收尾）
+    收集进同一段，渲染时行内换行被折叠成空格 → 挤成一行流。判定（保守）：
+    ≥2 行、≥2 行以句末标点（。；：;.）结尾、绝大多数行（≥2/3）如此、且
+    ≥1 行以分号收尾（枚举特征）——普通折行段落几乎不可能同时满足（折行点
+    极少恰好落在句界，更不可能多条连续如此）。行尾 LaTeX 闭合符 $ 先剥掉
+    （4.2 的普朗克/玻尔兹曼常量行以 $ 结尾）。
+    """
+    if len(enum_lines) < 2:
+        return False
+    sentence_ends = sum(1 for ln in enum_lines if ln.endswith(("。", "；", "：", ";", ".")))
+    semi_ends = sum(1 for ln in enum_lines if ln.endswith(("；", ";")))
+    return sentence_ends >= 2 and sentence_ends * 3 >= len(enum_lines) * 2 and semi_ends >= 1
+
+
+def _absorb_table_note_spill(blocks: list[Block], warnings: list[str]) -> list[Block]:
+    """表注跨页断裂吸收（2026-09-02，GB_3100-2026 表4）。
+
+    表注行（表内最后一行合并单元格，以「注N：」开头）跨页时，MinerU 把续行
+    抽成表格外段落——注6 的续句（"于静止状态和基态的自由碳12原子…"）成为
+    裸段落、注7~注11 成为「> 注N：」块，渲染时全部落在表格框外（用户报告
+    "表4最后一行的内容应一直包括到注11"）。此处把紧随表注行的连续注块
+    （注N：…）与续句段（表格注行文本尚未以句末标点收尾时的普通段落）合并
+    回表末注行单元格，以 <br> 分行（与 merge 阶段恢复的 <br> 单元格行结构
+    同一约定）；遇到新块（标题/条号段/新表格等）即停止。
+    """
+    result: list[Block] = []
+    index = 0
+    while index < len(blocks):
+        block = blocks[index]
+        result.append(block)
+        index += 1
+        if block.kind != "table":
+            continue
+        rows = block.data.get("rows") or []
+        if not rows or not rows[-1]:
+            continue
+        cell = str(rows[-1][0])
+        if not _TABLE_NOTE_CELL_RE.match(cell.strip()):
+            continue
+        absorbed = False
+        while index < len(blocks):
+            nxt = blocks[index]
+            text = str(nxt.text).strip()
+            if nxt.kind == "note" and text.startswith("注"):
+                cell += "<br>" + text
+                rows[-1][0] = cell
+                index += 1
+                absorbed = True
+                continue
+            if (
+                nxt.kind == "paragraph"
+                and not cell.endswith(("。", "！", "？"))
+                and not BARE_HEADING_CANDIDATE_RE.match(text)
+            ):
+                cell += "<br>" + text
+                rows[-1][0] = cell
+                index += 1
+                absorbed = True
+                continue
+            break
+        if absorbed:
+            warnings.append(
+                f"line {block.start_line}: spilled table notes were absorbed back "
+                f"into the table's trailing note row ({rows[-1][0][:40]!r}…)."
+            )
+    return result
 
 
 def _bare_heading_candidates(lines: list[str]) -> tuple[set[str], dict[int, str]]:
@@ -855,8 +929,15 @@ class CSMParser:
             while i < len(lines):
                 if not lines[i].strip():
                     # 空行续接（6.4.2.4 "……列入多种方法时，\n应指明仲裁方法。"）：
-                    # 上一行以连接性标点结尾且下一非空行不是新块时，视为同一段落
-                    # 被 MinerU 误插空行，跳过空行继续收集（示例/注/图/表引导语除外）。
+                    # 上一行以连接性标点（，、）结尾且下一非空行不是新块时，视为
+                    # 同一段落被 MinerU 误插空行，跳过空行继续收集（示例/注/图/表
+                    # 引导语除外）。收窄到弱连接标点（2026-09-02，GB_3100-2026
+                    # 3.7/4.2 型）：此前 "不以 。！？ 结尾" 会把术语行
+                    # （"一贯单位制 coherent system of units"）与空行后的定义
+                    # 正文并成一段；分号 "；" 与冒号 "：" 也排除——";"收尾的行
+                    # 是完整分句（裸列项每条以 ；结尾，空行后必为新条目），
+                    # "：" 后空行是引导语与裸列项的分界，续接都会吞掉逐条成行
+                    # 的版式（4.2 七个定义常量）。
                     lookahead = i
                     while lookahead < len(lines) and not lines[lookahead].strip():
                         lookahead += 1
@@ -864,7 +945,7 @@ class CSMParser:
                         lookahead < len(lines)
                         and not self._starts_new_block(lines, lookahead)
                         and paragraph_lines
-                        and not paragraph_lines[-1].endswith(("。", "！", "？"))
+                        and paragraph_lines[-1].endswith(("，", "、"))
                         and _starts_with_han(lines[lookahead].strip())
                         and not EX_LEAD_RE.match(lines[lookahead].strip())
                         and not NOTE_LEAD_RE.match(lines[lookahead].strip())
@@ -886,10 +967,29 @@ class CSMParser:
                 paragraph_lines.append(lines[i].rstrip())
                 i += 1
             paragraph_text = "\n".join(paragraph_lines).replace("\x00\n", "")
+            block_directive = pending.pop("block", None)
+            # 裸列项分行（2026-09-02，GB_3100-2026 4.2 七个定义常量型）：源文把
+            # 每条独立成行、以 ；/。 收尾的枚举行收集成单段后，_markup 会把行内
+            # 换行折叠成空格 → 七个常量挤成一行流。若段落含 ≥2 行且绝大多数行
+            # 以句末标点（。；：;.）结尾、其中 ≥2 行以分号收尾，按行拆分为独立
+            # 段落块，恢复逐条成行的版式（每条渲染为正文段，首行空两字）。
+            enum_lines = [ln.strip().rstrip("$").strip() for ln in paragraph_text.splitlines() if ln.strip()]
+            if _is_bare_enumeration(enum_lines):
+                for enum_index, enum_line in enumerate(enum_lines):
+                    enum_block = Block(
+                        kind="paragraph",
+                        start_line=line_no(start),
+                        end_line=line_no(i - 1),
+                        text=enum_line,
+                        directive=block_directive if enum_index == 0 else None,
+                    )
+                    if NOTE_LEAD_RE.match(enum_line):
+                        enum_block.kind = "note"
+                    blocks.append(enum_block)
+                continue
             # 6.3.5.2 类合并：MinerU 把「……告知乘客。6.3.5.2为了确保……」
             # 挤进同一段，导致条号无法回车顶格（GBT-B02）。在句末标点（。；）
             # 之后出现的点分条号处把段落拆分为两个块。
-            block_directive = pending.pop("block", None)
             # 行内注切分（GBT-X04 注引导语）：OCR 常把术语定义后的「注1：…。
             # 注2：…。」合并进定义段（GB_T_20001.6 3.1 型）。在「。注N：」
             # 句界处切分，使注成为独立块（渲染按 GBT-B10 小五号）。
@@ -920,6 +1020,7 @@ class CSMParser:
 
         for name, directive in pending.items():
             warnings.append(f"line {directive.line}: ssir:{name} has no following compatible block")
+        blocks = _absorb_table_note_spill(blocks, warnings)
         return blocks, errors, warnings
 
     @staticmethod
