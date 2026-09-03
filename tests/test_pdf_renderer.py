@@ -60,12 +60,15 @@ class MarkupNormalisationTests(unittest.TestCase):
         self.assertIn("N·m/A", out)
 
     def test_markup_normalises_untitled_clause_number_spacing(self):
+        # reportlab 把所有空白（含 U+3000）折叠为窄空格，无法表达“编号后空
+        # 一个汉字”——_markup 输出白字 GAP（escape 后为白色“中”字形，视觉
+        # 恰好 1em 不可见间隙；2026-09-03 与 CSM-OCR-003 术语间隔同款）。
         out = _markup("5.3.2泵抽送重要危险需降温冷却用水。")
-        self.assertIn("5.3.2\u3000泵抽送", out)
+        self.assertIn("5.3.2<font color=\"white\">中</font>泵抽送", out)
         out2 = _markup("5.3.1 泵应选用与介质适宜的轴封。")
-        self.assertIn("5.3.1\u3000泵应选用", out2)
+        self.assertIn("5.3.1<font color=\"white\">中</font>泵应选用", out2)
         out3 = _markup("B.1.3.1抽样")
-        self.assertIn("B.1.3.1\u3000抽样", out3)
+        self.assertIn("B.1.3.1<font color=\"white\">中</font>抽样", out3)
 
     def test_markup_collapses_ocr_whitespace_and_joins_digit_groups(self):
         out = _markup("额定电压为28.8 V、   32.4 V、36 V 和 48 V")
@@ -329,9 +332,14 @@ class NestedExampleContentTests(unittest.TestCase):
             self.assertFalse(isinstance(row[0], type(box)),
                              f"nested box table found in cell: {row[0]!r}")
         texts = [str(cell[0].getPlainText()) for cell in box._cellvalues]
-        self.assertIn("5 马铃薯脱毒试管苗繁育", texts)
-        self.assertIn("5.1 田间选择", texts)
-        self.assertIn("5.2 病毒检测筛选", texts)
+        # 条号间隙 2026-09-03 起用白字“中”填充 1em（reportlab 折叠 U+3000
+        # 成窄空格）；getPlainText 会提取该不可见字形——断言按编号+题名子串匹配。
+        self.assertTrue(any("马铃薯脱毒试管苗繁育" in t for t in texts),
+                        f"5 标题缺失: {texts!r}")
+        self.assertTrue(any("5.1" in t and "田间选择" in t for t in texts),
+                        f"5.1 标题缺失: {texts!r}")
+        self.assertTrue(any("5.2" in t and "病毒检测筛选" in t for t in texts),
+                        f"5.2 标题缺失: {texts!r}")
 
 
 class TableCellLineBreakTests(unittest.TestCase):

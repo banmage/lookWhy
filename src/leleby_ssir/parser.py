@@ -240,6 +240,12 @@ def _promoted_bare_headings(confirmed: set[str], candidates: dict[int, str]) -> 
     for number in confirmed:
         for ancestor in ancestors(number):
             promoted.add(ancestor)
+        # 2026-09-03（GB_T_1.1-2020 第4章型）：已确认标题自身也作父链种子。
+        # 祖先链只覆盖「有已确认子孙」的编号；若某章（4）的整层子条都被抽成裸
+        # 段落（4.1/4.2 无 ##），没有任何 4.x 已确认标题 → "4" 不在 promoted，
+        # 级联无从开始，第 4 章便永远没有子条。把已确认编号自身加入种子后，
+        # 裸子条（4.1）的父（4）即命中，4.1/4.2 及更深连续候选正常级联提升。
+        promoted.add(number)
     changed = True
     while changed:
         changed = False
@@ -420,9 +426,13 @@ class CSMParser:
         self._repair_table_image_layout(blocks, issues)
         self._repair_list_markers(blocks, issues)
         self._repair_clause_numbers(blocks, issues)
+        self._repair_term_entry_headings(blocks, issues)
         self._repair_heading_levels(blocks, issues)
+        self._repair_example_heading_levels(blocks, issues)
         self._repair_lost_list_markers(blocks, issues)
         self._repair_text_spacing(blocks, issues)
+        self._demote_sentence_headed_clauses(blocks, issues)
+        self._merge_split_clause_paragraphs(blocks, issues)
         fatal_errors.extend(self._classify_body_errors(parse_errors, issues))
         self._normalise_metadata(metadata, blocks, source, issues)
         document_errors: list[str] = []
@@ -1450,6 +1460,59 @@ class CSMParser:
             )
 
     @staticmethod
+    def _repair_term_entry_headings(blocks: list[Block], issues: list[CSMIssue]) -> None:
+        """Merge flattened term-entry headings into one numbered heading (CSM-OCR-007).
+
+        术语和定义章的术语条目常被 MinerU 抽成两条同级标题：
+            ## 3.1.2
+            ## 标准　standard
+        两条都是 ##（与章同级）时，编号标题会脱离 3.1 组提升到文档根级，
+        标准层级被破坏（3.1.2/3.1.3/3.2.x 全变成章 3 的兄弟）。术语条目的
+        正确形态是单条子条标题「3.1.2 标准　standard」：
+        - 编号标题是纯编号（2+ 段）且紧跟一条无编号的术语行标题（中文 + 间隙
+          + 英文对应词）时合并：文本并入编号标题，删除术语行标题；
+        - 合并后的标题交给 _repair_heading_levels 按编号段数提升层级
+          （3.1.2 → ####），编号修复后自然嵌套回 3.1 组下；
+        - 术语行标题原先承载的定义/注等后续块不受影响，仍接在合并标题之后，
+          从而随术语节点一起入树。
+        """
+        pure_number = re.compile(r"^(\d+(?:\.\d+){2,})$")
+        # 术语行标题：中文（可含括注/连接号）+ 间隙（全角/半角空格）+ 英文对应词。
+        # 刻意要求英文部分以拉丁字母开头，避免把「概述」「示例」等无编号标题误并。
+        term_title = re.compile(
+            r"^([\u4e00-\u9fffA-Za-z0-9（）()·、,，；;：:/／+\-]{1,60})"
+            r"[\u3000 ]{1,4}"
+            r"([A-Za-z][A-Za-z0-9 &/（）()\-.,，。]{1,90})$"
+        )
+        merges: list[tuple[int, str]] = []  # (index_of_pure_number_heading, merged_text)
+        i = 0
+        while i < len(blocks) - 1:
+            first = blocks[i]
+            second = blocks[i + 1]
+            if first.kind == "heading" and second.kind == "heading":
+                number_match = pure_number.match(first.text.strip())
+                title_match = term_title.match(second.text.strip()) if not pure_number.match(second.text.strip()) else None
+                if number_match and title_match:
+                    merges.append((i, f"{number_match.group(1)} {title_match.group(1)}{second.text.strip()[len(title_match.group(1)):]}"))
+                    i += 2
+                    continue
+            i += 1
+        for index, merged_text in merges:
+            blocks[index].text = merged_text
+        for index, _merged_text in reversed(merges):
+            second = blocks[index + 1]
+            CSMParser._issue(
+                issues,
+                "CSM-OCR-007",
+                f"Flattened term-entry headings merged into one heading: {blocks[index].text!r} "
+                f"(removed duplicate heading {second.text!r} at line {second.start_line}).",
+                line=blocks[index].start_line,
+                repaired=True,
+                repair_action="Merged the term-title heading into the numbered heading so the term nests under its numbered group.",
+            )
+            del blocks[index + 1]
+
+    @staticmethod
     def _repair_heading_levels(blocks: list[Block], issues: list[CSMIssue]) -> None:
         """Normalise heading levels by clause-number depth (CSM-OCR-006).
 
@@ -1461,7 +1524,7 @@ class CSMParser:
         与 _repair_clause_numbers 的连续性修复冲突。标题文本本身不变，
         canonical/SSIR/render 三侧一致，roundtrip 等价性保持。
         """
-        heading_number = re.compile(r"^(\d+(?:\.\d+)*)\s*[\u4e00-\u9fff（(]")
+        heading_number = re.compile(r"^(\d+(?:\.\d+)*)\s*[\u4e00-\u9fffA-Za-z0-9（(]")
         for block in blocks:
             if block.kind != "heading" or not block.level:
                 continue
@@ -1482,6 +1545,55 @@ class CSMParser:
                     repaired=True,
                     repair_action=f"Raised heading level {previous} -> {expected} in memory.",
                 )
+
+    @staticmethod
+    def _repair_example_heading_levels(blocks: list[Block], issues: list[CSMIssue]) -> None:
+        """Nest example-title headings under their containing clause (CSM-OCR-008).
+
+        现象（GB_T_1.1-2020 第6/7章，2026-09-03）：MinerU 把框式示例标题
+        「示例：」「示例N：」抽成 ##（与章同级）标题，而 _repair_heading_levels
+        只按编号段数提升编号标题，无编号的示例标题留在 ## → 恰好刺穿所在章条
+        的嵌套：示例块被 builder 挂到文档根，其后更深的真实条款（6.1.3、
+        6.2、7.2…）反而挂到示例节点之下，资源管理器里章内条款错位、示例
+        不在对应条款内。修复：把示例标题提升到「当前最近的编号条款层级 + 1」
+        （只升不降、上限 6 级），使其成为该条款的子节点；编号条款随后仍按
+        自己的层级正常弹栈归位。示例标题不压栈（其原层级不可信，压栈会关闭
+        编号条款上下文）。附录（附录 A…）内容按既有的扁平示例文档模型保留
+        （GB_T_20001 系列附录示例依赖该模型），只有编号条款上下文内的示例
+        才调整。
+        """
+        digit_heading = re.compile(r"^\d+(?:\.\d+)*\s*\S")
+        annex_heading = re.compile(r"^附\s*录\s*[A-Z]")
+        stack: list[tuple[int, bool]] = []  # (markdown level, is_digit_numbered)
+        for block in blocks:
+            if block.kind != "heading" or not block.level:
+                continue
+            text = block.text.strip()
+            if EX_HEADER_RE.match(text):
+                context = next((lvl for lvl, digit in reversed(stack) if digit), None)
+                if context is not None:
+                    target = min(context + 1, 6)
+                    if (block.level or 2) < target:
+                        previous = block.level
+                        block.level = target
+                        CSMParser._issue(
+                            issues,
+                            "CSM-OCR-008",
+                            f"Example heading {text!r} sat at level {previous} (extractor "
+                            f"chapter level) inside clause context level {context}; raised to "
+                            f"level {target} so it nests under its clause.",
+                            line=block.start_line,
+                            repaired=True,
+                            repair_action=f"Raised example heading level {previous} -> {target} in memory.",
+                        )
+                continue
+            while stack and stack[-1][0] >= (block.level or 2):
+                stack.pop()
+            if digit_heading.match(text):
+                stack.append((block.level or 2, True))
+            elif annex_heading.match(text):
+                # 附录容器：关闭正文编号上下文，附录内示例不再获得正文条款上下文。
+                stack.append((block.level or 2, False))
 
     @staticmethod
     def _repair_lost_list_markers(blocks: list[Block], issues: list[CSMIssue]) -> None:
@@ -1612,6 +1724,93 @@ class CSMParser:
                 repaired=True,
                 repair_action="Inserted the missing inter-word / standard-number space in memory.",
             )
+
+    @staticmethod
+    def _demote_sentence_headed_clauses(blocks: list[Block], issues: list[CSMIssue]) -> None:
+        """Demote sentence-bodied numbered headings back to body clauses (CSM-OCR-009).
+
+        现象（GB_T_1.1-2020 附录 B.2.2/9.9.3.1、GB_T_23132-2008 8.1.2，2026-09-04）：
+        MinerU 把「编号 + 整句条文内容、以句号收尾」的无标题条文误升成标题——例如
+        「## B.2.2 这里描述的标记体系适用于下列各类文件。」，而真正的条标题从不以
+        。！？ 收尾（同层兄弟 B.2.1/B.2.3 均为裸正文段）。误升的标题会把条文变成
+        SSIR 结构节点/目次条目（附录二级跳号 #1 型）并脱离正文流。判据：
+        编号（章条或附录条）开头 + 句末标点收尾 → 降级为正文段落。H1 除外
+        （文档标题句末不带标点；H1 数量由 CSM-STRUCT-003 单独把关）。
+        """
+        numbered = re.compile(r"^(?:\d+(?:\.\d+)*|[A-Z]\.\d+(?:\.\d+)*)\s*\S")
+        for block in blocks:
+            if block.kind != "heading" or not block.level or block.level <= 1:
+                continue
+            text = block.text.strip()
+            if not text.endswith(("。", "！", "？")):
+                continue
+            if not numbered.match(text):
+                continue
+            block.kind = "paragraph"
+            block.level = None
+            CSMParser._issue(
+                issues,
+                "CSM-OCR-009",
+                f"Heading {text!r} is a sentence-bodied numbered clause, not a title "
+                f"(ends with sentence-final punctuation); demoted to a paragraph.",
+                line=block.start_line,
+                repaired=True,
+                repair_action="Demoted the mis-extracted title to a body paragraph in memory.",
+            )
+
+    @staticmethod
+    def _merge_split_clause_paragraphs(blocks: list[Block], issues: list[CSMIssue]) -> None:
+        """Join clause paragraphs an extractor page break split mid-sentence (CSM-OCR-010).
+
+        现象（GB_T_1.1-2020 9.4.2.2，2026-09-04）：MinerU 在页边界把无标题条文
+        （编号开头的正文段）拦腰断成两个 markdown 段落——「……不应该与“应”一起」+
+        「使用表示要求，建议与“宜”一起使用表示推荐。」。第一段以正文词收尾、无任何
+        句末/连接标点，空行续接的（，、）规则覆盖不到；第二段是汉字开头的续文。
+        块级判据全部满足才合并：首段以「编号条文」形态开头（≥2 段点分号或附录条号）
+        且不以 。！？；：，、 收尾（完整句不动）；次段为汉字开头的普通段落，不以
+        编号/示例/注/表/图 开头（独立条文/示例/注块各有块形态，误并为零）；术语条目
+        形态（中文 U+3000/空格 拉丁，CSM-OCR-003 术语行）两侧都跳过，防把术语行与
+        其后定义段粘成一段。链式断裂（A/B/C 三段）一次扫描收拢。
+        """
+        clause_start = re.compile(r"^(?:\d+(?:\.\d+)+|[A-Z]\.\d+(?:\.\d+)*)\s*\S")
+        term_line = re.compile(r"[\u4e00-\u9fff][ \u3000\u200b]+[A-Za-z]")
+        sentence_ended = ("。", "！", "？", "；", "：", "，", "、")
+        non_continuation_prefixes = ("示例", "注", "表", "图")
+        i = 0
+        while i < len(blocks) - 1:
+            first, second = blocks[i], blocks[i + 1]
+            first_text = first.text.strip()
+            second_text = second.text.strip()
+            if (
+                first.kind == "paragraph"
+                and second.kind == "paragraph"
+                and not first.data.get("code_fence")
+                and not second.data.get("code_fence")
+                and first.directive is None
+                and second.directive is None
+                and clause_start.match(first_text)
+                and not first_text.rstrip().endswith(sentence_ended)
+                and not term_line.search(first_text)
+                and _starts_with_han(second_text)
+                and not clause_start.match(second_text)
+                and not term_line.search(second_text)
+                and not second_text.startswith(non_continuation_prefixes)
+            ):
+                merged = first.text + second.text
+                CSMParser._issue(
+                    issues,
+                    "CSM-OCR-010",
+                    f"Merged a numbered clause paragraph the extractor split across lines: "
+                    f"{first.text[:30]!r} + {second.text[:30]!r}.",
+                    line=first.start_line,
+                    repaired=True,
+                    repair_action="Joined the two paragraph fragments into one in memory.",
+                )
+                first.text = merged
+                first.end_line = second.end_line
+                blocks.pop(i + 1)
+                continue
+            i += 1
 
     @staticmethod
     def _classify_body_errors(errors: list[str], issues: list[CSMIssue]) -> list[str]:

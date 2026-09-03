@@ -119,7 +119,10 @@ class _RenderState:
             if kind == "paragraph":
                 self.lines.extend([text, ""])
             else:
-                self.lines.extend([f"> {text}", ""])
+                # 多行注/示例/警示/引文：每行都加引用前缀，否则续行重解析会
+                # 变成普通段落（roundtrip structure 层不一致）。
+                note_lines = text.splitlines() or [""]
+                self.lines.extend([f"> {line}" for line in note_lines] + [""])
         elif kind == "list":
             for item in sorted(content.get("listItems", []), key=_sort_order):
                 self.lines.append(f"{item.get('marker', '-')} {item.get('text', '')}")

@@ -1409,5 +1409,132 @@ class Gb3100ParserFixTests(unittest.TestCase):
         self.assertEqual(result[0].data["rows"][-1][0], "注1：一般常用时间单位。")
 
 
+class ClauseHeadingDemoteAndSplitMergeTests(unittest.TestCase):
+    """2026-09-04 GB_T_1.1-2020：句子体条文被误升标题（CSM-OCR-009）；
+    编号条文在页边界被断成两段（CSM-OCR-010）。"""
+
+    @staticmethod
+    def _read(body: str):
+        csm = (
+            "---\n"
+            'csm-version: "1.0"\n'
+            "document-type: standard\n"
+            "document-identifier: ssir:TEST-CLAUSE\n"
+            'title: "测试"\n'
+            "---\n\n"
+            f"# 测试\n\n{body}\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "t.canonical.md"
+            path.write_text(csm, encoding="utf-8")
+            doc = CSMParser().read(path)
+        return doc
+
+    def test_sentence_bodied_clause_heading_is_demoted_to_paragraph(self) -> None:
+        # 回归（2026-09-04，GB_T_1.1-2020 附录 B）：MinerU 把无标题条文
+        # 「B.2.2 这里描述的标记体系适用于下列各类文件。」误升为 ## 标题
+        # （同层 B.2.1/B.2.3 均为裸正文段），导致附录 B.2 出现伪结构节点与
+        # 目次跳号。句末标点收尾的编号标题不是标题 → 降级为正文段落。
+        doc = self._read(
+            "## 附录 B（规范性） 标准化项目标记\n\n"
+            "## B.1 概述\n\n"
+            "标准化项目既指有形的项目，也指无形的项目。\n\n"
+            "## B.2 适用性\n\n"
+            "B.2.1每个标准化项目都有多个特性，这些特性可以是单一的或者是多个的。\n\n"
+            "## B.2.2 这里描述的标记体系适用于下列各类文件。\n\n"
+            "对于某特性提供一种以上选择的文件。\n\n"
+            "## B.2.3 标记体系\n\n"
+            "B.2.3标记体系适用于各种类型的信息交流。\n"
+        )
+        paragraphs = [b.text for b in doc.blocks if b.kind == "paragraph"]
+        headings = [b.text for b in doc.blocks if b.kind == "heading"]
+        self.assertIn("B.2.2 这里描述的标记体系适用于下列各类文件。", paragraphs)
+        self.assertNotIn("B.2.2 这里描述的标记体系适用于下列各类文件。", headings)
+        # 真正的标题（不以句号收尾）保持不动。
+        self.assertIn("B.1 概述", headings)
+        self.assertIn("B.2 适用性", headings)
+        self.assertIn("B.2.3 标记体系", headings)
+        repair = [i for i in doc.issues if i.code == "CSM-OCR-009"]
+        self.assertEqual(len(repair), 1)
+        self.assertTrue(repair[0].repaired)
+
+    def test_non_numbered_sentence_heading_is_not_demoted(self) -> None:
+        # 无编号的句子式标题（如“前言”等要素的散文引言被人工写成 ##）不属于
+        # 条文误升，009 不处理（只处理编号开头形态）。
+        doc = self._read(
+            "## 引言\n\n"
+            "## 一般说明。\n\n"
+            "本文件提供了编写标准化文件的结构和起草规则。\n"
+        )
+        headings = [b.text for b in doc.blocks if b.kind == "heading"]
+        self.assertIn("一般说明。", headings)
+        self.assertFalse([i for i in doc.issues if i.code == "CSM-OCR-009"])
+
+    def test_page_split_clause_paragraph_is_merged(self) -> None:
+        # 回归（2026-09-04，GB_T_1.1-2020 9.4.2.2）：MinerU 在页边界把
+        # 「……不应该与“应”一起」+「使用表示要求，建议与“宜”一起使用表示推荐。」
+        # 断成两个 markdown 段落（第一段无标点收尾）。010 应合并为一段。
+        doc = self._read(
+            "#### 9.4.2 常用词的使用\n\n"
+            "9.4.2.1“遵守”和“符合”用于不同的情形的表述。\n\n"
+            "9.4.2.2“尽可能”“尽量”“考虑”(“优先考虑”“充分考虑”)以及“避免”“慎重”"
+            "等词语不应该与“应”一起\n\n"
+            "使用表示要求，建议与“宜”一起使用表示推荐。\n\n"
+            "9.4.2.3“通常”“一般”“原则上”不应该与“应”“不应”一起使用表示要求。\n"
+        )
+        paragraphs = [b.text for b in doc.blocks if b.kind == "paragraph"]
+        merged = [p for p in paragraphs if p.startswith("9.4.2.2")]
+        self.assertEqual(len(merged), 1)
+        # 续文已并入同一段（不再以「使用表示要求」独立成段）。
+        self.assertIn("不应该与“应”一起使用表示要求，建议与“宜”一起使用表示推荐。", merged[0])
+        self.assertNotIn("\n", merged[0])
+        # 后续完整条文仍是独立段。
+        self.assertTrue(any(p.startswith("9.4.2.3") for p in paragraphs))
+        self.assertEqual(len(paragraphs), 3)
+        repair = [i for i in doc.issues if i.code == "CSM-OCR-010"]
+        self.assertEqual(len(repair), 1)
+
+    def test_complete_sentence_clause_is_not_merged_with_next_paragraph(self) -> None:
+        # 保守边界：编号段以句号收尾时是完整条文，其后段落不得并入（防误并）。
+        doc = self._read(
+            "## 5 要求\n\n"
+            "5.1 产品应符合本标准的要求。\n\n"
+            "这是条外的独立说明段落。\n"
+        )
+        paragraphs = [b.text for b in doc.blocks if b.kind == "paragraph"]
+        self.assertEqual(len(paragraphs), 2)
+        self.assertFalse([i for i in doc.issues if i.code == "CSM-OCR-010"])
+
+    def test_example_or_note_or_new_clause_continuation_is_not_merged(self) -> None:
+        # 保守边界：次段是示例/注/新条文开头时不得并入上一编号段。
+        doc = self._read(
+            "## 9 条文\n\n"
+            "9.1.1 文件起草时宜考虑下列内容\n\n"
+            "示例：文件的结构与内容。\n\n"
+            "9.1.2 注的引导语见9.11。\n\n"
+            "注：这是独立注。\n"
+        )
+        paragraphs = [b.text for b in doc.blocks if b.kind == "paragraph"]
+        self.assertTrue(any(p.startswith("9.1.1") for p in paragraphs))
+        self.assertTrue(any(p.startswith("示例：") for p in paragraphs))
+        self.assertTrue(any(p.startswith("9.1.2") for p in paragraphs))
+        repair = [i for i in doc.issues if i.code == "CSM-OCR-010"]
+        # 9.1.2 段以句号收尾也不合并；示例行独立成段。
+        self.assertEqual(len(repair), 0)
+
+    def test_term_line_and_definition_are_not_merged(self) -> None:
+        # 保守边界（术语条形态）：编号术语行/术语行+定义不得被 010 粘成一段。
+        doc = self._read(
+            "## 3 术语和定义\n\n"
+            "### 3.1 文件\n\n"
+            "3.1.1\n\n"
+            "标准化文件　standardizing document\n\n"
+            "通过标准化活动制定的文件。\n"
+        )
+        paragraphs = [b.text for b in doc.blocks if b.kind == "paragraph"]
+        self.assertEqual(len(paragraphs), 3)
+        self.assertFalse([i for i in doc.issues if i.code == "CSM-OCR-010"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import re
 from typing import Any
 
-from .parser import Block, CSMDocument
+from .parser import EX_HEADER_RE, Block, CSMDocument
 
 
 def _slug(value: str) -> str:
@@ -131,6 +131,8 @@ class SSIRBuilder:
         # 术语和定义章（术语条目识别：CSM-OCR-003/GB-T 术语中英文两项元数据）。
         in_terms = False
         pending_term: dict[str, Any] | None = None
+        # 合并形态术语条目（3.1.2 标准　standard）等待首个定义段打 termDefinition
+        pending_def: dict[str, Any] | None = None
         chapter_re = re.compile(r"^\d+\s+\S")
         term_number_re = re.compile(r"^\d+(?:\.\d+)+$")
 
@@ -161,12 +163,23 @@ class SSIRBuilder:
                 if chapter_re.match(heading_text) and "术语" in heading_text:
                     in_terms = True
                     pending_term = None
+                    pending_def = None
                 elif chapter_re.match(heading_text):
                     in_terms = False
                     pending_term = None
+                    pending_def = None
                 elif in_terms and term_number_re.match(str(node.get("number") or "")):
-                    # 裸术语节（3.1，title=""）：期待紧随的术语行（段落或文档块标题）
+                    # 裸术语节（3.1，title=""）：期待紧随的术语行（段落或文档块标题）；
+                    # 已合并形态（3.1.2 标准　standard，标题即术语行）直接取 term 字段。
                     pending_term = node
+                    pair = _match_term_line(str(node.get("title") or "").strip())
+                    if pair:
+                        node["term"] = pair[0]
+                        node["englishTerm"] = pair[1]
+                        pending_term = None
+                        pending_def = node
+                    else:
+                        pending_def = None
                 else:
                     # 文档块/子条：若是术语行的标题形态（3.2 + "功能function"）
                     if pending_term is not None and node.get("nodeType") in ("documentBlock", "clause", "subClause", "item", "subItem"):
@@ -176,6 +189,7 @@ class SSIRBuilder:
                             pending_term["term"] = pair[0]
                             pending_term["englishTerm"] = pair[1]
                     pending_term = None
+                    pending_def = None
                 continue
 
             parent = stack[-1][1] if stack else root
@@ -185,6 +199,14 @@ class SSIRBuilder:
             parent.setdefault("contentElements", []).append(element)
             state.canonical_refs.append(element["id"])
             state.canonical_parts.append(self._canonical_fragment(block))
+            # 合并形态术语条目：紧随标题的首个正文段即定义（来源行 [来源：…] 除外）
+            if pending_def is not None and parent is pending_def:
+                raw_text = str(element.get("textContent") or "").strip()
+                if raw_text and not raw_text.startswith("["):
+                    element.setdefault("semanticTypes", []).append("termDefinition")
+                    pending_def = None
+                elif not raw_text:
+                    pass  # 空段/非文本元素：继续等下一个正文段
             # 术语行的段落形态（3.1 + "规范标准 specification standard"）
             if pending_term is not None and parent is pending_term:
                 text = str(element.get("textContent") or "")
@@ -351,6 +373,12 @@ class SSIRBuilder:
             number = pure_numbered.group(1)
             title = ""
             node_type = {2: "section", 3: "clause", 4: "subClause", 5: "item", 6: "subItem"}.get(block.level or 2, "clause")
+        elif EX_HEADER_RE.match(title):
+            # 示例框标题（「示例：」「示例N：」）是内容块节点。正文示例经
+            # parser CSM-OCR-008 提升到所在条款层级 +1（block.level 3~6）后，
+            # 仍必须保持 documentBlock 语义——不能落入下面 level>=3 的
+            # clause/subClause/item/subItem 映射（节点类型影响渲染/树语义）。
+            node_type = "documentBlock"
         elif block.level and block.level >= 3:
             node_type = {3: "clause", 4: "subClause", 5: "item", 6: "subItem"}.get(block.level, "clause")
         logical = _slug(number or title)

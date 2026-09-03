@@ -1182,6 +1182,13 @@ def _table_cell_superscripts(text: str) -> str:
     return text
 
 
+_CLAUSE_NUMBER_RE = r"(?:\d+\.){1,4}\d+|[A-Z]\.\d+(?:\.\d+)*"
+# 条号后允许的正文首字符：汉字、全角/半角括号、引号族（“”‘’「『《〈）。
+# 引号必须包含——MinerU 常把 9.4.2.2“尽可能”这类裸条正文以引号开头，
+# 若不在集合内则该行既不顶格、编号后也不补空格（GB_T_1.1-2020 实测）。
+_CLAUSE_AFTER = r"\u4e00-\u9fff（(“”‘’「『《〈[('\""
+
+
 def _clause_leading_number(text: str) -> str | None:
     """Return the leading clause number when a body paragraph starts with one.
 
@@ -1195,7 +1202,7 @@ def _clause_leading_number(text: str) -> str | None:
     规则对应: GBT-B02（条编号顶格编排，编号后空一个汉字接排）。
     """
     match = re.match(
-        r"^((?:\d+\.){1,3}\d+|[A-Z]\.\d+(?:\.\d+)*)(?=[ \u3000]*[\u4e00-\u9fff（(])",
+        rf"^({_CLAUSE_NUMBER_RE})(?=[ \u3000]*[{_CLAUSE_AFTER}])",
         str(text).strip(),
     )
     return match.group(1) if match else None
@@ -1528,6 +1535,91 @@ def _latex_sup_content(content: str) -> str:
     return content.replace("~", "").strip().replace("-", "−")
 
 
+def _latex_balanced_scan(text: str, start: int) -> tuple[str, int] | None:
+    r"""从 start（指向 '{'）扫描配平的组，返回 (组内内容, 组后下标)。
+
+    支持嵌套花括号（MinerU 的 \mathrm { { F } }、\frac { ... } { ... } 里
+    再嵌 \frac）。无法配平（OCR 截断）时返回 None——留给外层兜底清理。
+    """
+    if start >= len(text) or text[start] != "{":
+        return None
+    depth = 0
+    for i in range(start, len(text)):
+        ch = text[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start + 1:i], i + 1
+    return None
+
+
+_LATEX_NESTED_CMD_RE = re.compile(r"\\([A-Za-z]+)\s*\{")
+_LATEX_WRAPPER = frozenset(
+    {"mathrm", "mathbf", "mathit", "mathsf", "mathtt", "pmb", "textbf",
+     "textit", "textrm", "operatorname", "boldsymbol", "rm", "it", "bf",
+     "overline", "underline", "bm", "text"}
+)
+
+
+def _latex_expand_nested(text: str) -> str:
+    r"""把带嵌套花括号的 LaTeX 命令组展开（支持 frac 嵌套，2026-09-03）。
+
+    原有 flattener 的正则只认单层花括号：\mathrm { { F } }、\frac 参数里
+    再嵌 \frac/\mathrm 时匹配失败，命令噪声直接泄漏（9.4.4.4/9.4.5.2 型）。
+    此处用配平扫描逐命令展开：wrapper 命令取内容（剥冗余花括号/空白），
+    \frac 转 (a)/(b)；返回仍含简单单层组的文本，交给原 flattener 收尾。
+    """
+    out: list[str] = []
+    pos = 0
+    n = len(text)
+    while pos < n:
+        m = _LATEX_NESTED_CMD_RE.search(text, pos)
+        if not m:
+            out.append(text[pos:])
+            break
+        out.append(text[pos:m.start()])
+        name = m.group(1)
+        inner_start = m.end() - 1  # 指向 '{'
+        scanned = _latex_balanced_scan(text, inner_start)
+        if scanned is None:
+            # 配平失败：保留字面，由后续兜底清除命令名。
+            out.append(text[m.start():m.end()])
+            pos = m.end()
+            continue
+        inner, after = scanned
+        if name == "frac":
+            num_inner, num_after = _latex_balanced_scan(text, inner_start)
+            # 第二个参数紧跟（可跨空白）
+            j = num_after
+            while j < n and text[j] in " \t":
+                j += 1
+            den_inner: str | None = None
+            den_after = num_after
+            if j < n and text[j] == "{":
+                den_pair = _latex_balanced_scan(text, j)
+                if den_pair is not None:
+                    den_inner, den_after = den_pair
+            if num_inner is not None and den_inner is not None:
+                out.append(f"({_latex_expand_nested(num_inner)})/({_latex_expand_nested(den_inner)})")
+                pos = den_after
+                continue
+            out.append(text[m.start():after])
+            pos = after
+            continue
+        if name in _LATEX_WRAPPER:
+            # 与旧 flattener 第 1 步一致：排版族命令参数内部空白剥除
+            # （"\\mathrm { k P a }" -> "kPa"；内层命令已递归展开）。
+            out.append(re.sub(r"\s+", "", _latex_expand_nested(inner)))
+            pos = after
+            continue
+        # 未知命令：保留原样（含花括号组），交给原 flattener 处理。
+        out.append(text[m.start():after])
+        pos = after
+    return "".join(out)
+
+
 def _latex_to_text(latex: str) -> str:
     """Flatten a LaTeX math snippet into readable plain text for display.
 
@@ -1540,6 +1632,10 @@ def _latex_to_text(latex: str) -> str:
     规则对应: GBT-X06（数学公式另行居中编排；无法排版时以可读文本呈现）。
     """
     text = latex.strip()
+    # 0) 嵌套花括号命令组展开（2026-09-03，GB_T_1.1-2020 9.4.4.4/9.4.5.2 型：
+    #    \mathrm { { F } }、\frac 参数内再嵌 \frac/\mathrm 时旧正则匹配失败，
+    #    命令噪声/冗余花括号直接泄漏进渲染文本）。
+    text = _latex_expand_nested(text)
     # 1) \command{...} wrappers -> content (roman/bold/italic families);
     #    inner whitespace is dropped ("\mathrm { k P a }" -> "kPa").
     text = re.sub(
@@ -1579,6 +1675,7 @@ def _latex_to_text(latex: str) -> str:
         (r"\cdot", "·"),
         (r"\times", "×"),
         (r"\pm", "±"),
+        (r"\sim", "～"),
         (r"\approx", "≈"),
         (r"\neq", "≠"),
         (r"\infty", "∞"),
@@ -1613,6 +1710,26 @@ def _latex_to_text(latex: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+# 字面星号簇保护（GBT-C13 星号脚注、GB_T_1.1-2020 9.12.1 “*、**、***”、
+# 9.7.3 “共*页”）：CommonMark 转义 \*（parser 不反转义、textContent 保留
+# 反斜杠）与两侧都不是拉丁字母/数字的星号簇都是字面星号（而非 markdown
+# 强调）。先保护为 \x00AST{n}\x00 哨兵，等 bold/italic 处理完再按簇长还原，
+# 否则 “即\*、\*\*、\*\*\*” 会被 italic/bold 正则错配吞字。markdown 强调
+# （*word*、**word**）两侧至少一侧是词字符，不受影响。
+_LIT_STAR_RE = re.compile(r"(?<![A-Za-z0-9])\*+(?![A-Za-z0-9])")
+
+
+def _protect_literal_stars(text: str) -> str:
+    r"""把字面星号（转义 \* 与两侧非词字符簇）编码为 AST 哨兵。"""
+    text = text.replace("\\*", "\x00AST1\x00")
+    return _LIT_STAR_RE.sub(lambda m: f"\x00AST{len(m.group())}\x00", text)
+
+
+def _restore_literal_stars(text: str) -> str:
+    """把 AST 哨兵还原为对应长度的字面星号串。"""
+    return re.sub(r"\x00AST(\d+)\x00", lambda m: "*" * int(m.group(1)), text)
+
+
 def _markup(text: str) -> str:
     text = str(text)
     # Inline MinerU math ("$...$") is LaTeX; flatten it to readable text so
@@ -1622,12 +1739,20 @@ def _markup(text: str) -> str:
     # digit-group separators ("2 000 W" -> "2000 W").
     text = re.sub(r" {2,}", " ", text)
     text = re.sub(r"(?<=\d) (?=\d)", "", text)
+    # 字面星号保护（CommonMark 转义 \* 与两侧非词字符簇，GB_T_1.1-2020
+    # 9.12.1 “\*、\*\*、\*\*\*”、9.7.3 “共\*页”）：parser 不反转义、
+    # textContent 保留反斜杠；先保护为哨兵，escape/bold/italic 后还原成
+    # 字面星号——防止反斜杠字面泄漏、* 被 italic 正则错配吞字。
+    text = _protect_literal_stars(text)
     # Untitled clause numbers: MinerU leaves the spacing after the number
-    # irregular ("5.3.1 泵…" vs "5.3.2泵…"); normalise to one Han space
-    # (GBT-B02 编号后空一个汉字接排).
+    # irregular ("5.3.1 泵…" vs "5.3.2泵…"); normalise to one Han gap
+    # (GBT-B02 编号后空一个汉字接排). reportlab 把所有空白（含 U+3000）折叠
+    # 成窄空格，无法表达"空一个汉字"——直接输出 GAP 哨兵（escape 后转白字中，
+    # 同 CSM-OCR-003 术语间隔技术），视觉恰好 1em；lookahead 与
+    # _clause_leading_number 共享 _CLAUSE_AFTER（含引号族）。
     text = re.sub(
-        r"(?m)^((?:\d+\.){1,3}\d+|[A-Z]\.\d+(?:\.\d+)*)[ \u3000]*([\u4e00-\u9fff（(])",
-        "\\1\u3000\\2",
+        rf"(?m)^({_CLAUSE_NUMBER_RE})[ \u3000]*([{_CLAUSE_AFTER}])",
+        lambda m: m.group(1) + "\x00GAP\x00" + m.group(2),
         text,
     )
     # Number-unit gap: 单位符号前应空四分之一汉字的间隙（GB/T 1.1-2020 10.4.6，
@@ -1668,9 +1793,11 @@ def _markup(text: str) -> str:
     for sup_char, plain_char in (("⁰", "0"), ("⁵", "5"), ("⁶", "6"), ("⁷", "7"), ("⁸", "8"), ("⁹", "9"), ("⁻", "−"), ("⁺", "+"), ("ⁱ", "i")):
         escaped = escaped.replace(sup_char, f"<super>{plain_char}</super>")
     escaped = re.sub(r"</super><super>", "", escaped)
+    # bold/italic（markdown 强调 *word*/**word**；字面星号簇已在入口保护为
+    # AST 哨兵，此处不会错配），处理完还原哨兵为对应长度字面星号。
     escaped = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped)
     escaped = re.sub(r"(?<!\*)\*(.+?)\*", r"<i>\1</i>", escaped)
-    return escaped
+    return _restore_literal_stars(escaped)
 
 
 def _formula_image(latex: str, asset_dir: Path) -> Path | None:

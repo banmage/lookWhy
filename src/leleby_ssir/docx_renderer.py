@@ -32,7 +32,9 @@ from .pdf_renderer import (
     _is_toc_node,
     _latex_to_text,
     _order,
+    _protect_literal_stars,
     _resolve_asset,
+    _restore_literal_stars,
     _split_table_note_parts,
     _table_cell_superscripts,
     _toc_indent_level,
@@ -132,6 +134,9 @@ def _run_fonts(paragraph: Any, text: str, docx: dict[str, Any], *, ea: str = EA_
     qn = docx["qn"]
     if not text:
         return
+    # 字面星号 AST 哨兵在写 run 前还原（_add_markup 保护；含 NUL 会被下方
+    # 非法字符过滤剔除，必须先还原成可见 *）。
+    text = _restore_literal_stars(text)
     text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)
     run = paragraph.add_run(text)
     run.font.name = latin
@@ -259,6 +264,12 @@ def _add_markup(paragraph: Any, text: str, docx: dict[str, Any], *,
                 asset_dir: Path | None = None, ea: str = EA_SONG,
                 size_pt: float | None = None, center_images: bool = True) -> None:
     """带行内标记/公式/图片的文本写入段落（哨兵 → 上/下标，$..$ → 拍平文本）。"""
+    # CommonMark 转义字面星号（“\*、\*\*、\*\*\*”，GB_T_1.1-2020 9.12.1）
+    # → 字面星号：parser 不反转义、textContent 保留反斜杠，Word 里会字面
+    # 显示、且残留 * 会被 _SEGMENT_RE 的 italic/bold 组误配。保护为哨兵，
+    # _run_fonts 写文本时还原（两侧非拉丁字母/数字的簇=字面星号；markdown
+    # 强调 *word*/**word** 两侧有词字符，不受影响）。
+    text = _protect_literal_stars(text)
     position = 0
     for match in _SEGMENT_RE.finditer(text):
         if match.start() > position:
