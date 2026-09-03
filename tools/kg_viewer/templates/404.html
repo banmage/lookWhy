@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>404</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/kg.css') }}"></head>
+<body>
+<header class="kg-topbar"><div class="kg-topbar-inner">
+  <a class="kg-brand" href="{{ url_for('index') }}">标准知识图谱</a></div></header>
+<main class="kg-wrap"><h1>404</h1>
+<p>{{ request.path }} 不存在。<a href="{{ url_for('index') }}">返回文档库</a></p></main>
+</body></html>

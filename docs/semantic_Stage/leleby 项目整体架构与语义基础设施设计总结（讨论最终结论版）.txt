@@ -1,0 +1,1303 @@
+# leleby 项目整体架构与语义基础设施设计总结（讨论最终结论版）
+
+## 文档定位
+
+本文整理我们围绕 leleby 项目进行多轮讨论后的最终共识，作为后续：
+
+* leleby 顶层架构调整
+* Namespace设计
+* Ontology建设
+* Standard语义化
+* PPM标准开发
+* AI采购推理体系建设
+
+的基础设计文件。
+
+本文只保留最终结论，不保留讨论过程。
+
+---
+
+# 一、leleby项目的总体定位
+
+## 1.1 核心定位
+
+leleby不是：
+
+* 一个普通产品数据库
+* 一个电商搜索平台
+* 一个企业黄页
+* 一个标准文档库
+
+而是：
+
+> **面向工业商业世界的开放语义基础设施 + 商业智能应用生态。**
+
+核心目标：
+
+通过：
+
+* 工业产品本体
+* 企业能力本体
+* 标准语义模型
+* 产品规格模型
+* 要求与约束模型
+* 符合性推理模型
+
+建立机器可理解的工业知识体系。
+
+最终支持：
+
+* AI采购
+* 企业AI商业名片
+* 产品智能匹配
+* 标准符合性验证
+* 制造能力发现
+* 工业知识推理
+
+---
+
+# 二、leleby总体生态架构
+
+最终采用“三层空间模型”：
+
+```
+                 leleby Ecosystem
+
+
+                     llb
+
+          leleby Foundation Namespace
+
+                     |
+
+       --------------------------------
+
+       |                              |
+
+      lbo                            llc
+
+Ontology Layer             Commercial Platform Layer
+
+ontology.leleby.org              leleby.com
+
+
+```
+
+---
+
+# 三、域名与Namespace设计
+
+## 3.1 公共基础空间
+
+## llb
+
+```
+https://leleby.org/
+```
+
+定义：
+
+> leleby Foundation Namespace
+
+用途：
+
+所有公共概念的根。
+
+包括：
+
+* 公共语义规范
+* 公共词汇
+* 基础标识体系
+* 开放模型
+
+例如：
+
+```
+llb:Product
+llb:Standard
+llb:Requirement
+llb:Capability
+```
+
+---
+
+## 3.2 本体空间
+
+## lbo
+
+```
+https://ontology.leleby.org/
+```
+
+定义：
+
+> leleby Ontology Namespace
+
+用于：
+
+OWL/RDF/SHACL本体。
+
+例如：
+
+```
+lbo:Product
+
+lbo:IndustrialProduct
+
+lbo:Component
+
+lbo:Requirement
+
+lbo:Constraint
+
+lbo:TestMethod
+
+lbo:Standard
+```
+
+---
+
+## 3.3 商业空间
+
+## llc
+
+```
+https://leleby.com/
+```
+
+定义：
+
+> leleby Cloud & Commercial Platform
+
+用途：
+
+商业应用和实例数据。
+
+包括：
+
+* 企业AI商业名片
+* 产品实例
+* 制造商能力
+* PPM生态
+* AI采购平台
+
+例如：
+
+```
+https://leleby.com/company/yunda
+
+https://leleby.com/product/yunda/xxx
+```
+
+---
+
+## 3.4 建议增加规范空间
+
+## lbs
+
+```
+https://spec.leleby.org/
+```
+
+用途：
+
+标准规范发布。
+
+包括：
+
+* PPM Specification
+* EIM Specification
+* Product Semantic Representation Specification
+
+原因：
+
+Ontology和Specification不是同一个概念。
+
+---
+
+# 四、总体语义架构
+
+最终采用：
+
+## Core Ontology + Domain Ontology + Semantic Package
+
+三层结构。
+
+---
+
+# Layer 1：Core Ontology
+
+稳定、不随行业变化。
+
+位置：
+
+```
+ontology.leleby.org/core/
+```
+
+定义：
+
+工业世界基本概念。
+
+包括：
+
+## Product
+
+```
+Product
+ProductType
+ProductInstance
+Component
+Assembly
+Part
+Connection
+BOM
+```
+
+---
+
+## Property
+
+```
+Property
+
+Value
+
+Unit
+
+Measurement
+
+Condition
+
+```
+
+---
+
+## Requirement
+
+```
+Requirement
+
+Constraint
+
+ConstraintExpression
+
+ExpectedValue
+
+Tolerance
+
+Priority
+
+```
+
+---
+
+## Measurement
+
+```
+Measurement
+
+TestMethod
+
+SamplingMethod
+
+InspectionMethod
+
+DataProcessingMethod
+
+EvaluationRule
+
+```
+
+---
+
+## Governance
+
+```
+Standard
+
+Specification
+
+Version
+
+Approval
+
+Organization
+
+Release
+
+Commit
+
+```
+
+---
+
+# Layer 2：Domain Ontology
+
+行业知识。
+
+例如：
+
+## 电机Ontology
+
+```
+ontology.leleby.org/motor/
+```
+
+包括：
+
+```
+Motor
+
+ElectricMotor
+
+BLDCMotor
+
+PMSMMotor
+
+Rotor
+
+Stator
+
+Winding
+
+Magnet
+
+Controller
+
+Encoder
+
+```
+
+---
+
+## 照明Ontology
+
+```
+ontology.leleby.org/lighting/
+```
+
+---
+
+## 电池Ontology
+
+```
+ontology.leleby.org/battery/
+```
+
+---
+
+注意：
+
+技术路线不是主体分类，而是产品类别的一个维度。
+
+例如：
+
+正确：
+
+```
+ElectricMotor
+
+    |
+    +-- BLDCMotor
+
+    |
+    +-- PMSMMotor
+```
+
+而不是：
+
+```
+BLDCMotor = 一个独立产品主体
+```
+
+---
+
+# 五、产品本体建模原则
+
+## 5.1 产品主体优先
+
+产品本体首先定义：
+
+> 它是什么东西，由什么组成。
+
+例如：
+
+电动自行车：
+
+```
+ElectricBicycle
+
+hasComponent:
+
+Frame
+
+Battery
+
+Motor
+
+Controller
+
+Wheel
+
+BrakeSystem
+
+```
+
+---
+
+## 5.2 分类是属性条件函数
+
+分类不是固定树。
+
+分类本质：
+
+```
+Classification = Function(Property Values)
+
+```
+
+例如：
+
+青年男子组：
+
+```
+Age >18
+AND
+Age <=45
+AND
+Gender = Male
+```
+
+因此：
+
+```
+Class
+
+hasClassificationMethod
+
+ClassificationCondition
+
+```
+
+---
+
+采用：
+
+RDF-star / RDF 1.2 Edge Annotation
+
+表达：
+
+```
+:a  hasSubclass  :b
+
+条件：
+
+age>18 && age<=45 && gender='male'
+
+```
+
+---
+
+# 六、Standard设计原则
+
+## 6.1 Standard不是Ontology
+
+这是重要结论。
+
+Standard不是：
+
+“一个产品类别定义”。
+
+而是：
+
+> 一个经过批准发布的规则集合。
+
+因此：
+
+标准应该作为独立Semantic Package。
+
+例如：
+
+```
+IEC60598-1-2025.ttl
+```
+
+它包含：
+
+```
+Scope
+
+Classification
+
+StructureRequirement
+
+PropertyRequirement
+
+TestRequirement
+
+SamplingRequirement
+
+EvaluationRule
+
+Reference
+
+Approval
+
+Version
+
+```
+
+---
+
+# 七、Standard Package内部结构
+
+一个标准TTL：
+
+```
+IEC60598-1-2025.ttl
+
+
+imports:
+
+lbo-core
+
+lbo-lighting
+
+
+contains:
+
+
+StandardDefinition
+
+
+ApplicableProductType
+
+
+ClassificationRule
+
+
+Requirement
+
+
+TestMethodReference
+
+
+SamplingRule
+
+
+DecisionRule
+
+
+ApprovalRecord
+
+```
+
+---
+
+# 八、哪些内容独立Ontology，哪些属于Standard？
+
+## 8.1 应独立
+
+因为高度复用：
+
+---
+
+## 产品基础概念
+
+例如：
+
+```
+Product
+
+Component
+
+Property
+
+```
+
+---
+
+## 测试方法
+
+例如：
+
+```
+TemperatureMeasurement
+
+TorqueMeasurement
+
+ElectricalTest
+
+```
+
+原因：
+
+同一个测试方法可以用于：
+
+* 电机
+* 灯具
+* 电池
+
+---
+
+## 抽样方法
+
+例如：
+
+```
+ISO2859 Sampling
+
+```
+
+适用于：
+
+多个行业。
+
+---
+
+## 数据处理方法
+
+例如：
+
+```
+Average
+
+Deviation
+
+ConfidenceInterval
+
+```
+
+---
+
+## 通用判定逻辑
+
+例如：
+
+```
+Value <= Limit
+
+RangeCheck
+
+ToleranceCheck
+
+```
+
+---
+
+# 8.2 应保留在Standard Package
+
+因为属于该标准法律范围：
+
+---
+
+## 标准对象范围
+
+例如：
+
+```
+This standard applies to outdoor luminaires
+```
+
+---
+
+## 分类规则
+
+例如：
+
+```
+Class A motor
+
+Power < 100W
+
+```
+
+---
+
+## 特定要求
+
+例如：
+
+```
+Motor temperature rise <=50K
+```
+
+---
+
+## 特定抽样方案
+
+例如：
+
+某标准规定：
+
+```
+5个样品
+允许1个偏差
+```
+
+---
+
+## 特定判定规则
+
+例如：
+
+某标准：
+
+```
+全部关键指标必须满足
+```
+
+---
+
+# 九、标准版本管理体系
+
+## 采用Git思想
+
+但不是直接使用Git。
+
+建立：
+
+# Semantic Version Governance System
+
+---
+
+## 核心思想：
+
+Git管理：
+
+代码演化。
+
+leleby管理：
+
+工业知识演化。
+
+---
+
+对应关系：
+
+| Git           | leleby                 |
+| ------------- | ---------------------- |
+| Repository    | Standard Repository    |
+| Commit        | Semantic Change        |
+| Tag           | Official Release       |
+| Branch        | Adoption Branch        |
+| Diff          | Requirement Change     |
+| Merge         | Standard Harmonization |
+| Signed Commit | Approval Signature     |
+
+---
+
+# 十、Standard Repository模型
+
+例如：
+
+```
+IEC60598 Repository
+
+
+documents/
+
+IEC60598-2012.pdf
+
+IEC60598-2025.pdf
+
+
+semantic/
+
+requirements.ttl
+
+ontology.ttl
+
+
+history/
+
+commits
+
+```
+
+---
+
+# 十一、标准版本有效性模型
+
+不能简单：
+
+```
+new version > old version > invalid
+```
+
+必须：
+
+版本图。
+
+例如：
+
+```
+IEC60598
+
+
+2012
+
+ |
+
+2020
+
+ |
+
+2025
+
+```
+
+三个版本可能同时有效。
+
+原因：
+
+产品生命周期。
+
+---
+
+产品实例：
+
+```
+ProductModel-A
+
+designedAccordingTo
+
+IEC60598:2012
+
+```
+
+永远保持这个事实。
+
+---
+
+如果型号升级：
+
+```
+ProductModel-A-v2
+
+designedAccordingTo
+
+IEC60598:2025
+
+```
+
+形成新的设计对象。
+
+---
+
+# 十二、标准引用模型
+
+必须支持：
+
+## 不带版本引用
+
+例如：
+
+```
+Reference IEC60598
+```
+
+解释：
+
+采用当时最新版本。
+
+---
+
+## 指定版本引用
+
+例如：
+
+```
+Reference IEC60598:2012
+```
+
+---
+
+## 条款级引用
+
+必须支持：
+
+```
+Requirement
+
+derivedFrom
+
+IEC60598:2025-Clause-9.3
+
+```
+
+保证：
+
+法律追溯。
+
+---
+
+# 十三、标准之间符合性传递
+
+不能简单：
+
+```
+International > National > Industry > Enterprise
+```
+
+必须建模：
+
+## Adoption关系
+
+例如：
+
+企业：
+
+```
+EnterpriseSpec
+
+adopts
+
+ASTM Standard
+
+```
+
+才发生继承。
+
+---
+
+国家标准：
+
+```
+GB
+
+adopts
+
+ISO
+
+```
+
+可以建立映射。
+
+---
+
+因此：
+
+需要：
+
+```
+AdoptionRelation
+
+EquivalenceRelation
+
+DeviationRelation
+
+ScopeRelation
+
+```
+
+---
+
+# 十四、PPM在整体架构中的位置
+
+PPM不是一个产品。
+
+而是：
+
+> 工业模块能力标准体系。
+
+---
+
+例如：
+
+Rotary Motion Module。
+
+Ontology：
+
+```
+Motor
+
+ElectricMotor
+
+BLDCMotor
+
+```
+
+---
+
+PPM Specification：
+
+```
+PPM-RotaryMotion-v1.0
+
+```
+
+定义：
+
+```
+CapabilityClass
+
+Interface
+
+Performance
+
+Validation
+
+Certification
+
+```
+
+---
+
+商业：
+
+```
+Manufacturer A
+
+provides
+
+PPM Rotary Motion Module
+
+```
+
+---
+
+# 十五、BLDC建模原则
+
+BLDC不是最顶层。
+
+结构：
+
+```
+ElectricMotor
+
+    |
+
+    +-- PermanentMagnetMotor
+
+            |
+
+            +-- BLDCMotor
+
+
+            +-- PMSMMotor
+
+```
+
+---
+
+BLDC属性：
+
+```
+RotorType
+
+PowerRange
+
+RatedSpeed
+
+Torque
+
+Voltage
+
+Efficiency
+
+TemperatureRange
+
+ControlMode
+
+```
+
+---
+
+组成：
+
+```
+BLDCMotor
+
+hasComponent:
+
+Rotor
+
+Stator
+
+Magnet
+
+Winding
+
+Bearing
+
+Housing
+
+Controller(optional)
+
+```
+
+---
+
+# 十六、AI采购推理目标
+
+最终形成：
+
+```
+Customer Requirement
+
+
+        ↓
+
+
+Product Specification
+
+
+        ↓
+
+
+Standard Requirement
+
+
+        ↓
+
+
+Test Result
+
+
+        ↓
+
+
+Compliance Reasoning
+
+
+        ↓
+
+
+Supplier Recommendation
+
+```
+
+---
+
+# 十七、最终leleby顶层架构
+
+```
+                       leleby
+
+
+                         |
+
+              Foundation Layer
+
+                    llb
+
+
+                         |
+
+        --------------------------------
+
+
+        |                              |
+
+
+       lbo                            lbs
+
+ Ontology Layer              Specification Layer
+
+
+        |                              |
+
+ Domain Ontology             Standard Package
+
+
+        |                              |
+
+        --------------------------------
+
+
+                         |
+
+                      llc
+
+              Commercial Platform
+
+
+                         |
+
+        Enterprise / Product Instances
+
+
+                         |
+
+                 AI Applications
+
+
+```
+
+---
+
+# 十八、下一阶段执行路线
+
+## 第一阶段：基础架构冻结
+
+完成：
+
+1. Namespace Specification
+2. Core Ontology v1.0
+3. Standard Semantic Package Model
+4. Version Governance Model
+
+---
+
+## 第二阶段：标准语义化试点
+
+选择：
+
+* BLDC相关标准
+* 电机标准
+* PPM相关标准
+
+完成：
+
+PDF → Semantic Package
+
+---
+
+## 第三阶段：PPM Rotary Motion Module
+
+建立：
+
+* BLDC Domain Ontology
+* PPM Specification
+* Capability Model
+* Manufacturer Model
+
+---
+
+## 第四阶段：
+
+建立：
+
+* 企业AI商业名片
+* 产品智能匹配
+* AI采购系统
+
+---
+
+# 最终核心原则总结
+
+1. **leleby不是数据库，而是工业语义基础设施。**
+
+2. **Ontology定义世界结构，Standard定义约束规则。**
+
+3. **产品主体先建模，再定义技术分类。**
+
+4. **分类是属性条件函数，而不是固定树。**
+
+5. **Standard必须作为独立、版本化、可追溯Semantic Package存在。**
+
+6. **测试方法、测量方法、抽样方法应独立，因为它们高度复用。**
+
+7. **标准版本必须采用类似Git的演化管理思想。**
+
+8. **知识图谱表示当前状态，版本系统保存历史演化。**
+
+9. **商业数据和公共语义必须分离。**
+
+10. **PPM不是型号标准，而是能力单元标准。**
+
+---
+
+以上作为目前讨论后的 leleby 顶层设计基线。后续所有文档（Ontology Specification、Standard Specification、PPM白皮书、EIM规范等）都应该以此作为统一架构依据。

@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>{{ doc.standard_number }} · 内容浏览</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/kg.css') }}">
+</head>
+<body>
+<header class="kg-topbar">
+  <div class="kg-topbar-inner">
+    <a class="kg-brand" href="{{ url_for('index') }}">标准知识图谱</a>
+    <span class="kg-sub mono">{{ doc.standard_number }}</span>
+    <span class="kg-actions">
+      <a href="{{ url_for('graph_page', doc_id=doc.doc_id) }}">本体图谱视图 →</a>
+    </span>
+  </div>
+</header>
+
+<section class="kg-doc-meta">
+  <h1>{{ doc.chinese_title or '' }}</h1>
+  <div class="kg-meta-grid">
+    <span>标准号：<b class="mono">{{ doc.standard_number }}</b></span>
+    <span>文档类型：{{ doc.document_type or '' }}</span>
+    <span>ICS：<b class="mono">{{ doc.ics or '' }}</b></span>
+    <span>CCS：<b class="mono">{{ doc.ccs or '' }}</b></span>
+    <span>代替：<b class="mono">{{ doc.replaces or '' }}</b></span>
+    <span>结构节点：{{ doc.node_count }}（内容单元 {{ doc.ce_count if doc.ce_count is defined else '' }}）</span>
+  </div>
+</section>
+
+<div class="kg-layout">
+  <aside class="kg-tree-pane">
+    <div class="kg-pane-title">结构树 <span id="tree-loading" class="dim">加载中…</span></div>
+    <ul id="kg-tree" class="kg-tree"></ul>
+  </aside>
+  <main class="kg-content-pane">
+    <div id="breadcrumb" class="kg-breadcrumb"></div>
+    <article id="content" class="kg-content">
+      <p class="kg-empty">← 左侧选择结构节点（章/条/附录/术语…）查看内容。<br>
+      每个节点可展开子节点；正文下方可查看 canonical.md 原文行。</p>
+    </article>
+    <div id="rawbox" class="kg-rawbox" hidden>
+      <div class="kg-raw-head">canonical.md 原文行
+        <button id="raw-close" type="button">×</button></div>
+      <pre id="raw-lines" class="kg-raw-lines"></pre>
+    </div>
+  </main>
+</div>
+
+<script>
+const DOC_ID = {{ doc.doc_id | tojson }};
+const FOCUS_ID = new URLSearchParams(location.search).get('focus');
+</script>
+<script src="{{ url_for('static', filename='js/doc.js') }}"></script>
+</body>
+</html>

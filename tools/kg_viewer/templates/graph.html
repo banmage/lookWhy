@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>{{ doc.standard_number }} · 本体图谱</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/kg.css') }}">
+<style>
+  #graph-toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:6px 10px;
+    background:#f4f6f8; border-bottom:1px solid #d8dee5; font-size:13px; }
+  #graph-toolbar button { padding:3px 10px; }
+  #graph-box { position:absolute; inset:52px 340px 0 0; }
+  #graph-side { position:absolute; top:52px; right:0; width:330px; bottom:0; overflow:auto;
+    border-left:1px solid #d8dee5; padding:10px; background:#fbfcfd; font-size:13px; }
+  .legend span { display:inline-block; padding:1px 8px; margin:2px; border-radius:9px; color:#fff; font-size:12px; }
+  #graph-counts { color:#666; }
+</style>
+</head>
+<body>
+<header class="kg-topbar">
+  <div class="kg-topbar-inner">
+    <a class="kg-brand" href="{{ url_for('index') }}">标准知识图谱</a>
+    <span class="kg-sub mono">{{ doc.standard_number }}</span>
+    <span class="kg-actions"><a href="{{ url_for('doc_page', doc_id=doc.doc_id) }}">← 内容浏览</a></span>
+  </div>
+</header>
+
+<div id="graph-toolbar">
+  <button id="btn-core" type="button" class="kg-btn on">核心视图（结构+表图公式+术语）</button>
+  <button id="btn-full" type="button" class="kg-btn">全量视图（含段落/注/列表）</button>
+  <span class="sep"></span>
+  <button id="btn-hier" type="button" class="kg-btn on">层级布局</button>
+  <button id="btn-force" type="button" class="kg-btn">力导向布局</button>
+  <span class="sep"></span>
+  <span id="graph-counts"></span>
+  <div class="legend" id="legend"></div>
+</div>
+<div id="graph-box"></div>
+<div id="graph-side">
+  <div class="kg-pane-title">节点详情（点击图中节点）</div>
+  <div id="node-detail"><p class="dim">点击节点查看：条款号 / 类型 / 溯源行 / 原文跳转。</p></div>
+</div>
+
+<script src="{{ url_for('static', filename='js/vis-network.min.js') }}"></script>
+<script>
+const DOC_ID = {{ doc.doc_id | tojson }};
+const KIND_CN = {
+  Document:'文档', DocumentBlock:'文前/文后块', Clause:'章条', Annex:'附录',
+  ContentUnit:'内容/列项', Term:'术语', Table:'表', Figure:'图', Formula:'公式'
+};
+const KIND_COLORS = {
+  Document:'#37474f', DocumentBlock:'#90a4ae', Clause:'#1565c0', Annex:'#6a1b9a',
+  ContentUnit:'#8d6e63', Term:'#e65100', Table:'#2e7d32', Figure:'#00695c', Formula:'#b71c1c'
+};
+
+let network = null;
+let nodesDS = null, edgesDS = null;
+let currentScope = 'core';
+
+function legendHtml(counts) {
+  const order = ['Document','DocumentBlock','Clause','Annex','ContentUnit','Term','Table','Figure','Formula'];
+  return order.map(k => {
+    let c = counts[k] || 0;
+    if (k === 'ContentUnit') {
+      const ce = counts['ContentUnit(CE)'] || 0;
+      if (currentScope === 'full') c = (counts['ContentUnit']||0) + ce;
+    }
+    if (!c) return '';
+    return `<span style="background:${KIND_COLORS[k]}">${KIND_CN[k]} ${c}</span>`;
+  }).join('');
+}
+
+async function loadGraph(scope) {
+  currentScope = scope;
+  const res = await fetch(`/api/kg/${DOC_ID}?scope=${scope}`);
+  const data = await res.json();
+  document.getElementById('btn-core').classList.toggle('on', scope === 'core');
+  document.getElementById('btn-full').classList.toggle('on', scope === 'full');
+
+  nodesDS = new vis.DataSet();
+  edgesDS = new vis.DataSet();
+  const labelLen = 30;
+  for (const n of data.nodes) {
+    let label = n.number != null && n.number !== '' ? n.number + ' ' : '';
+    label += n.title || n.term || (n.kind === 'Document' ? (data.document.standardNumber || '') : '');
+    if (label.length > labelLen) label = label.slice(0, labelLen - 1) + '…';
+    nodesDS.add({ id: n.id, label: label.trim(), group: n.kind,
+      color: { background: KIND_COLORS[n.kind] || '#607d8b', border: '#263238' },
+      font: { color: '#fff', size: 11 }, level: n.depth || 0,
+      shape: n.kind === 'Term' || n.kind === 'Document' ? 'box' : 'dot',
+      size: n.kind === 'Document' ? 22 : (n.kind === 'Clause' ? 10 : 7) });
+  }
+  const edgeColors = { HAS_CHILD:'#9aa7b4', CONTAINS_ELEMENT:'#4c9aff', HAS_TERM:'#ff9800' };
+  for (const e of data.edges) {
+    edgesDS.add({ from: e.from, to: e.to, color: { color: edgeColors[e.type] || '#888' },
+      title: e.type, width: 0.8, arrows: { to: { enabled: false } } });
+  }
+  const el = document.getElementById('graph-box');
+  el.innerHTML = '';
+  network = new vis.Network(el, { nodes: nodesDS, edges: edgesDS },
+    { groups: Object.fromEntries(Object.entries(KIND_COLORS).map(([k, c]) =>
+        [k, { color: { background: c, border: '#263238' }, font: { color: '#ffffff', size: 11 } }])),
+      physics: false });
+  const counts = data.counts || {};
+  document.getElementById('graph-counts').textContent =
+    `节点 ${nodesDS.length} · 边 ${edgesDS.length} · 核心 ${counts['ContentUnit(CE)'] ? '隐藏段落级' : ''}`;
+  const leg = document.getElementById('legend');
+  leg.innerHTML = legendHtml(counts);
+  if (document.getElementById('btn-hier').classList.contains('on')) setHierarchical();
+  network.on('click', onNodeClick);
+}
+
+function setHierarchical() {
+  network.setOptions({ layout: { hierarchical: { enabled: true, direction: 'UD',
+    sortMethod: 'directed', nodeSpacing: 90, treeSpacing: 90, levelSeparation: 150 } },
+    physics: false, interaction: { dragNodes: false } });
+  network.redraw();
+}
+function setForce() {
+  network.setOptions({ layout: { hierarchical: { enabled: false } }, physics: { enabled: true },
+    interaction: { dragNodes: true } });
+}
+
+async function onNodeClick(params) {
+  if (!params.nodes || !params.nodes.length) return;
+  const nid = params.nodes[0];
+  const node = nodesDS.get(nid);
+  const box = document.getElementById('node-detail');
+  if (!node) { box.innerHTML = '<p class="dim">未知节点</p>'; return; }
+  const kind = node.group;
+  let html = `<h3 style="margin:2px 0 6px">${escHtml(node.label)}</h3>`;
+  html += `<p>类型：${KIND_CN[kind] || kind} <code class="mono" style="font-size:11px">${escHtml(nid)}</code></p>`;
+  // 从数据集原始属性无法回读 number/title/term——直接再取 detail API
+  const detail = await fetch(`/api/node/${DOC_ID}/${encodeURIComponent(nid)}`).then(r => r.json());
+  const n = detail.node || {};
+  const rows = detail.chain || [];
+  if (n.number) html += `<p>条款号：<b class="mono">${escHtml(n.number)}</b></p>`;
+  if (n.node_type) html += `<p>节点类型：<span class="mono">${escHtml(n.node_type)}</span></p>`;
+  if (n.term) {
+    html += `<p>术语：<b>${escHtml(n.term)}</b>${n.english_term ? ' <span class="mono">' + escHtml(n.english_term) + '</span>' : ''}</p>`;
+  }
+  if (rows.length > 1) {
+    html += `<p>路径：<span class="mono">` + rows.map(r =>
+      r.number ? escHtml(r.number) : '·').join(' / ') + `</span></p>`;
+  }
+  const md = (detail.row && detail.row.md_start_line) ? detail.row.md_start_line : null;
+  if (md) {
+    html += `<p>原文行：<b class="mono">canonical.md L${md}</b>
+      <br><a href="/doc/${DOC_ID}?focus=${encodeURIComponent(nid)}" target="_blank">在内容视图定位该节点 →</a></p>`;
+  } else {
+    html += `<p><a href="/doc/${DOC_ID}?focus=${encodeURIComponent(nid)}" target="_blank">在内容视图定位该节点 →</a></p>`;
+  }
+  box.innerHTML = html;
+}
+
+function escHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+document.getElementById('btn-core').onclick = () => loadGraph('core');
+document.getElementById('btn-full').onclick = () => loadGraph('full');
+document.getElementById('btn-hier').onclick = () => { btn('hier'); setHierarchical(); };
+document.getElementById('btn-force').onclick = () => { btn('force'); setForce(); };
+function btn(name) {
+  document.getElementById('btn-hier').classList.toggle('on', name === 'hier');
+  document.getElementById('btn-force').classList.toggle('on', name === 'force');
+}
+
+loadGraph('core');
+</script>
+</body>
+</html>

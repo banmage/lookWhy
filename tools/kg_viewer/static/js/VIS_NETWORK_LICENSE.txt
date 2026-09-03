@@ -1,0 +1,6 @@
+vis-network (https://github.com/visjs/vis-network)
+
+本地副本来源：仓库 dss_bak/static/js/vis-network.min.js（vendored 开发试用副本）。
+版本：9.x（文件名内含 vis-network_9.1.9.min.js 同源）。
+许可证：MIT（visjs 项目）。Copyright (c) 2014-2017 Almende B.V. and contributors.
+本文件仅随本地开发查看器分发，不修改上游代码。
