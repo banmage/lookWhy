@@ -37,3 +37,6 @@ examples/*.pdf
 
 # Multi-tenant runtime storage (user uploads / work / outputs)
 storage/
+
+# Unrelated historical backup directory (not repo material)
+dss_bak/
