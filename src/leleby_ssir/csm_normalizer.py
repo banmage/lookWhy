@@ -7,7 +7,7 @@ import re
 
 import yaml
 
-from .parser import Block, CSMDocument, Directive
+from .parser import Block, CSMDocument, Directive, escape_table_cell
 
 
 def render_canonical(document: CSMDocument) -> str:
@@ -27,9 +27,14 @@ def write_canonical(document: CSMDocument, path: str | Path) -> None:
     target.write_text(render_canonical(document), encoding="utf-8", newline="\n")
 
 
+def _escape_attr_text(value: str) -> str:
+    # 反斜杠翻倍、双引号转义；抽成普通函数，避免在 f-string 表达式内写转义序列。
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def _directive(directive: Directive) -> str:
     attributes = "".join(
-        f' {key}="{value.replace("\\", "\\\\").replace(chr(34), "\\\"")}"'
+        f' {key}="{_escape_attr_text(value)}"'
         for key, value in directive.attrs.items()
     )
     return f"<!-- ssir:{directive.name}{attributes} -->"
@@ -64,7 +69,7 @@ def _render_block(lines: list[str], block: Block) -> None:
                 # Bare numbered caption ("表 N") roundtrips as "**表N**".
                 lines.append(f"**表{caption_number}**")
         for row_index, row in enumerate(block.data["rows"]):
-            lines.append("| " + " | ".join(cell.replace("|", r"\|") for cell in row) + " |")
+            lines.append("| " + " | ".join(escape_table_cell(cell) for cell in row) + " |")
             if row_index == 0:
                 lines.append("| " + " | ".join("---" for _ in row) + " |")
         for merge in block.data.get("merges", []):

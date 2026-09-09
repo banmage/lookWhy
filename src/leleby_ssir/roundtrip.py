@@ -118,6 +118,9 @@ def _node_view(node: dict[str, Any], registries: dict[str, dict[str, dict[str, A
         "level": node.get("level"),
         "number": node.get("number"),
         "title": _normalise(node.get("title", "")),
+        # ssir:box 显式框归属（2026-09-08）：框边界成为 roundtrip 不变量。
+        "box": node.get("box"),
+        "boxStyle": node.get("boxStyle"),
         "content": [_content_view(content, registries) for content in sorted(node.get("contentElements", []), key=_sort_order)],
         "children": [_node_view(child, registries) for child in sorted(node.get("children", []), key=_sort_order)],
     }
@@ -169,23 +172,30 @@ def _semantic_view(document: dict[str, Any], structure: list[dict[str, Any]]) ->
 
 def _content_view(content: dict[str, Any], registries: dict[str, dict[str, dict[str, Any]]]) -> dict[str, Any]:
     kind = content.get("presentationType")
+    # ssir:box 显式框归属（2026-09-08）：节点内容元素（含条款中途切分）的框 id。
+    box = content.get("box")
     if kind == "table":
-        return {"type": kind, "value": _table_view(registries["tables"][content["tableRef"]])}
-    if kind == "figure":
-        return {"type": kind, "value": _figure_view(registries["figures"][content["figureRef"]])}
-    if kind == "formula":
-        return {"type": kind, "value": _formula_view(registries["formulas"][content["formulaRef"]])}
-    if kind == "other":
-        return {"type": kind, "value": _unknown_view(registries["unknowns"][content["unknownRef"]])}
-    if kind == "list":
-        return {
+        view: dict[str, Any] = {"type": kind, "value": _table_view(registries["tables"][content["tableRef"]])}
+    elif kind == "figure":
+        view = {"type": kind, "value": _figure_view(registries["figures"][content["figureRef"]])}
+    elif kind == "formula":
+        view = {"type": kind, "value": _formula_view(registries["formulas"][content["formulaRef"]])}
+    elif kind == "other":
+        view = {"type": kind, "value": _unknown_view(registries["unknowns"][content["unknownRef"]])}
+    elif kind == "list":
+        view = {
             "type": kind,
             "items": [
                 {"marker": item.get("marker"), "text": _normalise(item.get("text", ""))}
                 for item in sorted(content.get("listItems", []), key=_sort_order)
             ],
         }
-    return {"type": kind, "text": _normalise(content.get("textContent", ""))}
+    else:
+        view = {"type": kind, "text": _normalise(content.get("textContent", ""))}
+    if box is not None:
+        view["box"] = box
+        view["boxStyle"] = content.get("boxStyle")
+    return view
 
 
 def _table_view(table: dict[str, Any]) -> dict[str, Any]:

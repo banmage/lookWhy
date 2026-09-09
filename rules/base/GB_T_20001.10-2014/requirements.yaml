@@ -23,19 +23,29 @@ content-and-structure:
 
   elements:
     - {id: P10-E01, element: 术语和定义, required: 必备/可选, kind: 规范性,
-       note: 产品标准应给出所用关键术语；仅给出理解必需的术语, source: "5.2"}
-    - {id: P10-E02, element: 分类与标记/编码, required: 推荐, kind: 规范性,
-       note: 产品按其特性分类时应有"分类与标记"一章，含分类方法、类别与标记规则, source: "5.3"}
-    - {id: P10-E03, element: 要求, required: 必备, kind: 规范性,
-       note: 核心技术要素；要求应可验证（能通过检验/试验证实），使用要求型措辞, source: "5.4"}
-    - {id: P10-E04, element: 抽样, required: 可选, kind: 规范性,
-       note: 需要抽样时规定抽样方法与样本保存运输条件, source: "5.5"}
-    - {id: P10-E05, element: 试验方法, required: 必备(与要求对应), kind: 规范性,
-       note: 每一条可量化/可验证要求都应有对应的试验方法条目, source: "5.6"}
-    - {id: P10-E06, element: 检验规则, required: 推荐, kind: 规范性,
-       note: 检验分类（出厂/型式检验）、检验项目与判定规则, source: "5.7"}
-    - {id: P10-E07, element: 标志、标签、包装、运输、贮存, required: 可选, kind: 规范性,
-       note: 涉及时规定，常以附录形式给出, source: "5.8"}
+       note: 给出所用关键术语即可（内容有无按需取舍，GB/T 1.1-2020 5.5.1）,
+       source: "3（章）；要素性质见 GB/T 1.1-2020 5.5.1"}
+    - {id: P10-E02, element: 分类与标记/编码, required: 可选, kind: 规范性,
+       note: 为符合规定要求的产品建立分类（分级）、标记和（或）编码体系时设置
+       （6.4.1），含分类方法、类别与标记规则, source: "6.4"}
+    - {id: P10-E03, element: 要求（技术要求）, required: 必备, kind: 规范性,
+       note: 产品标准中的核心技术要素（6.5）；要求应可验证、使用要求型措辞,
+       source: "6.5"}
+    - {id: P10-E04, element: 取样（抽样）, required: 可选, kind: 规范性,
+       note: 规定取样的条件和方法及样品保存方法（6.6）；可位于试验方法章起始部分,
+       source: "6.6"}
+    - {id: P10-E05, element: 试验方法, required: 可选, kind: 规范性,
+       note: 试验方法为可选要素（6.7.1.1），用于证实技术要求是否得到满足；
+       规定的试验方法应与技术要求（6.5）有明确对应关系（P10-R03 交叉核对）,
+       source: "6.7"}
+    - {id: P10-E06, element: 检验规则, required: 可选, kind: 规范性,
+       note: 针对一个或多个特性给出测量、检查、验证产品符合技术要求的规则、
+       程序或方法（6.8.1）, source: "6.8"}
+    - {id: P10-E07, element: 标志、标签和随行文件, required: 可选, kind: 规范性,
+       note: 可相互补充；涉及消费品时尤应纳入（6.9.1.1）, source: "6.9"}
+    - {id: P10-E08, element: 包装、运输和贮存, required: 可选, kind: 规范性,
+       note: 需要时规定，防止因包装、运输和贮存不当引起危险、毒害或污染环境,
+       source: "6.10"}
 
   requirements-authoring:
     - id: P10-R01

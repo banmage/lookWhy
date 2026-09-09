@@ -1,9 +1,10 @@
 # leleby SSIR 文件命名与目录结构规范
 
-> **版本**：2.1（2026-08-29，标准号斜杠转下划线：GB/T→GB_T、JB/T→JB_T 等）
+> **版本**：2.2（2026-09-06，移除 CLI 旧旗标兼容别名；2.1：2026-08-29 标准号斜杠转下划线）
 > **状态**：正式生效。本版与代码实现同步（2026-08-26 命名重构；2026-08-29
-> 命名微调——/T、/Z 不再并入代号，一律斜杠转下划线以保持与原编号长度一致），
-> 取代 v2.0 与所有历史命名（Std0、Std1、SSIR1、SSIR2、conversion-report 等）。
+> 命名微调——/T、/Z 不再并入代号，一律斜杠转下划线以保持与原编号长度一致；
+> 2026-09-06 起 CLI 不再提供旧旗标兼容别名），
+> 取代 v2.0 与所有历史命名（SSIR1、SSIR2、conversion-report 等）。
 > **适用范围**：所有源码、测试、平台资产、租户数据、运行时缓存及流水线产物。
 > **单一事实源**：ID 推导与文件名解析的实现位于 `src/leleby_ssir/naming.py`
 > （`standard_filename` / `standard_number_from_text` / `artifact_id` /
@@ -33,8 +34,6 @@
 ### 1.3 弃用命名对照表
 | 旧名称 | 新名称 | 新后缀 | 说明 |
 |--------|--------|--------|------|
-| Std0           | Canonical  | `.canonical.md` | 唯一人工可编辑的权威 CSM（normalize 产物） |
-| Std1           | Render.md  | `.render.md` | 由 SSIR 确定性渲染回的中间 CSM，回环验证输入 |
 | SSIR1          | SSIR       | `.ssir.json` | 首次解析得到的结构化语义 |
 | SSIR2          | Verify     | `.verify.json` | 从渲染结果再解析得到的 SSIR（回环验证输入） |
 | roundtrip-report | Roundtrip | `.roundtrip.json` | 比较报告 |
@@ -267,12 +266,12 @@ SSIR 中引用资源使用相对路径（从文档根出发）：
 
 ---
 
-## 8. CLI 旗标对照（v2.0 起）
+## 8. CLI 旗标（v2.0 起）
 
-| 命令 | 新旗标 | 旧旗标（兼容） |
-|------|--------|----------------|
-| `csm normalize` | `--canonical-output` | `--std0-output` |
-| `csm roundtrip` | `--render-md-output`（可选 `--verify-output`） | `--std1-output` |
+| 命令 | 旗标 |
+|------|------|
+| `csm normalize` | `--canonical-output` |
+| `csm roundtrip` | `--render-md-output`（可选 `--verify-output`） |
 
 报告默认路径（未显式给 `--report` 时）由 `report_path()` 生成：
 `<产物同目录>/<STANDARD_ID>.<表示>.json`，例如
@@ -283,7 +282,7 @@ SSIR 中引用资源使用相对路径（从文档根出发）：
 ## 9. 迁移与兼容性（2026-08-26 已执行）
 
 - 代码：`src/leleby_ssir/naming.py` 新增；CLI/service/extractor/roundtrip/renderer/
-  流水线工具全部切换到新命名；旧旗标保留为兼容别名。
+  流水线工具全部切换到新命名；v2.0 旧旗标兼容别名已于 2026-09-06 移除。
 - 流水线工具 `tools/mineru_full_standard.py` 产出改为 4.2 节阶段目录；
   状态文件更名 `mineru-full-standard-state.json` → `pipeline-state.json`
   （**旧 run 无法按旧状态文件续跑**，需重新 `--stage extract`）。
@@ -318,7 +317,7 @@ SSIR 中引用资源使用相对路径（从文档根出发）：
 
 - 本规范为项目顶层设计文档；所有代码、配置、文档都应遵循。
 - 命名实现集中在 `src/leleby_ssir/naming.py`，改命名先改这里，再同步本规范。
-- 禁止在代码中硬编码旧命名（`std0`、`ssir1`、`conversion-report`），新代码使用
+- 禁止在代码中硬编码旧命名（`ssir1`、`conversion-report`），新代码使用
   `canonical`、`ssir`、`verify`、`render.md` 等术语。
 - 新增数据形态或阶段必须同步更新本规范。
 

@@ -8,23 +8,23 @@
 
 ## 1. 结论与当前可用能力
 
-本阶段已经交付可运行的 M1 核心链路。系统可接收用户 Markdown 标准文件，对可安全修复的问题执行宽容导入并写出 `Std0`，将 Std0 解析为通过 Schema 校验的 SSIR JSON（可选 TTL），并完成以下回环：
+本阶段已经交付可运行的 M1 核心链路。系统可接收用户 Markdown 标准文件，对可安全修复的问题执行宽容导入并写出 `Canonical`，将 Canonical 解析为通过 Schema 校验的 SSIR JSON（可选 TTL），并完成以下回环：
 
 ```text
 原始 Markdown
   -> CSM 校验、质量诊断、无语义损失的基础纠错
-  -> Std0 CSM Markdown
+  -> Canonical CSM Markdown
   -> SSIR1 JSON
-  -> Std1 CSM Markdown
+  -> Render.md CSM Markdown
   -> SSIR2 JSON
   -> 四层等价比较 + Critical Information Loss 检查
 ```
 
-这里的核心定义是：原始 Markdown 只是导入来源；`Std0` 是纠错后冻结的回环基线；回环验收只比较 `SSIR1` 和 `SSIR2`，不要求 Std0 和 Std1 的字符级或视觉级一致。
+这里的核心定义是：原始 Markdown 只是导入来源；`Canonical` 是纠错后冻结的回环基线；回环验收只比较 `SSIR1` 和 `SSIR2`，不要求 Canonical 和 Render.md 的字符级或视觉级一致。
 
-M1 已通过仓库内全部测试。对 `corpus/golden/csm/` 的 5 份产品标准 Std0 样例进行批量回环，结果为 5/5 通过；CSM 模板的“原始 Markdown -> Std0 -> SSIR1 -> Std1 -> SSIR2”完整链路也已通过。
+M1 已通过仓库内全部测试。对 `corpus/golden/csm/` 的 5 份产品标准 Canonical 样例进行批量回环，结果为 5/5 通过；CSM 模板的“原始 Markdown -> Canonical -> SSIR1 -> Render.md -> SSIR2”完整链路也已通过。
 
-与此并行，项目已补齐 PDF/MinerU 抽取能力：`ssir pdf extract` 能从任意国家标准 PDF 生成 CSM Markdown，优先调用本地 `mineru`/`magic-pdf` 命令，失败时自动回退到 PyMuPDF 文本层；`tools/mineru_full_standard.py` 执行可恢复的全量抽取、CSM 合并、Std0 规范化、SSIR 解析和回旋验证。一致性地说，当前仓库中 PDF 适配器已经不是未实现的规划，而是可运行的实际功能。
+与此并行，项目已补齐 PDF/MinerU 抽取能力：`ssir pdf extract` 能从任意国家标准 PDF 生成 CSM Markdown，优先调用本地 `mineru`/`magic-pdf` 命令，失败时自动回退到 PyMuPDF 文本层；`tools/mineru_full_standard.py` 执行可恢复的全量抽取、CSM 合并、规范化、SSIR 解析和回旋验证。一致性地说，当前仓库中 PDF 适配器已经不是未实现的规划，而是可运行的实际功能。
 
 ## 2. 需求演变与范围决策
 
@@ -40,25 +40,25 @@ M1 已通过仓库内全部测试。对 `corpus/golden/csm/` 的 5 份产品标�
 - 准备包含图、表、公式、列表、检验规则、附录等要素的产品标准 Markdown 样例；
 - 解析 CSM 并构建 SSIR JSON，提供可选 TTL 投影；
 - 对用户 Markdown 进行宽容校验、可修复问题记录和产品标准质量提示；
-- 实现 `Std0 -> SSIR1 -> Std1 -> SSIR2` 回旋转换与一致性验证；
+- 实现 `Canonical -> SSIR1 -> Render.md -> SSIR2` 回旋转换与一致性验证；
 - 通过 `ssir pdf extract` / `tools/mineru_full_standard.py` 将 PDF 解析为 CSM Markdown，并生成 provenance sidecar；
 - 更新开发规范和面向使用者的 README。
 
 当前实现已经包含 PDF/DOCX 入口的先行能力（PDF 解析已具备实现与 CLI），但仍保留对复杂扫描件、表格/图像精确识别、人工质量复核和 PDF 版式渲染的后续增强边界。该边界避免在未冻结中间格式前将 PDF、排版和知识图谱三类复杂问题相互耦合。
 
-### 2.3 Std0 定义的修正
+### 2.3 Canonical 定义的修正
 
 开发中曾将回环输入直接称为“用户 Markdown”，但这会混淆两个职责：用户输入可能有 BOM、CRLF、缺失机器元数据或可安全修复的表格格式问题；而回环需要稳定、可重复的输入基线。因此已统一采用：
 
 | 对象 | 定义 | 是否进入回环等价比较 |
 |---|---|---|
 | 原始 Markdown | 用户上传的输入，保留原始哈希与诊断来源。 | 否 |
-| Std0 | 原始输入经安全修复、UTF-8/LF 规范化后冻结的 CSM。 | 是，作为 SSIR1 来源 |
-| SSIR1 | 从 Std0 解析得到的 SSIR 基准。 | 是 |
-| Std1 | 由 SSIR1 确定性生成的 CSM。 | 是，作为 SSIR2 来源 |
-| SSIR2 | 从 Std1 重新解析得到的 SSIR。 | 是 |
+| Canonical | 原始输入经安全修复、UTF-8/LF 规范化后冻结的 CSM。 | 是，作为 SSIR1 来源 |
+| SSIR1 | 从 Canonical 解析得到的 SSIR 基准。 | 是 |
+| Render.md | 由 SSIR1 确定性生成的 CSM。 | 是，作为 SSIR2 来源 |
+| SSIR2 | 从 Render.md 重新解析得到的 SSIR。 | 是 |
 
-这一划分应在后续 PDF/MinerU 适配器中保持不变：PDF/MinerU 产生的是“原始 CSM”，经同一 CSM 校验/纠错后才成为 Std0。
+这一划分应在后续 PDF/MinerU 适配器中保持不变：PDF/MinerU 产生的是“原始 CSM”，经同一 CSM 校验/纠错后才成为 Canonical。
 
 ## 3. 已完成工作
 
@@ -68,7 +68,7 @@ M1 已通过仓库内全部测试。对 `corpus/golden/csm/` 的 5 份产品标�
 
 - 建立 [CSM 格式规范](07_leleby%20Canonical%20SSIR%20Markdown%20Format%20Specification%20v0.1.md)，定义 YAML front matter、标题与条款层级、附录、表格、图、公式、列表、机器注释、宽容导入和产品标准配置；
 - 建立并补充 [CSM 到 SSIR 实现规范](08_leleby%20CSM-to-SSIR%20Implementation%20Specification%20v0.1.md)，定义输入输出、映射、CLI、报告、验收与非目标；
-- 更新处理流水线、回环测试和总开发规范，使其以 Markdown Std0/Std1 作为 M1 回环对象；
+- 更新处理流水线、回环测试和总开发规范，使其以 Markdown Canonical/Render.md 作为 M1 回环对象；
 - 提供 CSM 模板及 5 份 `corpus/golden/csm/` 产品标准样例，覆盖企业标准、团体标准、技术参数表、图占位、公式、不同列表标记、试验方法、检验规则、包装和规范性/资料性附录。
 
 GB/T 1.1 和 GB/T 20001.10 中的可选或条件适用组成部分（例如术语、引用文件、取样、试验方法、检验规则、附录等）不会被实现为输入的绝对前置条件。缺失时进入质量提示，而不会丢弃正文或中断默认转换。
@@ -85,7 +85,7 @@ GB/T 1.1 和 GB/T 20001.10 中的可选或条件适用组成部分（例如术�
 - 短表格行的尾部空单元格补齐；无法安全解释的额外单元格、未闭合围栏、非 UTF-8、无效 YAML、重复显式 ID 等作为硬错误；
 - 对前言、范围、产品技术要求和标准号表达进行 GB/T 质量提示；
 - `ConversionReport` 输出问题代码、严重度、行号、是否修复与修复动作；
-- `ssir csm normalize` 将内存中的安全修复写为 Std0，避免用未经纠错的用户输入作为回环基线。
+- `ssir csm normalize` 将内存中的安全修复写为 Canonical，避免用未经纠错的用户输入作为回环基线。
 
 安全原则：正文、标准编号原文、技术数值、单位、比较符、公式、引用文本和规范性动词不可自动改写。需要人工判断的错误只报告，不“智能纠正”。
 
@@ -104,11 +104,11 @@ GB/T 1.1 和 GB/T 20001.10 中的可选或条件适用组成部分（例如术�
 
 实现文件：`csm_renderer.py`、`roundtrip.py`、`tools/verify_markdown_roundtrip.py`。
 
-- `csm_renderer.py` 从 SSIR1 生成确定性的 Std1 CSM；
+- `csm_renderer.py` 从 SSIR1 生成确定性的 Render.md CSM；
 - `roundtrip.py` 生成身份、结构、内容、语义四层的可比较视图，忽略 ID、锚点、文件哈希、处理运行和质量评估等派生信息；
 - 关键损失检查覆盖规范性用语、禁止性表述、强制条件、数值、单位、比较符、条款编号、表格单元格、公式原文、引用目标、范围与适用性；
-- CLI `ssir csm roundtrip` 写出单份 Std1 与 JSON 报告；通过返回 0，不等价返回 3；
-- 批量程序接受多个输入或一个样例目录，写出逐份 Std1、逐份报告和 `roundtrip-summary.json`；
+- CLI `ssir csm roundtrip` 写出单份 Render.md 与 JSON 报告；通过返回 0，不等价返回 3；
+- 批量程序接受多个输入或一个样例目录，写出逐份 Render.md、逐份报告和 `roundtrip-summary.json`；
 - 增加“应 -> 宜”和表格数值变化的变异测试，验证比较器确实能报出失败，而非仅验证成功路径。
 
 ### 3.5 使用者入口与文档
@@ -153,7 +153,7 @@ PYTHONPATH=src python3 -m unittest discover -v
 
 - 5 份产品标准样例的 CSM -> SSIR；
 - 全部 CSM 样例和模板的 Markdown 回环；
-- 原始 Markdown（BOM、CRLF、缺失机器元数据）-> Std0 后的语义一致性；
+- 原始 Markdown（BOM、CRLF、缺失机器元数据）-> Canonical 后的语义一致性；
 - 表格、合并单元格、图、图占位、公式、列表和附录；
 - 产品标准的可选章节不阻断转换；
 - 可恢复问题的报告与不可恢复问题的拒绝；
@@ -182,9 +182,9 @@ PYTHONPATH=src python3 tools/verify_markdown_roundtrip.py \
 
 ### 5.1 不要将“原始输入”直接用作回环基准
 
-问题：用户输入可包含机械格式缺陷；若直接称其为 Std0，重复测试会受 BOM、换行、默认元数据和表格补齐影响，导致“纠错”和“信息回环”混为一谈。
+问题：用户输入可包含机械格式缺陷；若直接称其为 Canonical，重复测试会受 BOM、换行、默认元数据和表格补齐影响，导致“纠错”和“信息回环”混为一谈。
 
-处理：增加 `normalize` 命令和 `csm_normalizer.py`，并在全部文档中将 Std0 定义为安全修复后的冻结 CSM。原始哈希与修复记录留在转换报告中。后续新增任何输入适配器时必须沿用这个边界。
+处理：增加 `normalize` 命令和 `csm_normalizer.py`，并在全部文档中将 Canonical 定义为安全修复后的冻结 CSM。原始哈希与修复记录留在转换报告中。后续新增任何输入适配器时必须沿用这个边界。
 
 ### 5.2 GB/T 要求不能简单地全部变为硬错误
 
@@ -200,7 +200,7 @@ PYTHONPATH=src python3 tools/verify_markdown_roundtrip.py \
 
 ### 5.4 附录看似微小的空格也会造成结构损失
 
-问题：首次渲染 Std1 时在“附录 A”和“（规范性）”之间加入了空格，而解析器仅接受紧凑形式。这导致附录在 SSIR2 中成为普通章节，触发 C7 条款编号损失。
+问题：首次渲染 Render.md 时在“附录 A”和“（规范性）”之间加入了空格，而解析器仅接受紧凑形式。这导致附录在 SSIR2 中成为普通章节，触发 C7 条款编号损失。
 
 处理：解析器接受两种空格形式，渲染器统一输出 GB/T 常见的紧凑形式；增加附录类型和标识的专项回环测试。经验是：渲染器必须产出解析器明确接受的 CSM 子集，且每一种结构性标题都需要回环测试。
 
@@ -219,7 +219,7 @@ PYTHONPATH=src python3 tools/verify_markdown_roundtrip.py \
 ## 6. 已知限制与技术债
 
 - Markdown 解析器是面向 CSM 约束子集的实现，不是完整 CommonMark/GFM 浏览器渲染器；复杂嵌套 Markdown、HTML、脚注和跨页语义仍需扩展测试后支持。
-- Std1 是可再解析的规范化 CSM，不是 GB/T 1.1 传统 PDF 成品。它不处理封面、目次页码、页眉页脚、分页、字体、表格跨页、图像排版或印刷版式。
+- Render.md 是可再解析的规范化 CSM，不是 GB/T 1.1 传统 PDF 成品。它不处理封面、目次页码、页眉页脚、分页、字体、表格跨页、图像排版或印刷版式。
 - 当前 SSIR 的 Turtle 只是稳定 RDF 投影，不等同于具有完整领域语义、推理规则和受控词表的 lookWhy 本体。
 - 当前关键损失中的单位、引用和条件识别使用有限的规则模式；它们能覆盖现有样例，但需要随领域和语种扩展。
 - CSM 的 `title-en`、发布机构、发布日期、ICS/CCS 等丰富元数据在当前 M1 映射和比较中尚未形成完整的端到端覆盖，应在扩展元数据时先补 Schema、builder、renderer 与回环测试。
@@ -228,7 +228,7 @@ PYTHONPATH=src python3 tools/verify_markdown_roundtrip.py \
 
 ## 7. 后续开发建议
 
-后续三项工作应共享 CSM、SSIR Schema、质量报告和回环测试的核心契约，不应绕过 Std0 或直接在各适配器中各自定义结构。
+后续三项工作应共享 CSM、SSIR Schema、质量报告和回环测试的核心契约，不应绕过 Canonical 或直接在各适配器中各自定义结构。
 
 ### 7.1 工作 2：SSIR -> 符合 GB/T 1.1 的传统 PDF 标准
 
@@ -260,7 +260,7 @@ PYTHONPATH=src python3 tools/verify_markdown_roundtrip.py \
 
 ### 7.3 工作 4：传统 PDF/扫描标准 -> CSM Markdown
 
-目标：补全第一步，以 PDF、扫描 PDF 或 MinerU 输出为输入，生成符合 CSM 1.0 的原始 Markdown，随后复用现有 `normalize -> Std0 -> SSIR` 链路。
+目标：补全第一步，以 PDF、扫描 PDF 或 MinerU 输出为输入，生成符合 CSM 1.0 的原始 Markdown，随后复用现有 `normalize -> Canonical -> SSIR` 链路。
 
 建议顺序：
 

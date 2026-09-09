@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "leleby-ssir"
 version = "0.1.0"
 description = "Canonical SSIR Markdown to SSIR JSON parser"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
   "PyYAML>=6.0",
   "jsonschema>=4.0",

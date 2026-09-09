@@ -31,6 +31,7 @@ from typing import Any
 
 from .docx_renderer import DOCX_DEPENDENCY_HINT, METADATA_MARK
 from .naming import standard_number_from_text
+from .parser import escape_table_cell
 
 __all__ = ["docx_to_csm_markdown", "docx_metadata"]
 
@@ -427,7 +428,9 @@ def _is_continue_at(row: list[tuple[str, int, str | None]], col_index: int,
 
 
 def _escape_pipe(text: str) -> str:
-    return text.replace("|", "\\|")
+    # 幂等转义：docx 文本可能已含转义管道（自环 render.docx 导入），无条件转义会
+    # 二次成双反斜杠、破坏后续 parse（与 csm_normalizer/escape_table_cell 同规则）。
+    return escape_table_cell(text)
 
 
 def _assemble(metadata: dict[str, Any], body_lines: list[str]) -> str:

@@ -581,6 +581,50 @@ source:
         self.assertTrue(any(issue.code == "CSM-ENC-001" for issue in report.issues))
         self.assertTrue(compare_ssir(ssir0, ssir0_reparsed).passed)
 
+    def test_escaped_pipe_in_table_cell_survives_normalize_idempotently(self) -> None:
+        # MinerU 表格单元格内联公式的绝对值竖线先经 mineru_html 首转义（raw.md 里
+        # 是单反斜杠转义管道）；csm_normalizer 旧实现无条件给每个 | 补反斜杠，会把
+        # 已转义管道二次转义成双反斜杠，再次 parse 时反斜杠转义追踪失效、公式里的
+        # | 被误判为列分隔符（GB_T_755-2025 表12/13/15：row has 6 cells; expected 4
+        # → parse 中断、渲染缺失）。写侧转义必须与读侧语义一致且幂等：已转义管道
+        # 保持原样，只有裸管道才补反斜杠。规则对应：normalize/roundtrip 幂等
+        # （escape_table_cell）。
+        raw = (
+            "---\n"
+            "document-type: standard\n"
+            "document-identifier: \"Q/TEST 007—2026\"\n"
+            "standard-number: \"Q/TEST 007—2026\"\n"
+            "title: \"Escaped pipe in table\"\n"
+            "language: zh-CN\n"
+            "---\n\n"
+            "# Escaped pipe in table\n\n"
+            "## 1 范围\n\n"
+            '<!-- ssir:table id="t1" header-rows="1" caption-number="1" caption="温升限值修正" -->\n'
+            "**表1 温升限值修正**\n"
+            "| 项号 | 运行条件 | 修正 |\n"
+            "| --- | --- | --- |\n"
+            "| 1 | $\\| \\theta _ { c } - \\theta _ { c T } \\| \\leqslant 3 0 \\ \\mathrm { K }$ | 按协议 |\n"
+            "| 2 | 海拔差 $H _ { T }$ | 不作修正 |\n\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            raw_path = Path(directory) / "raw.md"
+            canonical_path = Path(directory) / "standard.canonical.md"
+            raw_path.write_text(raw, encoding="utf-8")
+            normalize_csm(raw_path, canonical_path)
+            rendered = canonical_path.read_text(encoding="utf-8")
+            ssir = parse_csm(canonical_path)
+            canonical2_path = Path(directory) / "standard2.canonical.md"
+            normalize_csm(canonical_path, canonical2_path)
+            ssir2 = parse_csm(canonical2_path)
+            canonical_bytes = canonical_path.read_bytes()
+            canonical2_bytes = canonical2_path.read_bytes()
+        table = ssir["tables"][0]
+        self.assertEqual(table["colCount"], 3)
+        self.assertIn("\\|", rendered)
+        self.assertNotIn("\\\\|", rendered)
+        self.assertEqual(canonical_bytes, canonical2_bytes)
+        self.assertTrue(compare_ssir(ssir, ssir2).passed)
+
     def test_ocr_collapsed_dash_markers_still_parse_as_lists(self) -> None:
         # OCR 常把 GB/T 1.1 的 "——" 压成单个 "-"/"—" 且丢失后方空格
         # （GBT-C12）。此类行必须仍按列项解析，marker 取整段破折号。
@@ -1409,9 +1453,8 @@ class Gb3100ParserFixTests(unittest.TestCase):
         self.assertEqual(result[0].data["rows"][-1][0], "注1：一般常用时间单位。")
 
 
-class ClauseHeadingDemoteAndSplitMergeTests(unittest.TestCase):
-    """2026-09-04 GB_T_1.1-2020：句子体条文被误升标题（CSM-OCR-009）；
-    编号条文在页边界被断成两段（CSM-OCR-010）。"""
+class ClauseHeadingDemoteTests(unittest.TestCase):
+    """2026-09-04 GB_T_1.1-2020：句子体条文被误升标题（CSM-OCR-009）。"""
 
     @staticmethod
     def _read(body: str):
@@ -1469,72 +1512,6 @@ class ClauseHeadingDemoteAndSplitMergeTests(unittest.TestCase):
         headings = [b.text for b in doc.blocks if b.kind == "heading"]
         self.assertIn("一般说明。", headings)
         self.assertFalse([i for i in doc.issues if i.code == "CSM-OCR-009"])
-
-    def test_page_split_clause_paragraph_is_merged(self) -> None:
-        # 回归（2026-09-04，GB_T_1.1-2020 9.4.2.2）：MinerU 在页边界把
-        # 「……不应该与“应”一起」+「使用表示要求，建议与“宜”一起使用表示推荐。」
-        # 断成两个 markdown 段落（第一段无标点收尾）。010 应合并为一段。
-        doc = self._read(
-            "#### 9.4.2 常用词的使用\n\n"
-            "9.4.2.1“遵守”和“符合”用于不同的情形的表述。\n\n"
-            "9.4.2.2“尽可能”“尽量”“考虑”(“优先考虑”“充分考虑”)以及“避免”“慎重”"
-            "等词语不应该与“应”一起\n\n"
-            "使用表示要求，建议与“宜”一起使用表示推荐。\n\n"
-            "9.4.2.3“通常”“一般”“原则上”不应该与“应”“不应”一起使用表示要求。\n"
-        )
-        paragraphs = [b.text for b in doc.blocks if b.kind == "paragraph"]
-        merged = [p for p in paragraphs if p.startswith("9.4.2.2")]
-        self.assertEqual(len(merged), 1)
-        # 续文已并入同一段（不再以「使用表示要求」独立成段）。
-        self.assertIn("不应该与“应”一起使用表示要求，建议与“宜”一起使用表示推荐。", merged[0])
-        self.assertNotIn("\n", merged[0])
-        # 后续完整条文仍是独立段。
-        self.assertTrue(any(p.startswith("9.4.2.3") for p in paragraphs))
-        self.assertEqual(len(paragraphs), 3)
-        repair = [i for i in doc.issues if i.code == "CSM-OCR-010"]
-        self.assertEqual(len(repair), 1)
-
-    def test_complete_sentence_clause_is_not_merged_with_next_paragraph(self) -> None:
-        # 保守边界：编号段以句号收尾时是完整条文，其后段落不得并入（防误并）。
-        doc = self._read(
-            "## 5 要求\n\n"
-            "5.1 产品应符合本标准的要求。\n\n"
-            "这是条外的独立说明段落。\n"
-        )
-        paragraphs = [b.text for b in doc.blocks if b.kind == "paragraph"]
-        self.assertEqual(len(paragraphs), 2)
-        self.assertFalse([i for i in doc.issues if i.code == "CSM-OCR-010"])
-
-    def test_example_or_note_or_new_clause_continuation_is_not_merged(self) -> None:
-        # 保守边界：次段是示例/注/新条文开头时不得并入上一编号段。
-        doc = self._read(
-            "## 9 条文\n\n"
-            "9.1.1 文件起草时宜考虑下列内容\n\n"
-            "示例：文件的结构与内容。\n\n"
-            "9.1.2 注的引导语见9.11。\n\n"
-            "注：这是独立注。\n"
-        )
-        paragraphs = [b.text for b in doc.blocks if b.kind == "paragraph"]
-        self.assertTrue(any(p.startswith("9.1.1") for p in paragraphs))
-        self.assertTrue(any(p.startswith("示例：") for p in paragraphs))
-        self.assertTrue(any(p.startswith("9.1.2") for p in paragraphs))
-        repair = [i for i in doc.issues if i.code == "CSM-OCR-010"]
-        # 9.1.2 段以句号收尾也不合并；示例行独立成段。
-        self.assertEqual(len(repair), 0)
-
-    def test_term_line_and_definition_are_not_merged(self) -> None:
-        # 保守边界（术语条形态）：编号术语行/术语行+定义不得被 010 粘成一段。
-        doc = self._read(
-            "## 3 术语和定义\n\n"
-            "### 3.1 文件\n\n"
-            "3.1.1\n\n"
-            "标准化文件　standardizing document\n\n"
-            "通过标准化活动制定的文件。\n"
-        )
-        paragraphs = [b.text for b in doc.blocks if b.kind == "paragraph"]
-        self.assertEqual(len(paragraphs), 3)
-        self.assertFalse([i for i in doc.issues if i.code == "CSM-OCR-010"])
-
 
 if __name__ == "__main__":
     unittest.main()

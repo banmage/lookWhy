@@ -4,14 +4,26 @@
 The tool deliberately uses MinerU's complete pipeline backend.  It divides a
 long PDF into page ranges only to make CPU runs restartable; every range still
 enables layout analysis, OCR, formulas, and tables.
+
+表格通道（GEN-094，2026-09-09）：MinerU pipeline 的表格结构识别只在可见网格线
+处断行——"隐藏行表"（块内逐行叠印无网格线：GB_T_5171.1-2014 表1 温升限值、
+GB_T_755-2025 表13 等）被压成单行单元格、数值串粘接不可逆。该通道**默认关闭**
+（hybrid-engine 是 VLM 型表格结构识别、整页跑非常耗时）：不加参数时表格保持
+pipeline 原样（原始逻辑）；仅显式加 --hybrid-tables，extract 才对含表页额外跑
+hybrid-engine（能视觉恢复逐行对齐），merge 按（页, 页内序）把表格块替换为
+hybrid 结果；正文一律仍用 pipeline（hybrid 整页正文会丢数字/拉丁短串，本仓库
+不做整体换后端，与 GEN-092 同口径）。hybrid 缺失/失败/表数不齐时回退 pipeline
+表格块。
 """
 
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 from datetime import datetime
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -20,7 +32,7 @@ import sys
 import time
 from typing import Any
 
-from leleby_ssir.mineru_html import convert_mineru_markup, formula_assets_index
+from leleby_ssir.mineru_html import convert_mineru_markup, formula_assets_index, html_table_to_csm
 from leleby_ssir.naming import standard_filename, standard_number_from_text
 
 
@@ -1029,6 +1041,7 @@ def extract(args: argparse.Namespace, state: dict[str, Any]) -> None:
             f"re-extracting all page ranges (previously completed parts are invalid)"
         )
         state["parts"] = []
+        state.pop("hybridPasses", None)
         parts_root = args.output_dir / "parts"
         if parts_root.is_dir():
             shutil.rmtree(parts_root)
@@ -1073,6 +1086,224 @@ def extract(args: argparse.Namespace, state: dict[str, Any]) -> None:
         _write_json(args.state_file, state)
         _log(f"Completed pages {start + 1}-{end + 1} in {elapsed / 60:.1f} minutes")
         _log(f"State saved: {args.state_file}")
+
+    # 表格块 hybrid-engine 第二遍（GEN-094）：pipeline 表格 TSR 压平"隐藏行表"，
+    # hybrid VLM 能恢复逐行结构。只对含表页跑；失败不中断（merge 回退 pipeline 表）。
+    if getattr(args, "hybrid_tables", False):
+        _run_hybrid_table_passes(args, state)
+    else:
+        # 默认（未加 --hybrid-tables）不跑 hybrid 第二遍：表格保持 pipeline 原样
+        # （原始逻辑）；丢弃历史 hybrid 结果，避免 merge 误用上一轮的替换。
+        state.pop("hybridPasses", None)
+        state.pop("hybridFailures", None)
+
+
+# =====================================================================
+# 表格块 hybrid-engine 第二遍（GEN-094，2026-09-09）
+# ---------------------------------------------------------------------
+# 问题类：MinerU pipeline 表格 TSR 只在可见网格线处断行——\"隐藏行表\"（块内
+# 逐行叠印、无网格线：GB_T_5171.1-2014 表1 温升限值表、GB_T_755-2025 表13
+# 等）被压成单行单元格、数值串粘接后不可逆拆分。hybrid-engine（MinerU
+# 2.5-Pro VLM 表格结构识别）能视觉恢复逐行对齐；但其整页正文识别丢数字/拉丁
+# 短串，故只取表格块、正文仍用 pipeline 通道（与 GEN-092 同口径：不做整体换
+# 后端）。规则对应：GEN-094（extract 含表页跑 hybrid；merge 按（页, 页内序）
+# 替换表格块，保留 pipeline 题注/编号；hybrid 缺失/失败/表数不齐时回退）。
+# =====================================================================
+
+def _find_content_list(part_dir: Path) -> Path | None:
+    """Locate MinerU *_content_list.json（v1 条目表；不是 *_content_list_v2.json）。"""
+    candidates = [
+        f for f in sorted(part_dir.rglob("*_content_list.json"))
+        if f.name.endswith("_content_list.json")
+    ]
+    return candidates[0] if candidates else None
+
+
+def _table_entries_from_content_list(cl_path: Path) -> list[dict[str, Any]]:
+    try:
+        data = json.loads(cl_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [it for it in data if isinstance(it, dict) and it.get("type") == "table"]
+
+
+def _pipeline_table_pages(part_dir: Path, base: int = 0) -> list[int]:
+    """pipeline content_list 的表格全局页号（文件顺序 = md/转换后表块顺序）。
+
+    MinerU 的 content_list page_idx 是相对本次 invocation 起始页的本地索引
+    （-s 11 的单页运行也报 0），需加 base（chunk 起始页）得全局页号。
+    """
+    cl = _find_content_list(part_dir)
+    if cl is None:
+        return []
+    pages: list[int] = []
+    for item in _table_entries_from_content_list(cl):
+        try:
+            pages.append(int(item["page_idx"]) + base)
+        except (KeyError, TypeError, ValueError):
+            continue
+    return pages
+
+
+def _hybrid_tables_by_page(part_dir: Path, base: int = 0) -> dict[int, list[str]]:
+    """hybrid-engine 输出：全局页 -> 该页表格 HTML 列表（文件顺序 = 页内顺序）。"""
+    cl = _find_content_list(part_dir)
+    out: dict[int, list[str]] = {}
+    if cl is None:
+        return out
+    for item in _table_entries_from_content_list(cl):
+        try:
+            page = int(item["page_idx"]) + base
+        except (KeyError, TypeError, ValueError):
+            continue
+        body = item.get("table_body") or item.get("html")
+        if not isinstance(body, str) or "<table" not in body.lower():
+            continue
+        out.setdefault(page, []).append(body)
+    return out
+
+
+def _hybrid_markdown_present(run_dir: Path) -> bool:
+    return any(run_dir.rglob("*.md"))
+
+
+def _run_hybrid_table_passes(args: argparse.Namespace, state: dict[str, Any]) -> None:
+    """对含表页跑 hybrid-engine 第二遍；结果登记 state['hybridPasses']。
+
+    失败不抛异常（merge 回退 pipeline 表格块），但记录 state['hybridFailures']
+    并在日志显著提示；重跑同一命令可续跑失败区间（resumable）。
+    """
+    if getattr(args, "input_kind", "pdf") != "pdf":
+        return
+    completed = {
+        item["start"]: item for item in state.get("parts", []) if item.get("status") == "complete"
+    }
+    if not completed:
+        return
+    pages: set[int] = set()
+    for part in completed.values():
+        part_dir = args.output_dir / Path(part["markdown"]).parent
+        pages.update(_pipeline_table_pages(part_dir, int(part["start"])))
+    if not pages:
+        _log("No table pages detected in the pipeline output; skipping hybrid-engine table pass")
+        return
+    # 连续表页并成一个 invocation（每个 invocation 只有一次模型加载）。
+    runs: list[list[int]] = []
+    for page in sorted(pages):
+        if runs and page == runs[-1][1] + 1:
+            runs[-1][1] = page
+        else:
+            runs.append([page, page])
+    existing = {
+        item["start"]: item for item in state.get("hybridPasses", []) if item.get("status") == "complete"
+    }
+    command = _mineru_command()
+    done: list[dict[str, Any]] = []
+    for start, end in runs:
+        run_dir = args.output_dir / "parts" / f"hybrid-table-{start + 1:03d}-{end + 1:03d}"
+        prior = existing.get(start)
+        if prior and prior.get("end") == end and _hybrid_markdown_present(args.output_dir / prior["dir"]):
+            _log(f"Skipping hybrid table pages {start + 1}-{end + 1}: recorded complete")
+            done.append(prior)
+            continue
+        invocation = [
+            command, "-p", str(args.input), "-o", str(run_dir), "-b", "hybrid-engine",
+            "--effort", "medium", "-l", "ch", "-f", "true", "-t", "true",
+            "-s", str(start), "-e", str(end),
+        ]
+        env = dict(os.environ)
+        if getattr(args, "hf_endpoint", None):
+            env["HF_ENDPOINT"] = args.hf_endpoint
+        env.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+        _log(
+            f"Starting hybrid-engine table pass for pages {start + 1}-{end + 1} of {args.input.name} "
+            "(table rows only; body text stays with the pipeline backend)"
+        )
+        started = time.monotonic()
+        result = subprocess.run(invocation, cwd=ROOT, env=env)
+        elapsed = time.monotonic() - started
+        run_dir.mkdir(parents=True, exist_ok=True)
+        if result.returncode or not _hybrid_markdown_present(run_dir):
+            state.setdefault("hybridFailures", []).append(
+                {"start": start, "end": end, "returnCode": result.returncode}
+            )
+            _log(
+                f"hybrid-engine table pass FAILED for pages {start + 1}-{end + 1} "
+                f"(exit {result.returncode}) after {elapsed / 60:.1f} minutes; "
+                "falling back to pipeline table blocks (rerun the same command to retry)"
+            )
+            _write_json(args.state_file, state)
+            continue
+        done.append({"start": start, "end": end, "status": "complete", "dir": str(run_dir.relative_to(args.output_dir))})
+        _log(f"Completed hybrid table pages {start + 1}-{end + 1} in {elapsed / 60:.1f} minutes")
+    if done:
+        kept = [item for item in state.get("hybridPasses", []) if item.get("status") != "complete"]
+        state["hybridPasses"] = done + kept
+        _write_json(args.state_file, state)
+
+
+def _splice_hybrid_table_blocks(
+    raw: str, tbl_pages: list[int], hybrid_by_page: dict[int, list[str]]
+) -> tuple[str, int, int]:
+    """把 raw 中 pipeline 生成的表格块行替换为 hybrid-engine 行结构。
+
+    对齐：pipeline content_list 的表格顺序 = 转换后 raw 中表块顺序，每个表块
+    按 tbl_pages 对应页；hybrid 表按（页, 页内序）匹配。块/页数不齐或该页
+    hybrid 表数不足时该表保持 pipeline（不猜测，确定性回退）。返回
+    (新文本, 替换表数, 保留 pipeline 表数)。表格题注/编号保留 pipeline 的
+    ssir:table 指令行（表号、caption 属性不被 hybrid 正文噪声污染）。
+    """
+    if not hybrid_by_page or not tbl_pages:
+        return raw, 0, 0
+    lines = raw.splitlines()
+    blocks: list[tuple[int, int]] = []
+    index = 0
+    while index < len(lines):
+        if lines[index].startswith("<!-- ssir:table id="):
+            end = index + 1
+            while end < len(lines) and lines[end].strip():
+                end += 1
+            blocks.append((index, end))
+            index = end
+        else:
+            index += 1
+    if len(blocks) != len(tbl_pages):
+        _log(
+            f"Table block/page alignment mismatch ({len(blocks)} blocks vs "
+            f"{len(tbl_pages)} content_list tables); keeping pipeline tables"
+        )
+        return raw, 0, 0
+    per_page: dict[int, int] = defaultdict(int)
+    replaced = 0
+    output: list[str] = []
+    prev = 0
+    for (start, end), page in zip(blocks, tbl_pages):
+        output.extend(lines[prev:start])
+        hybrid = hybrid_by_page.get(page, [])
+        ordinal = per_page.get(page, 0)
+        per_page[page] = ordinal + 1
+        if ordinal < len(hybrid):
+            converted = html_table_to_csm(hybrid[ordinal], "hybrid", None)
+            rows = converted.splitlines()
+            if rows and rows[0].startswith("<!-- ssir:table"):
+                rows = rows[1:]
+            if rows:
+                # 保留 pipeline 指令行（题注/编号/id），只换行结构；merge 指令的
+                # table 引用同步改指该 id（html_table_to_csm 内部用占位 id）。
+                tid = re.search(r'id="([^"]+)"', lines[start])
+                if tid:
+                    rows = [row.replace('table="mineru-table-hybrid"', f'table="{tid.group(1)}"') for row in rows]
+                block = [lines[start]] + [row.replace("](images/", "](assets/images/") for row in rows]
+                output.extend(block)
+                replaced += 1
+                prev = end
+                continue
+        output.extend(lines[start:end])
+        prev = end
+    output.extend(lines[prev:])
+    return "\n".join(output), replaced, len(blocks) - replaced
 
 
 _ELLIPSIS_CHARS = ("…", "⋯")  # U+2026 与 U+22EF（中线省略号，部分字体映射）
@@ -1142,10 +1373,9 @@ def _restore_ellipsis_lines(body: str, pdf: Path) -> str:
     - 正文省略号：以省略号行之后的**下一个带条号骨架的文本层行**为锚（锚定到
       raw 中该骨架的最后一个出现位置，靠单调游标保持插入顺序），把"……"插到
       该行之前；无后随锚且位于最后一页末行时追加到文末（6.2 末尾型）。
-    - 表格单元格省略号：文本层同一 x 带内、以省略号行为中心按行距向外延展的
-      连续行 = 单元格原始行列表；把 raw 单元格文本按"……"切段后，用文本层
-      各行长度对中段做贪心对齐（末行允许 ±2 容差，容纳 OCR 丢弃上标等），
-      行间以 <br> 连接（渲染端转 <br/>，roundtrip 三侧一致）。
+    2026-09-07 用户裁定：不再做"表格单元格内按……切段、前后加 <br> 让省略号独占
+    一行"的重建（单元格行结构恢复整条取消；正文恢复保留）——需要时在 canonical
+    人工处理单元格换行。
 
     保守原则：锚点/长度无法可靠匹配时不改（不猜测）；raw 已在插入点附近有
     短省略号行时跳过（防重复）。
@@ -1224,161 +1454,12 @@ def _restore_ellipsis_lines(body: str, pdf: Path) -> str:
         cursor = found + 1
         consumed.add(e)
 
-    # 第二遍：表格单元格省略号。
-    table_ellipsis = [i for i in ellipsis_indexes if i not in consumed and _table_like(i)]
-    # 按页 + x 带分组（同一单元格的省略号行同页同 x、y 递增）。
-    clusters: list[list[int]] = []
-    for e in table_ellipsis:
-        placed = False
-        for cluster in clusters:
-            ref = text_lines[cluster[0]]
-            line = text_lines[e]
-            if line["page"] == ref["page"] and abs(line["x0"] - ref["x0"]) <= 20:
-                cluster.append(e)
-                placed = True
-                break
-        if not placed:
-            clusters.append([e])
-    table_replacements: list[tuple[int, str, str]] = []
-    for cluster in clusters:
-        cluster.sort(key=lambda i: text_lines[i]["y0"])
-        ref = text_lines[cluster[0]]
-        ellipsis_ys = {text_lines[i]["y0"] for i in cluster}
-        # 单元格完整行列表：以省略号行为中心、同 x 带内按行距 ≤28pt 连续延展。
-        cell_lines = _cell_vertical_run(
-            [
-                line for line in text_lines
-                if line["page"] == ref["page"] and abs(line["x0"] - ref["x0"]) <= 25
-            ],
-            ellipsis_ys,
-        )
-        if len(cell_lines) < 2:
-            continue
-        lengths = [len(line["text"]) for line in cell_lines]
-        ellipsis_lengths = {len(line["text"]) for line in cell_lines if line["y0"] in ellipsis_ys}
-        # 在 raw 中找含同数量"……"的表格单元格。
-        raw_index: int | None = None
-        cell_text: str | None = None
-        for ri in range(len(raw_lines)):
-            if not raw_lines[ri].strip().startswith("|"):
-                continue
-            cells = [c.strip() for c in raw_lines[ri].strip().strip("|").split("|")]
-            for cell in cells:
-                if cell.count("……") == len(cluster):
-                    raw_index = ri
-                    cell_text = cell
-                    break
-            if raw_index is not None:
-                break
-        if raw_index is None or cell_text is None:
-            continue
-        rebuilt = _rebuild_cell_lines(cell_text, lengths, ellipsis_lengths)
-        if rebuilt is None or rebuilt == cell_text:
-            continue
-        table_replacements.append((raw_index, cell_text, rebuilt))
-
-    if not insert_before and not table_replacements:
+    if not insert_before:
         return body
 
-    for ri, cell_text, rebuilt in table_replacements:
-        raw_lines[ri] = raw_lines[ri].replace(cell_text, rebuilt)
     for ri, text in sorted(insert_before, key=lambda item: item[0], reverse=True):
         raw_lines.insert(ri, text)
     return "\n".join(raw_lines)
-
-
-def _cell_vertical_run(cell_lines: list[dict[str, Any]], ellipsis_ys: set[float]) -> list[dict[str, Any]]:
-    """从省略号行出发、同 x 带内按 y 相邻（间距 ≤28pt）连续延展的单元格行。"""
-    if not cell_lines:
-        return []
-    selected = [line for line in cell_lines if line["y0"] in ellipsis_ys]
-    if not selected:
-        return []
-    selected = sorted(selected, key=lambda line: line["y0"])
-    top = selected[0]["y0"]
-    bottom = selected[-1]["y0"]
-    ordered = sorted(cell_lines, key=lambda line: line["y0"])
-    # 两省略号行之间的行天然属于该单元格，先全部纳入。
-    grown = [line for line in ordered if top <= line["y0"] <= bottom]
-    # 向上延展
-    for line in reversed(ordered):
-        if line["y0"] >= top:
-            continue
-        if top - line["y0"] <= 28 and line not in grown:
-            grown.append(line)
-            top = line["y0"]
-    # 向下延展
-    for line in ordered:
-        if line["y0"] <= bottom:
-            continue
-        if line["y0"] - bottom <= 28 and line not in grown:
-            grown.append(line)
-            bottom = line["y0"]
-    return sorted(grown, key=lambda line: line["y0"])
-
-
-def _rebuild_cell_lines(cell_text: str, lengths: list[int], ellipsis_lengths: set[int]) -> str | None:
-    """把 raw 表格单元格文本按文本层行结构重排为 <br> 连接的多行。
-
-    - 先按"……"切段（省略号行独占一行，这是本修复的核心诉求）；
-    - 每个中段按文本层对应行的字符长度贪心切分（末行容差 ±2，容纳 OCR
-      丢弃上标字母等）；长度对不上时回退为仅"……"分行。
-    """
-    segments = cell_text.split("……")
-    # 省略号行在文本层长度序列里的下标 = 段间锚点。
-    ellipsis_positions = [i for i, ln in enumerate(lengths) if ln in ellipsis_lengths]
-    if not ellipsis_positions:
-        return None
-    # 每段的文本层长度 = 相邻省略号位置之间的非省略号行长度。
-    run_lengths: list[list[int]] = []
-    prev = -1
-    for pos in ellipsis_positions:
-        run_lengths.append([ln for ln in lengths[prev + 1:pos] if ln not in ellipsis_lengths])
-        prev = pos
-    run_lengths.append([ln for ln in lengths[prev + 1:] if ln not in ellipsis_lengths])
-    if len(segments) != len(run_lengths):
-        return None
-    rebuilt: list[str] = []
-    for seg_index, segment in enumerate(segments):
-        lines = _greedy_split(segment, run_lengths[seg_index]) if run_lengths[seg_index] else [segment]
-        if lines is None:
-            # 回退：仅把省略号分行，中段保持原样。
-            rebuilt = []
-            for idx, segment_text in enumerate(segments):
-                if segment_text:
-                    rebuilt.append(segment_text)
-                if idx < len(segments) - 1:
-                    rebuilt.append("……")
-            return "<br>".join(rebuilt)
-        rebuilt.extend(lines)
-        if seg_index < len(segments) - 1:
-            rebuilt.append("……")
-    return "<br>".join(rebuilt)
-
-
-def _greedy_split(segment: str, lengths: list[int]) -> list[str] | None:
-    """按字符长度序列贪心切分（末行容差 ±2）。无法对齐返回 None。"""
-    if not segment and not lengths:
-        return []
-    if len(lengths) == 1:
-        return [segment] if abs(len(segment) - lengths[0]) <= 2 else None
-    lines: list[str] = []
-    pos = 0
-    for index, ln in enumerate(lengths):
-        if index == len(lengths) - 1:
-            rest = len(segment) - pos
-            if abs(rest - ln) <= 2:
-                lines.append(segment[pos:])
-                pos = len(segment)
-            else:
-                return None
-        else:
-            end = pos + ln
-            if end > len(segment):
-                return None
-            lines.append(segment[pos:end])
-            pos = end
-    return lines if pos == len(segment) else None
 
 
 def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
@@ -1389,6 +1470,25 @@ def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
     missing = [start + 1 for start in expected if start not in completed]
     if missing:
         raise RuntimeError(f"Cannot merge: MinerU output is missing for pages starting at {missing}")
+
+    # hybrid-engine 表格第二遍结果（GEN-094）：页 -> 该页 hybrid 表格 HTML。
+    # 只用于替换同页 pipeline 表块的行结构；题注/正文仍以 pipeline 为准。
+    # 默认关闭（原始逻辑：表格保持 pipeline 原样）；仅 --hybrid-tables 显式
+    # 启用时才读取 hybridPasses 做行替换。
+    hybrid_by_page: dict[int, list[str]] = {}
+    hybrid_image_dirs: list[Path] = []
+    if getattr(args, "hybrid_tables", False):
+        for run in state.get("hybridPasses", []):
+            if run.get("status") != "complete":
+                continue
+            run_dir = args.output_dir / run["dir"]
+            if not run_dir.is_dir():
+                continue
+            for page, htmls in _hybrid_tables_by_page(run_dir, int(run["start"])).items():
+                hybrid_by_page.setdefault(page, []).extend(htmls)
+            hybrid_image_dirs.extend(d for d in run_dir.rglob("images") if d.is_dir())
+    hybrid_replaced = 0
+    hybrid_kept = 0
 
     _log(f"Merging {len(expected)} completed MinerU page ranges into one CSM Markdown document")
     stem = args.output_stem or args.input.stem
@@ -1403,6 +1503,17 @@ def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
             formula_assets_index(source),
             gbt_1_1_quirks=_is_gbt_1_1_2020(args.input),
         )
+        if hybrid_by_page:
+            tbl_pages = _pipeline_table_pages(source.parent, int(part["start"]))
+            if tbl_pages:
+                raw, n_replaced, n_kept = _splice_hybrid_table_blocks(raw, tbl_pages, hybrid_by_page)
+                if n_replaced:
+                    _log(
+                        f"hybrid table rows spliced: {n_replaced} replaced / {n_kept} kept "
+                        f"(pages {part['start'] + 1}-{part['end'] + 1})"
+                    )
+                    hybrid_replaced += n_replaced
+                    hybrid_kept += n_kept
         raw = _recover_annex_headings(raw)
         raw = _demote_banner_fragments(raw)
         if part["start"] == 0:
@@ -1419,6 +1530,15 @@ def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
             raw = _recover_gbt_7_4_diagrams(raw, args.input, args.output_dir / "assets" / "images")
         parts_raw.append(raw)
         sources.append({"pages": [part["start"] + 1, part["end"] + 1], "markdown": part["markdown"], "sha256": hashlib.sha256(raw.encode()).hexdigest()})
+
+    # hybrid 表行内嵌图（如有）同样落入文档根 assets/images/（与 pipeline 图一致）。
+    if hybrid_replaced and hybrid_image_dirs:
+        image_target = args.output_dir / "assets" / "images"
+        image_target.mkdir(parents=True, exist_ok=True)
+        for image_dir in hybrid_image_dirs:
+            for image in image_dir.iterdir():
+                if image.is_file() and not (image_target / image.name).exists():
+                    shutil.copy2(image, image_target / image.name)
 
     # Derive the standard number and title from the extraction when the caller
     # did not supply them explicitly, matching the generic PDF extractor logic.
@@ -1538,12 +1658,25 @@ def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
     # 通用省略号恢复（GEN-092 后验补盲）：OCR 常丢弃纯"……"占位行与表格
     # 单元格行结构，源 PDF 文本层完整保留——merge 阶段从文本层恢复。
     merged_text = _restore_ellipsis_lines(merged_text, args.input)
+    # 表注锚点上标字母回收（CSM-OCR-015）：MinerU OCR 丢表头/单元格上标字母、只留
+    # 表注定义行（GB_T_20001.10-2014 表1 型）→ 从源 PDF 文本层补回单元格尾部标记。
+    merged_text, recovered_markers = _recover_table_note_markers(merged_text, args.input)
+    if recovered_markers:
+        _log(f"Recovered {recovered_markers} table note marker(s) from the source PDF text layer")
     destination.write_text(merged_text, encoding="utf-8")
     provenance = paths["provenance"]
-    _write_json(provenance, {
+    provenance_payload: dict[str, Any] = {
         "sourcePdf": str(args.input.resolve()), "sourceSha256": state["sourceSha256"], "pageCount": state["pageCount"],
         "backend": state["backend"], "parameters": state["parameters"], "parts": sources,
-    })
+    }
+    if hybrid_replaced:
+        provenance_payload["tableBackend"] = "mineru hybrid-engine (targeted table pages; body: mineru pipeline)"
+        provenance_payload["hybridTableReplacement"] = {"replaced": hybrid_replaced, "keptPipeline": hybrid_kept}
+        provenance_payload["hybridPasses"] = [
+            {"pages": [run["start"] + 1, run["end"] + 1], "dir": run["dir"]}
+            for run in state.get("hybridPasses", []) if run.get("status") == "complete"
+        ]
+    _write_json(provenance, provenance_payload)
     state["title"] = title
     state["number"] = number
     _write_json(args.state_file, state)
@@ -1576,6 +1709,19 @@ def finalize(args: argparse.Namespace, merged: Path) -> Path | None:
     if subprocess.run(normalize, cwd=ROOT).returncode:
         print("CSM normalization needs review; MinerU extraction and provenance remain available.", file=sys.stderr)
         return None
+    # 条文脚注回收（CSM-OCR-014）：MinerU 常把上标脚注标记与正文粘连（“—2003”+1)
+    # →“—20031”），页底解释行被当普通正文；且 normalize 对 raw 里的 GFM
+    # “[^N]: …” 定义行在内存归类为 footnote 后并不回写 canonical（实测丢失）。
+    # 因此脚注回收只能作用于 normalize **刚生成**的 canonical：在本轮全流程
+    # （--stage all 且无 canonical，或显式 --stage finalize 重生成）的 normalize
+    # 之后、parse 之前执行——此刻 canonical 是本轮产物，不是人工编辑的 curated
+    # 基线；从 canonical 续跑的半程路径（_run_from_existing_canonical）不经过本
+    # 函数，绝不会改写已存在的 curated canonical（AGENTS.md §2）。幂等：已有
+    # “[^N]” 标记与定义时不重复写。
+    if args.input.suffix.lower() == ".pdf" and canonical.is_file():
+        recovered = _recover_pdf_footnotes(canonical, args.input)
+        if recovered:
+            _log(f"Recovered {recovered} footnote(s) from the source PDF text layer into {canonical.name}")
     _log("Parsing normalized CSM into SSIR JSON")
     if subprocess.run(parsed, cwd=ROOT).returncode:
         print("SSIR parsing needs review; normalized CSM remains available.", file=sys.stderr)
@@ -1993,15 +2139,15 @@ def compare(original: Path, generated: Path, output: Path) -> None:
     })
 
 
-def main() -> int:
-    # 规则对应（流水线阶段 → 规则层）: extract=GEN-002/003；merge=GEN-005/010—019/030；
-    # normalize=GEN-031—034；build=GEN-050/052；verify=GEN-051/090/091 + 三层合规
-    # （GEN→GBT→P10，见 compliance.py）；render=GEN-070—076。
+def _build_parser() -> argparse.ArgumentParser:
+    """CLI 参数定义（独立函数便于单测断言默认值，如 --hybrid-tables 默认关闭）。"""
     parser = argparse.ArgumentParser(description="Run the full standard pipeline: Word (.docx/.doc, default) or PDF → MinerU PDF recognition (when the input is PDF) → SSIR parse → round-trip verification → optional rendering (PDF + content-equivalent docx).")
     parser.add_argument("file", nargs="?", type=str, default=None,
                         help="standard file name resolved under corpus/golden/ (e.g. T_ZZB_2224-2021, T_ZZB_2224-2021.docx or T_ZZB_2224-2021.pdf). "
                              "Word 输入默认优先（docx/doc），未找到再回退 PDF 做 MinerU 识别。 "
-                             "Shortcut mode: implies --stage all --roundtrip --render so one command runs the whole pipeline.")
+                             "Shortcut mode: implies --stage all --roundtrip --render so one command runs the whole pipeline. "
+                             "若 out/mineru/<ID>/02_canonical/<ID>.canonical.md 已存在，则跳过 OCR/PDF 抽取与 "
+                             "normalize，直接从 canonical 续跑（等同 tools/reprocess_canonical.py）。")
     parser.add_argument("--input", type=Path, help="input document of the national standard (alternative to the positional file name; full path or relative path; .docx/.doc/.pdf)")
     parser.add_argument("--output-dir", type=Path, help="output directory (default: out/mineru/<input-stem>)")
     parser.add_argument("--output-stem", type=str, help="output filename stem for merged CSM/SSIR/PDF artifacts (default: input file name without the extension)")
@@ -2010,10 +2156,22 @@ def main() -> int:
     parser.add_argument("--title", type=str, help="standard title written into the CSM front matter (default: first H1 from the extraction)")
     parser.add_argument("--chunk-size", type=int, default=18, help="Pages per restartable MinerU invocation (default: 18).")
     parser.add_argument("--method", choices=("auto", "ocr", "txt"), default="auto", help="MinerU extraction method (default: auto). Use ocr when the PDF text layer loses Latin/digit runs (MinerU's txt extraction can drop them while pymupdf reads them fine).")
+    parser.add_argument("--hybrid-tables", action="store_true",
+                        help="enable the targeted hybrid-engine table pass (GEN-094): after extraction, table pages are additionally recognized with hybrid-engine (VLM) and rebuilt from its visual rows. Off by default (the VLM pass is slow) — tables then stay exactly as the MinerU pipeline backend produced them")
+    parser.add_argument("--hf-endpoint", default=None,
+                        help="HuggingFace endpoint used to download the hybrid-engine (VLM) models (default: the HF_ENDPOINT environment variable, else https://hf-mirror.com)")
     parser.add_argument("--stage", choices=("extract", "merge", "finalize", "all"), default="all")
     parser.add_argument("--roundtrip", action="store_true", help="Run CSM canonical -> SSIR -> CSM render.md -> verify round-trip verification after parsing.")
     parser.add_argument("--render", action="store_true", help="Render parsed SSIR to PDF and write a comparison report.")
     parser.add_argument("--toc-depth", default="2", help="Maximum numbered TOC level for --render (positive integer or all; default: 2).")
+    return parser
+
+
+def main() -> int:
+    # 规则对应（流水线阶段 → 规则层）: extract=GEN-002/003；merge=GEN-005/010—019/030；
+    # normalize=GEN-031—034；build=GEN-050/052；verify=GEN-051/090/091 + 三层合规
+    # （GEN→GBT→P10，见 compliance.py）；render=GEN-070—076。
+    parser = _build_parser()
     args = parser.parse_args()
     if not args.input and not args.file:
         parser.error("an input is required: pass a file name resolved under corpus/golden/ (e.g. T_ZZB_2224-2021) or --input PATH")
@@ -2067,6 +2225,15 @@ def main() -> int:
         if args.input_kind == "docx":
             # Word 输入：docx 导入（替代 MinerU 识别）→ finalize → roundtrip/render。
             return _run_docx_input(args, state)
+        # 已有 curated canonical（02_canonical/<stem>.canonical.md）时，默认
+        # --stage all 不再重跑 OCR/PDF 抽取/合并/normalize（防旧 raw 覆盖人工
+        # 编辑基线，AGENTS.md §2），直接从 canonical 续跑下游（功能等同
+        # tools/reprocess_canonical.py）。显式 --stage extract/merge/finalize 除外。
+        canonical_path = args.output_dir / "02_canonical" / f"{args.output_stem or args.input.stem}.canonical.md"
+        if args.stage == "all" and canonical_path.is_file():
+            _log(f"Existing curated canonical found: {canonical_path}")
+            _log("Skipping OCR/PDF extraction, merge and normalize; re-running from canonical")
+            return _run_from_existing_canonical(args, state, canonical_path)
         # 文本层质量预检（2026-08-31）：默认 auto 模式下，若源 PDF 文本层呈典型
         # 损坏特征（孤立 "4."/"2." 行、截断标准号 "GB/T2423."），MinerU 直接抽取
         # 会丢点丢数字——自动改走 OCR；显式 --method 时尊重用户选择。
@@ -2209,6 +2376,536 @@ def _post_parse_verify_render(args: argparse.Namespace, state: dict[str, Any],
         if paths["render_docx"].is_file():
             _log(f"Generated docx twin (doc_1): {paths['render_docx']}")
     _write_manifest(args, state, status="completed")
+
+
+# 表注锚点上标字母回收（CSM-OCR-015，2026-09-06，GB_T_20001.10-2014 表1）：
+# 表注（如“a 黑体表示…”，GBT-X04/GBT-C18）的单元格锚点是小写拉丁上标字母。
+# MinerU OCR 常在表格组装时把表头/单元格里跟上标字母整段丢弃，只剩表注定义行
+# （表内末行“a说明…”）——GB_T_20001.5-2017 同模板表保留了（“表述形式a”），
+# 20001.10 的源 PDF 文本层两版都有（“表述形式”+上标 a，4.66pt vs 正文 8.25pt）。
+# mineru_html._restore_table_footnote_markers（GBT-C18）只能按“注文包含单元格
+# 文本”恢复（GB/T 1.1 匝间绝缘型），注文不含锚点文本（字体样式说明型）时无从
+# 匹配——此处从源 PDF 文本层几何补盲，规则与渲染端一致（pdf_renderer
+# _table_cell_superscripts：汉字后跟半角小写字母 → 上标；d/g/h/l/m/s/t 为
+# 可能单位字母不恢复）。
+_TABLE_NOTE_DEF_CELL_RE = re.compile(r"^([a-zA-Z])(?:[ \u3000]+)?(?=[\u4e00-\u9fff])")
+# 与渲染端上标规则同源的字母集（排 d/g/h/l/m/s/t 等单位字母与上标数字）。
+_RECOVER_MARKER_LETTERS = set("abcefijknopqruvwxyz")
+
+
+def _recover_table_note_markers(markdown: str, pdf: Path) -> tuple[str, int]:
+    """Recover trailing table-note superscript letters lost by OCR (CSM-OCR-015).
+
+    现象（GB_T_20001.10-2014 表1）：源 PDF 表头第 3 列“要素所允许的表述形式”末尾
+    带 4.66pt 上标 a（正文 8.25pt），MinerU OCR 表组装时把它整段丢弃，只留下表内
+    末行的表注定义行“a黑体表示…”。渲染后表注解释在、锚点标记丢，不成对。
+
+    恢复规则（保守、通用、幂等）：
+    - 源 PDF 文本层找“正文行内、字号 ≤0.72×正文中位（≤7.8pt）、单小写拉丁字母”
+      的上标 span，其 x0 与同一视觉行上紧邻的前一正文 span 的 x1 相邻（±2~6pt），
+      该正文 span 文本即锚文本（锚文本必须汉字收尾——渲染端只上标汉字后字母）；
+    - 该上标字母必须是当前 md 表格分组的“表注定义行”（唯一非空单元格以
+      “字母+汉字”开头，如“a黑体…”）所声明的字母——无定义行的字母不猜；
+    - 锚文本命中分两形态：尾部（单元格以其结尾，字母补到末尾）与词中（锚文本
+      后紧接汉字——“要素a的编排”型，字母补到锚文本之后）；每形态都在表格分组
+      内**恰好一个**单元格命中才补字母，词中归属不唯一（多个单元格含同一锚文本
+      + 汉字，如表头两列同以“要素”开头）不猜——几何-列边界对齐留待后续；
+    - 找不到唯一匹配/定义行缺失/字母已存在 → 不改。幂等：已恢复的单元格以
+      字母结尾（尾部）或锚文本后已跟该字母（词中），再次运行不重复补。
+    2026-09-07（语法定案，docs/07 §6.7）输出改为**显式标记**：锚点补回一律写
+    “[:x]”（引用点 token，渲染端不再做字形猜测）；表注定义行逐段改写为
+    “[^x]注文[^x/]”（<br> 分段各自包装，段首字母可后随引号/汉字）。已 token 化
+    的内容幂等（段首 “[^” 不再重复包装；锚点命中检查对 “[:x]” 结尾单元格
+    天然不再匹配）。
+    规则对应: GBT-X04（表注由标记与解释成对组成）/ GBT-C18（表脚注上标）；
+    执行侧工程规则，与 GFM 脚注回收 CSM-OCR-014 同族；渲染端按显式标记还原
+    上角标（pdf_renderer._table_cell_superscripts）。
+    """
+    try:
+        import pymupdf
+    except ImportError:
+        return markdown, 0
+    if not pdf.is_file():
+        return markdown, 0
+
+    # —— 1) md 表格行分组（连续管道行），并取各组的表注定义行字母 ——
+    lines = markdown.split("\n")
+    groups: list[list[int]] = []
+    current: list[int] = []
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("|") and stripped.endswith("|"):
+            current.append(i)
+        elif current:
+            groups.append(current)
+            current = []
+    if current:
+        groups.append(current)
+    if not groups:
+        return markdown, 0
+
+    def row_cells(line: str) -> list[str]:
+        """md 管道行的单元格文本（剥外管、去首尾空白）。"""
+        stripped = line.strip()
+        if not stripped.startswith("|") or not stripped.endswith("|"):
+            return []
+        return [part.strip() for part in stripped[1:-1].split("|")]
+
+    def group_def_letters(row_indexes: list[int]) -> set[str]:
+        letters: set[str] = set()
+        for i in row_indexes:
+            cells = [c for c in row_cells(lines[i]) if c]
+            if len(cells) != 1:
+                continue
+            match = _TABLE_NOTE_DEF_CELL_RE.match(cells[0])
+            if match:
+                letters.add(match.group(1).lower())
+        return letters
+
+    # —— 2) 源 PDF 文本层：正文行内的上标小写字母 span → (锚文本, 字母) ——
+    candidates: list[tuple[str, str]] = []
+    with pymupdf.open(pdf) as document:
+        for page in document:
+            spans: list[dict] = []
+            for block in page.get_text("dict")["blocks"]:
+                for line in block.get("lines", []):
+                    for span in line["spans"]:
+                        if span["text"].strip():
+                            spans.append(span)
+            if not spans:
+                continue
+            sizes = sorted(s["size"] for s in spans)
+            body_median = sizes[len(sizes) // 2]
+            sup_threshold = min(body_median * 0.72, 7.8)
+            spans.sort(key=lambda s: (s["bbox"][1], s["bbox"][0]))
+            # 视觉行聚类（y 容差 4pt，与 _recover_pdf_footnotes 的 band 判定同量级）。
+            visual_lines: list[list[dict]] = []
+            for span in spans:
+                if visual_lines and abs(span["bbox"][1] - visual_lines[-1][0]["bbox"][1]) <= 4:
+                    visual_lines[-1].append(span)
+                else:
+                    visual_lines.append([span])
+            for vline in visual_lines:
+                vline.sort(key=lambda s: s["bbox"][0])
+                for idx, sup in enumerate(vline):
+                    letter = sup["text"].strip()
+                    if sup["size"] > sup_threshold or not re.fullmatch(r"[a-z]", letter):
+                        continue
+                    if letter not in _RECOVER_MARKER_LETTERS:
+                        continue
+                    anchor: dict | None = None
+                    for j in range(idx - 1, -1, -1):
+                        prev = vline[j]
+                        if prev["size"] <= sup_threshold:
+                            continue
+                        dx = sup["bbox"][0] - prev["bbox"][2]
+                        if -2 <= dx <= 6:
+                            anchor = prev
+                        break  # 只看紧邻（可含中间上标）的最近正文 span
+                    if anchor is None:
+                        continue
+                    anchor_text = anchor["text"].strip()
+                    if not anchor_text or not re.search(r"[\u4e00-\u9fff]$", anchor_text):
+                        continue  # 渲染端只上标汉字后的字母，非汉字收尾锚不补
+                    pair = (anchor_text, letter)
+                    if pair not in candidates:
+                        candidates.append(pair)
+    if not candidates:
+        return markdown, 0
+
+    # —— 3) 锚文本在含对应字母定义行的分组里命中单元格 → 补字母 ——
+    # 两形态（2026-09-06 补词中）：
+    #   a) 尾部锚点：单元格以锚文本结尾 → 字母补到单元格文本末尾（原逻辑）；
+    #   b) 词中锚点：单元格内锚文本后紧接汉字（“要素a的编排”型，上标夹在
+    #      两个汉字之间）→ 字母补到锚文本之后。两种均要求全组唯一命中；
+    #      词中归属不唯一（多个单元格含同一锚文本+汉字，如表1 表头两列都从
+    #      “要素”开头）时不猜——需单元格几何对齐列边界，留待后续。
+    recovered = 0
+    for group in groups:
+        def_letters = group_def_letters(group)
+        if not def_letters:
+            continue
+        # 定义行 token 化（2026-09-07 语法定案）：把“a注文…<br>b注文…”字面
+        # 行首字母逐段改写为 “[^x]注文[^x/]”；段首字母可后随汉字或引号
+        # （“b“程序指示”…”型，GB_T_20001.6-2017 表1 实测）。幂等：段首已是
+        # “[^” 不再改。
+        for i in group:
+            pipes = [k for k, ch in enumerate(lines[i]) if ch == "|"]
+            if len(pipes) < 2:
+                continue
+            raw_cells = [lines[i][pipes[k] + 1:pipes[k + 1]] for k in range(len(pipes) - 1)]
+            filled_idx = [k for k, c in enumerate(raw_cells) if c.strip()]
+            if len(filled_idx) != 1:
+                continue
+            cell_raw = raw_cells[filled_idx[0]]
+
+            def _wrap_seg(seg: str) -> str:
+                if seg.lstrip().startswith("[^"):
+                    return seg  # 幂等
+                lead = seg[: len(seg) - len(seg.lstrip())]
+                trail = seg[len(seg.rstrip()):]
+                core = seg.strip()
+                m = re.match(r"^([a-z])(?:[ \u3000]+)?(?=[\u4e00-\u9fff“”『「\"'])", core)
+                if not m:
+                    return seg
+                return f"{lead}[^{m.group(1)}]{core[m.end():].rstrip()}[^{m.group(1)}/]{trail}"
+
+            wrapped = "<br>".join(_wrap_seg(s) for s in cell_raw.split("<br>"))
+            if wrapped != cell_raw:
+                start, end = pipes[filled_idx[0]] + 1, pipes[filled_idx[0] + 1]
+                lines[i] = lines[i][:start] + wrapped + lines[i][end:]
+                recovered += 1
+        for anchor_text, letter in candidates:
+            if letter not in def_letters:
+                continue
+            # 形态 a：尾部。目标行以锚文本结尾 → 补 [:x]；已带字面字母时仅在
+            # “锚文本+该字母”同尾（几何确认为上标）时把字面字母改写为 [:x]。
+            tail_targets: list[tuple[int, int]] = []
+            literal_tail_targets: list[tuple[int, int]] = []
+            for i in group:
+                for cell_index, cell in enumerate(row_cells(lines[i])):
+                    latin_tail = re.search(r"[A-Za-z]$", cell)
+                    if latin_tail:
+                        if cell[-1] == letter and cell[:-1].rstrip().endswith(anchor_text):
+                            literal_tail_targets.append((i, cell_index))
+                        continue
+                    if cell.endswith(anchor_text):
+                        tail_targets.append((i, cell_index))
+            if len(tail_targets) == 1:
+                line_index, cell_index = tail_targets[0]
+                patched = _insert_table_cell_marker(lines[line_index], cell_index, letter)
+                if patched != lines[line_index]:
+                    lines[line_index] = patched
+                    recovered += 1
+                continue
+            if len(tail_targets) == 0 and len(literal_tail_targets) == 1:
+                # OCR 保留了字面锚点字母（如 20001.5 表1 “表述形式a”）：渲染端
+                # 不再做字形猜测，此处把字面字母改写为显式 [:x] 引用点。
+                line_index, cell_index = literal_tail_targets[0]
+                line = lines[line_index]
+                pipes = [k for k, ch in enumerate(line) if ch == "|"]
+                if len(pipes) > cell_index + 1:
+                    start, end = pipes[cell_index] + 1, pipes[cell_index + 1]
+                    raw = line[start:end]
+                    replace_at = start + len(raw.rstrip()) - 1  # 末尾字母（去行尾空白定位）
+                    lines[line_index] = line[:replace_at] + f"[:^{letter}]" + line[replace_at + 1:]
+                    recovered += 1
+                continue
+            # 形态 b：词中。锚文本在单元格中部出现、后随汉字、该处尚未有该字母。
+            mid_targets: list[tuple[int, int, int]] = []  # (line_index, cell_index, offset_after_anchor)
+            for i in group:
+                for cell_index, cell in enumerate(row_cells(lines[i])):
+                    position = cell.find(anchor_text)
+                    if position < 0:
+                        continue
+                    after = position + len(anchor_text)
+                    if after >= len(cell):
+                        continue  # 锚文本在词尾 → 形态 a 已覆盖
+                    if not ("\u4e00" <= cell[after] <= "\u9fff"):
+                        continue  # 后随非汉字 → 不是词中上标位
+                    if cell[after] == letter:
+                        continue  # 幂等：该字母已在
+                    mid_targets.append((i, cell_index, after))
+            if len(mid_targets) != 1:
+                continue
+            line_index, cell_index, offset = mid_targets[0]
+            patched = _insert_table_cell_marker_at(lines[line_index], cell_index, letter, offset)
+            if patched != lines[line_index]:
+                lines[line_index] = patched
+                recovered += 1
+    if not recovered:
+        return markdown, 0
+    return "\n".join(lines), recovered
+
+
+def _insert_table_cell_marker(line: str, cell_index: int, letter: str) -> str:
+    """把表注引用点 token [:x] 插到管道行第 cell_index 个单元格文本末尾。
+
+    2026-09-07 语法定案（docs/07 §6.7）：锚点以显式 [:x] 标记写回，渲染端按
+    标记还原上角标，不再做字形猜测。
+    """
+    pipes = [i for i, ch in enumerate(line) if ch == "|"]
+    if len(pipes) < 2 or cell_index < 0 or cell_index >= len(pipes) - 1:
+        return line
+    start, end = pipes[cell_index] + 1, pipes[cell_index + 1]
+    text = line[start:end]
+    insert_at = start + len(text.rstrip())
+    return line[:insert_at] + f"[:^{letter}]" + line[insert_at:]
+
+
+def _insert_table_cell_marker_at(line: str, cell_index: int, letter: str, offset_in_cell: int) -> str:
+    """把表注引用点 token [:x] 插到管道行第 cell_index 个单元格文本内 offset 处。
+
+    offset_in_cell 以单元格**首个非空白字符**为 0 计数（md 单元格可能带首部空格，
+    行内偏移与 row_cells 的去空白视图对齐）。词中锚点（“要素a的编排”型）写回
+    [:x] 标记；渲染端按标记还原上角标。
+    """
+    pipes = [i for i, ch in enumerate(line) if ch == "|"]
+    if len(pipes) < 2 or cell_index < 0 or cell_index >= len(pipes) - 1:
+        return line
+    start = pipes[cell_index] + 1
+    raw = line[start:pipes[cell_index + 1]]
+    lead = len(raw) - len(raw.lstrip(" \u3000"))
+    insert_at = start + lead + offset_in_cell
+    if insert_at < start or insert_at > pipes[cell_index + 1]:
+        return line
+    return line[:insert_at] + f"[:^{letter}]" + line[insert_at:]
+
+
+def _recover_pdf_footnotes(md_path: Path, pdf: Path) -> int:
+    """从源 PDF 文本层回收上标脚注并写入 markdown 基线（GFM 语法，CSM-OCR-014）。
+
+    MinerU 文本抽取把上标标记与正文粘连（“—2003”+1)→“—20031”；“单独的标准”+2)→
+    “标准2。”），页底 8pt 解释行被当普通正文。用 pymupdf 读源 PDF：
+    - 上标 span（字号显著小于正文）识别条文脚注标记“N)”，按 页→位置 全文连续编号；
+    - md 尚无 “[^N]” 时，把粘连进正文的数字还原为 “[^N]”（锚定=标记左侧整段正文
+      文本窗口，窗口+数字唯一且后随汉字/句末标点才替换，否则不猜）；
+    - 页底小字解释行（y≥0.70×页高、字号≤8.5、以 数字) 开头，续行带合并）转
+      “[^N]: 文本”；md 已有 “N） 文本” 残留正文段就地改前缀，否则插到锚点段后。
+    幂等/自愈：已有 “[^N]: ” 定义的条目跳过；已有 “[^N]” 标记而缺定义（半途产物）
+    时只补定义不改正文。只处理阿拉伯数字上标（条文脚注 GBT-X04）。返回处理条数。
+    """
+    try:
+        import fitz  # type: ignore
+    except ImportError:
+        return 0
+    import re as _re
+    text = md_path.read_text(encoding="utf-8")
+    markers: list[tuple[int, str, int, float]] = []  # (页, 原标记, y, x0)
+    notes: list[tuple[int, str, str]] = []  # (页, 原标记, 定义文本)
+    with fitz.open(pdf) as document:
+        for page_index in range(len(document)):
+            page = document[page_index]
+            height = page.rect.height
+            spans: list[dict] = []
+            for block in page.get_text("dict")["blocks"]:
+                for line in block.get("lines", []):
+                    for span in line["spans"]:
+                        if span["text"].strip():
+                            spans.append(span)
+            sizes = sorted(s["size"] for s in spans)
+            body_median = sizes[len(sizes) // 2] if sizes else 10.0
+            sup_threshold = min(body_median * 0.72, 7.8)
+            sup = sorted(
+                (s for s in spans if s["size"] <= sup_threshold),
+                key=lambda s: (s["bbox"][1], s["bbox"][0]),
+            )
+            i = 0
+            while i < len(sup):
+                band = [sup[i]]
+                j = i + 1
+                while j < len(sup) and abs(sup[j]["bbox"][1] - band[0]["bbox"][1]) <= 3.5 and sup[j]["bbox"][0] <= band[-1]["bbox"][2] + 6:
+                    band.append(sup[j])
+                    j += 1
+                token = "".join(s["text"] for s in sorted(band, key=lambda s: s["bbox"][0])).strip()
+                if token and token[0].isdigit() and token.endswith((")", "）")):
+                    markers.append((page_index, token, band[0]["bbox"][1], band[0]["bbox"][0]))
+                i = j
+            bottom = sorted(
+                (s for s in spans if s["size"] <= 8.5 and s["bbox"][1] >= height * 0.68),
+                key=lambda s: (s["bbox"][1], s["bbox"][0]),
+            )
+            band_lines: list[tuple[float, str]] = []
+            cur: list[tuple[float, float, str]] = []
+            band_y: float | None = None
+            for s in bottom:
+                y0 = s["bbox"][1]
+                if band_y is None or abs(y0 - band_y) <= 4:
+                    cur.append((s["bbox"][0], y0, s["text"]))
+                    band_y = cur[0][1]
+                else:
+                    band_lines.append((band_y, "".join(it for _, _, it in sorted(cur)).strip()))
+                    cur = [(s["bbox"][0], y0, s["text"])]
+                    band_y = y0
+            if cur:
+                band_lines.append((band_y, "".join(it for _, _, it in sorted(cur)).strip()))
+            idx = 0
+            while idx < len(band_lines):
+                y, line = band_lines[idx]
+                m = _re.match(r"^(\d+)[)）](.*)$", line, _re.S)
+                if not m:
+                    idx += 1
+                    continue
+                text_def = m.group(2).strip()
+                next_y = y
+                while idx + 1 < len(band_lines):
+                    ny, nline = band_lines[idx + 1]
+                    if _re.match(r"^\d+[)）]", nline) or nline.startswith("注") or _re.fullmatch(r"\d{1,3}", nline) or ny - next_y > 30:
+                        break
+                    text_def += nline
+                    next_y = ny
+                    idx += 1
+                notes.append((page_index, f"{m.group(1)})", text_def))
+                idx += 1
+    if not markers:
+        return 0
+    markers.sort(key=lambda m: (m[0], m[2], m[3]))
+    note_by = {(pg, lbl): txt for pg, lbl, txt in notes}
+    any_marker = "[^" in text
+    new_text = text
+    defs: list[tuple[str, str, str]] = []  # (原标记, label, 定义)
+    replaced = 0
+    with fitz.open(pdf) as document:
+        for order, (page_index, token, my, mx) in enumerate(markers, start=1):
+            label = str(order)
+            digits = token[:-1]
+            def_text = note_by.get((page_index, token), "")
+            if _re.search(rf"\[\^{re.escape(label)}\]:", new_text):
+                continue
+            if def_text:
+                defs.append((token, label, def_text))
+                replaced += 1
+            if any_marker or f"[^{label}]" in new_text:
+                continue
+            page_obj = document[page_index]
+            norm = []
+            for block in page_obj.get_text("dict")["blocks"]:
+                for line in block.get("lines", []):
+                    for span in line["spans"]:
+                        if span["text"].strip() and span["size"] > 7.8:
+                            norm.append(span)
+            left = [s for s in norm if abs(s["bbox"][1] - my) <= 6 and s["bbox"][2] <= mx + 1]
+            if not left:
+                continue
+            run_text = "".join(s["text"] for s in sorted(left, key=lambda s: s["bbox"][0])).strip()
+            hit = -1
+            tail_used = ""
+            for tail in (run_text[-24:], run_text[-12:], run_text[-6:]):
+                if not tail:
+                    continue
+                fused = tail + digits
+                pos = 0
+                while True:
+                    h = new_text.find(fused, pos)
+                    if h < 0:
+                        break
+                    before_ok = h == 0 or not new_text[h - 1].isdigit()
+                    after = new_text[h + len(fused)] if h + len(fused) < len(new_text) else ""
+                    if before_ok and after and (after in "。；，、：）】" or "\u4e00" <= after <= "\u9fff"):
+                        hit = h
+                        tail_used = tail
+                        break
+                    pos = h + 1
+                if hit >= 0:
+                    break
+            if hit < 0 or not tail_used:
+                continue
+            new_text = new_text[: hit + len(tail_used)] + f"[^{label}]" + new_text[hit + len(tail_used) + len(digits):]
+    if not defs:
+        return 0
+    final_text = _place_footnote_definitions(new_text, defs)
+    md_path.write_text(final_text, encoding="utf-8")
+    return replaced
+
+
+def _place_footnote_definitions(markdown_text: str, defs: list[tuple[str, str, str]]) -> str:
+    """把回收的脚注定义写进 markdown：GFM “[^N]: 文本” 独立段（幂等）。
+
+    ``defs`` = [(原页底标记如 "1)", 标签如 "1", 定义文本), …]，只含当前缺定义的标签。
+    - 正文残留的 “N） 文本”/“N) 文本” 段就地改前缀为 “[^N]: 文本”（自愈）；
+    - 否则在含 “[^N]” 标记的段块之后插入定义行，**前后均以空行隔离**：
+      定义行绝不离散粘贴到下一内容行（否则与下一条目并成一个多行段落块，parser
+      的“整行定义”形态无法归类——GB_T_20001.10-2014 脚注 1 曾因此以正文段落身份
+      渲染）；插入点越过锚点段与段后空行带、落在其后首个非空内容行之前，定义
+      不会被插进列表条目序列中间。返回新文本（无插入/转换时逐字节不变）。
+    """
+    lines = markdown_text.split("\n")
+    insert_before: dict[int, list[str]] = {}
+    for token, label, def_text in defs:
+        if f"[^{label}]:" in markdown_text:
+            continue  # 幂等：定义已存在
+        num = token[:-1]
+        converted = False
+        for i, ln in enumerate(lines):
+            stripped = ln.lstrip()
+            indent = ln[: len(ln) - len(stripped)]
+            if stripped.startswith(f"{num}) ") or stripped.startswith(f"{num}） "):
+                rest = stripped.split(" ", 1)[1]
+                lines[i] = f"{indent}[^{label}]: {rest}"
+                converted = True
+                break
+            if stripped.startswith(f"{num}）") or stripped.startswith(f"{num})"):
+                rest = stripped[len(num) + 1:].lstrip()
+                lines[i] = f"{indent}[^{label}]: {rest}"
+                converted = True
+                break
+        if converted:
+            continue
+        anchor_line = next((i for i, ln in enumerate(lines) if f"[^{label}]" in ln), None)
+        if anchor_line is None:
+            continue  # 锚点标记不在（半途产物）→ 不猜
+        # 越过锚点段连续非空行（同段多行）与段后空行带 → 插入点 = 段后首个内容行
+        j = anchor_line + 1
+        while j < len(lines) and lines[j].strip():
+            j += 1
+        while j < len(lines) and not lines[j].strip():
+            j += 1
+        insert_before.setdefault(j, []).append(["", f"[^{label}]: {def_text}", ""])
+    if not insert_before:
+        return "\n".join(lines)
+    final: list[str] = []
+    for i, ln in enumerate(lines):
+        for extra in insert_before.get(i, ()):
+            final.extend(extra)
+        final.append(ln)
+    for extra in insert_before.get(len(lines), ()):
+        final.extend(extra)
+    return "\n".join(final)
+
+
+
+def _run_from_existing_canonical(args: argparse.Namespace, state: dict[str, Any], canonical: Path) -> int:
+    """已有 curated canonical（02_canonical/<stem>.canonical.md）时的续跑入口。
+
+    跳过 MinerU OCR/PDF 抽取、合并与 normalize——绝不覆盖人工编辑的 canonical
+    （AGENTS.md §0.1/§2），从 parse 开始执行与 tools/reprocess_canonical.py
+    完全等同的后续阶段：parse -> SSIR →（PDF 源）版面印记恢复 → roundtrip →
+    render（PDF + docx）→ compare → manifest。
+    规则对应：build=GEN-050/052；verify=GEN-051/090/091 + 三层合规；
+    render=GEN-070—076；版面印记恢复沿用 finalize 的 stamp 逻辑。
+    """
+    stem = args.output_stem or args.input.stem
+    paths = _stage_paths(args.output_dir, stem)
+    for stage_path in (paths["ssir"], paths["render_pdf"], paths["render_md"], paths["render_docx"], paths["verify"]):
+        stage_path.parent.mkdir(parents=True, exist_ok=True)
+    # provenance 保留：pipeline-state 可能缺 title/number/sha，回退旧 manifest
+    old_manifest = _load_json(args.output_dir / "manifest.json", {})
+    state.setdefault("title", old_manifest.get("title", ""))
+    state.setdefault("number", old_manifest.get("standardNumber", ""))
+    state.setdefault("createdAt", old_manifest.get("created"))
+    if not state.get("sourceSha256") and old_manifest.get("source", {}).get("checksum", "").startswith("sha256:"):
+        state["sourceSha256"] = old_manifest["source"]["checksum"][len("sha256:"):]
+
+    # canonical 只读：此路径绝不写回 canonical——CSM-OCR-014（条文脚注）与
+    # CSM-OCR-015（表注锚点上标字母）的回收此前在这里把结果直接写进 curated
+    # canonical，违反「半程续跑仅刷新下游产物、canonical 不被覆盖」（AGENTS.md
+    # §2 / README）。两类回收都已改到 canonical 的生成时刻执行：脚注回收在
+    # finalize 的 normalize 之后（全流程/显式 --stage finalize），表注回收在
+    # merge 全流程（随 raw 进 normalize）；此处 parse 直接读 canonical 原样。
+
+    parsed = [
+        str(Path(sys.prefix) / "bin" / "ssir"), "csm", "parse",
+        "--input", str(canonical), "--output", str(paths["ssir"]),
+        "--report", str(paths["parse_report"]),
+    ]
+    _log("Parsing canonical CSM into SSIR JSON")
+    if subprocess.run(parsed, cwd=ROOT).returncode:
+        raise RuntimeError("SSIR parsing needs review; check the canonical CSM and the parse report.")
+    _log(f"SSIR JSON written: {paths['ssir']}")
+
+    # PDF 源才有的版面印记恢复（示例框样式/图源尺寸/并列版面，读源 PDF 与 parts 几何）
+    if args.input_kind == "pdf" and args.input.is_file():
+        _stamp_example_styles(paths["ssir"], args.input)
+        _stamp_figure_source_sizes(paths["ssir"], args.input)
+        parts_dir = args.output_dir / "parts"
+        if parts_dir.is_dir():
+            _stamp_side_by_side_layout(paths["ssir"], parts_dir)
+    else:
+        _log("No source PDF present; skipping PDF-geometry stamps (example style / figure sizes / side-by-side)")
+
+    # 公共尾部：roundtrip -> render（PDF+docx）-> compare -> manifest
+    _post_parse_verify_render(args, state, paths, paths["ssir"])
+    return 0
 
 
 if __name__ == "__main__":

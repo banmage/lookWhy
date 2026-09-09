@@ -81,7 +81,7 @@ def _mini_document() -> dict:
                     ]},
                     {"rowIndex": 1, "isHeader": False, "cells": [
                         {"colIndex": 0, "text": "1030"},
-                        {"colIndex": 2, "text": "匝间绝缘a"},
+                        {"colIndex": 2, "text": "匝间绝缘[:^a]"},
                     ]},
                     {"rowIndex": 2, "isHeader": False, "cells": [
                         {"colIndex": 0, "text": "10-2"},
@@ -158,8 +158,14 @@ class DocxRenderStructureTests(unittest.TestCase):
                                 sup_runs.append(run.text)
         self.assertIn("30", sup_runs)
         self.assertIn("−1", sup_runs)
-        # 表脚注标记：匝间绝缘a 的 a 应为上标（单位排除）
+        # 表注引用点（显式 [:^a] 标记）：匝间绝缘[:^a] 的 a 应为上标
         self.assertTrue(any(run.font.superscript and run.text == "a" for run in _all_runs(doc)))
+        # 表头居中、数据行居左（2026-09-07 用户裁定）
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        header_align = table.rows[0].cells[0].paragraphs[0].alignment
+        body_align = table.rows[1].cells[0].paragraphs[0].alignment
+        self.assertEqual(header_align, WD_ALIGN_PARAGRAPH.CENTER)
+        self.assertEqual(body_align, WD_ALIGN_PARAGRAPH.LEFT)
 
     def test_plain_text_units_not_marked_superscript(self) -> None:
         document = _mini_document()

@@ -35,8 +35,7 @@ def _parser() -> argparse.ArgumentParser:
     validate.add_argument("--strict", action="store_true", help="treat recoverable warnings as errors")
     normalize = csm_command.add_parser("normalize", help="repair raw Markdown and write a canonical CSM baseline")
     normalize.add_argument("--input", required=True, type=Path, help="raw user Markdown input")
-    normalize.add_argument("--canonical-output", dest="canonical_output", type=Path, help="corrected canonical CSM output path (legacy flag: --std0-output)")
-    normalize.add_argument("--std0-output", dest="canonical_output", type=Path, help=argparse.SUPPRESS)
+    normalize.add_argument("--canonical-output", dest="canonical_output", required=True, type=Path, help="corrected canonical CSM output path")
     normalize.add_argument("--report", type=Path, help="normalize report path; defaults beside --canonical-output")
     normalize.add_argument("--strict", action="store_true", help="reject recoverable input issues")
     parse = csm_command.add_parser("parse", help="convert CSM to SSIR")
@@ -47,8 +46,7 @@ def _parser() -> argparse.ArgumentParser:
     parse.add_argument("--strict", action="store_true", help="reject recoverable input issues")
     roundtrip = csm_command.add_parser("roundtrip", help="render SSIR as CSM and verify SSIR semantic equivalence")
     roundtrip.add_argument("--input", required=True, type=Path)
-    roundtrip.add_argument("--render-md-output", dest="render_md_output", type=Path, help="rendered CSM (render.md) output path; legacy flag: --std1-output")
-    roundtrip.add_argument("--std1-output", dest="render_md_output", type=Path, help=argparse.SUPPRESS)
+    roundtrip.add_argument("--render-md-output", dest="render_md_output", required=True, type=Path, help="rendered CSM (render.md) output path")
     roundtrip.add_argument("--verify-output", type=Path, help="optional re-parsed SSIR (verify.json) output path")
     roundtrip.add_argument("--report", type=Path, help="round-trip report path; defaults beside --render-md-output")
     roundtrip.add_argument("--strict", action="store_true", help="reject recoverable input issues in either CSM document")
@@ -73,10 +71,6 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
-    if getattr(args, "csm_command", None) == "normalize" and not args.canonical_output:
-        parser.error("the following arguments are required: --canonical-output (or legacy --std0-output)")
-    if getattr(args, "csm_command", None) == "roundtrip" and not args.render_md_output:
-        parser.error("the following arguments are required: --render-md-output (or legacy --std1-output)")
     try:
         if getattr(args, "command", None) == "pdf" and args.pdf_command == "extract":
             from .pdf_extractor import extract_pdf_to_csm

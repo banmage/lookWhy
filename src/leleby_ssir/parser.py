@@ -66,6 +66,14 @@ class CSMIssue:
 
 
 DIRECTIVE_RE = re.compile(r"^<!--\s*ssir:([a-z-]+)(.*?)\s*-->\s*$")
+# ssir:box 显式文档框声明（docs/13 裁定后实施，2026-09-08）：成对行级独占指令，
+# 手工在 canonical 声明某段任意文档块内容的框线起止（frame=黑色细实线框 /
+# shaded=浅色底）。开标记可带 style 属性；/box 以斜杠开头，DIRECTIVE_RE 的
+# 名称字符类不含 "/"，故独立正则、先于通用指令分支匹配。
+BOX_MARKER_RE = re.compile(r"^<!--\s*ssir:(/box|box)\s*(.*?)-->\s*$")
+BOX_STYLE_ATTR_RE = re.compile(r'style="((?:\\.|[^"\\])*)"')
+# 支持 style 属性（其余属性忽略并告警）。
+_BOX_STYLES = {"frame", "shaded"}
 ATTR_RE = re.compile(r'([A-Za-z][A-Za-z0-9-]*)="((?:\\.|[^"\\])*)"')
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 TABLE_SEPARATOR_RE = re.compile(r"^\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$")
@@ -82,6 +90,25 @@ NOTE_SPLIT_RE = re.compile(r"(?<=。)(?=注\s*\d*\s*[:：])")
 # 句末标点后出现点分条号（6.3.5.2 等）→ 把被 OCR 合并进上一句的条号分段
 #（零宽切分点，条号本身保留在下一段开头）。
 CLAUSE_SPLIT_RE = re.compile(r"(?<=[。；])\s*(?=\d+(?:\.\d+)+[\u4e00-\u9fff])")
+# 多部分标准名称“第N部分：分部分名称”行（GB/T 1.1-2020 8.2.2 名称元素；封面/
+# 正文首页把名称分两行排印时被 MinerU 拆成两个 H1——GB_T_20001.10-2014 正文首页）。
+_PART_TITLE_RE = re.compile(r"^第\s*(?:\d+|[一二三四五六七八九十百千]+)\s*部分\s*[:：]")
+# GB/T 1.1 规范性引用文件固定引导语“下列文件对于本文件的应用……”：OCR 偶把“下”
+# 误读为形近字“卜”（GB_T_20001.10-2014 第 2 章，整句起点形态，安全修复）。
+_REFERENCE_GUIDE_OCR_RE = re.compile(r"^卜列文件对于本文件")
+# GFM 脚注定义行：[^1]: 文本（docs/07 §6.7；OCR 常把上标与正文粘连后于页脚残留
+# “1） 文本” 形态，回收时统一转为本语法）。
+_FOOTNOTE_DEF_RE = re.compile(r"^\[\^([0-9A-Za-z_-]+)\]:\s*(.*)$")
+# 定义行内容以句末标点收尾（允许后随闭引号/闭括号）＝ 该行是完整的单行定义、
+# 下一行属于其它内容；用于把“段首定义行粘连后续内容行”的合并段剥离定义
+# （防止把换行续写的长定义误拆）。
+_FOOTNOTE_DEF_END_RE = re.compile(r"[。！？…；][」』）)】》]*$")
+# 参考文献条目标准代号前缀（[N] 编号/括号形态修复的判别白名单，与 GBT-C06 一致）。
+_REFERENCE_STD_PREFIX_RE = re.compile(
+    r"^(?:GB/T|GB/Z|GB|JB/T|JB|DB\d{1,2}/T|QB/T|QB|SJ/T|SJ|DL/T|NY/T|HG/T|FZ/T|WS/T|YD/T|GA/T|CJ/T|JG/T|TB/T|SH/T|JC/T|EJ/T|MT/T|YY/T|YY|HJ/T|HJ|T/|Q/|ISO|IEC)\s"
+)
+# 句末/停顿标点（词中断段合并的“前段必须无此标点收尾”判别用）。
+_SENTENCE_END_PUNCT = "。！？；：，、…"
 # GB/T 1.1 列项符号为破折号（——）或间隔号（·）；OCR 常把 "——" 压成
 # 单个 "-" 或 "—" 且丢失后方空格，故破折号允许无空格（GBT-C12）。
 # CommonMark 的 "*"/"+" 项目符号仍要求后方空格，避免误吞 "**加粗**" 行首。
@@ -338,6 +365,35 @@ def _starts_with_han(text: str) -> bool:
     return bool(text) and "\u4e00" <= text[0] <= "\u9fff"
 
 
+def escape_table_cell(text: str) -> str:
+    """幂等转义表格单元格内的管道符（写侧；与 ``_split_table_row`` 读侧语义配对）。
+
+    读侧把「奇数个反斜杠前缀的 |」当作单元格内的字面管道，偶数（含 0）个当作
+    列分隔符。因此写侧只应为偶数前缀的 | 补一个反斜杠：裸 ``|`` 需要转义成
+    ``\\|``，而已经转义的 ``\\|``（如 MinerU 内联公式里的范数竖线 ``$| a-b |$``
+    经 mineru_html 首转义所得）必须保持原样——无条件 ``replace("|", r"\\|")``
+    会把 ``\\|`` 二次转义成 ``\\\\|``，再次 parse 时反斜杠转义追踪失效、公式里
+    的 | 被误判为列分隔符（GB_T_755-2025 表12/13/15 报 "table row has 6 cells;
+    expected 4"，normalize→parse 中断、无渲染产物）。
+    规则对应: normalize/roundtrip 幂等（写侧转义须与读侧语义一致）。
+    """
+    out: list[str] = []
+    backslashes = 0
+    for char in text:
+        if char == "\\":
+            backslashes += 1
+            out.append(char)
+        elif char == "|":
+            if backslashes % 2 == 0:
+                out.append("\\")
+            out.append(char)
+            backslashes = 0
+        else:
+            backslashes = 0
+            out.append(char)
+    return "".join(out)
+
+
 def _split_table_row(line: str) -> list[str]:
     stripped = line.strip()
     if stripped.startswith("|"):
@@ -427,12 +483,16 @@ class CSMParser:
         self._repair_list_markers(blocks, issues)
         self._repair_clause_numbers(blocks, issues)
         self._repair_term_entry_headings(blocks, issues)
+        self._repair_split_multipart_title(blocks, issues)
         self._repair_heading_levels(blocks, issues)
         self._repair_example_heading_levels(blocks, issues)
         self._repair_lost_list_markers(blocks, issues)
+        self._repair_colon_led_lists(blocks, issues)
         self._repair_text_spacing(blocks, issues)
+        self._repair_ocr_guide_phrase(blocks, issues)
+        self._repair_reference_entry_brackets(blocks, issues)
+        self._reclassify_footnote_definitions(blocks, issues)
         self._demote_sentence_headed_clauses(blocks, issues)
-        self._merge_split_clause_paragraphs(blocks, issues)
         fatal_errors.extend(self._classify_body_errors(parse_errors, issues))
         self._normalise_metadata(metadata, blocks, source, issues)
         document_errors: list[str] = []
@@ -516,6 +576,7 @@ class CSMParser:
         pending_table_unit: str | None = None
         directive_ids: set[str] = set()
         last_table: Block | None = None
+        box_open_line: int | None = None  # ssir:box 配对状态（未闭合开标记的行号）
         i = 0
 
         def line_no(index: int) -> int:
@@ -528,6 +589,55 @@ class CSMParser:
                 continue
 
             if MINERU_PAGE_MARKER_RE.match(line):
+                i += 1
+                continue
+
+            # ssir:box 显式文档框声明（2026-09-08 实施）：开/关成对行级事件块。
+            # 手工编辑常带行首缩进/行尾空白 → 对 strip 后的行匹配（与普通段落
+            # 无歧义：注释指令行只在块边界独立成行）。
+            # 校验：不得嵌套（内层开忽略并报错）、关必须匹配开、开必须闭合
+            # （宽容模式：未闭合的开延伸到文档尾，保证渲染确定性）。
+            stripped_box_line = line.strip()
+            box_match = BOX_MARKER_RE.match(stripped_box_line)
+            if box_match:
+                token = box_match.group(1)
+                attrs_text = box_match.group(2)
+                attr_match = BOX_STYLE_ATTR_RE.search(attrs_text)
+                style = _unescape_attribute(attr_match.group(1)) if attr_match else "frame"
+                extra = BOX_STYLE_ATTR_RE.sub("", attrs_text).strip()
+                if style not in _BOX_STYLES:
+                    warnings.append(f"line {line_no(i)}: ssir:box style {style!r} unsupported; frame used.")
+                    style = "frame"
+                if extra:
+                    warnings.append(f"line {line_no(i)}: ssir:box attributes {extra!r} ignored.")
+                if token == "box":
+                    if box_open_line is not None:
+                        errors.append(f"line {line_no(i)}: ssir:box must not nest inside another ssir:box (nested open ignored)")
+                    else:
+                        box_open_line = line_no(i)
+                    blocks.append(
+                        Block(
+                            kind="box",
+                            start_line=line_no(i),
+                            end_line=line_no(i),
+                            text=stripped_box_line,
+                            data={"event": "open", "style": style},
+                        )
+                    )
+                else:
+                    if box_open_line is None:
+                        errors.append(f"line {line_no(i)}: ssir:/box has no matching ssir:box open (ignored)")
+                    else:
+                        box_open_line = None
+                    blocks.append(
+                        Block(
+                            kind="box",
+                            start_line=line_no(i),
+                            end_line=line_no(i),
+                            text=stripped_box_line,
+                            data={"event": "close", "style": style},
+                        )
+                    )
                 i += 1
                 continue
 
@@ -1026,10 +1136,21 @@ class CSMParser:
                     elif NOTE_LEAD_RE.match(part):
                         # 独立「注：/注1：」行 → note 块（渲染小五号宋体）。
                         block.kind = "note"
+                    if part.startswith("<!--") and "ssir:" in part[:60]:
+                        # 形似 ssir 指令却未被任何指令分支识别的行（缺 -->、行尾
+                        # 混排正文、未登记指令名等）：按普通段落保留不丢内容，但
+                        # 显式告警，防止“标记原样渲染进 PDF”式静默泄漏。
+                        warnings.append(
+                            f"line {line_no(start)}: 疑似 ssir 指令行未被识别为指令"
+                            f"（检查是否顶格/整行独占、以 --> 闭合、指令名已登记），"
+                            f"已按普通段落保留: {part[:50]!r}"
+                        )
                     blocks.append(block)
 
         for name, directive in pending.items():
             warnings.append(f"line {directive.line}: ssir:{name} has no following compatible block")
+        if box_open_line is not None:
+            errors.append(f"line {box_open_line}: ssir:box opened here is never closed; box extends to end of document")
         blocks = _absorb_table_note_spill(blocks, warnings)
         return blocks, errors, warnings
 
@@ -1054,8 +1175,11 @@ class CSMParser:
     @staticmethod
     def _starts_new_block(lines: list[str], index: int) -> bool:
         line = lines[index]
+        stripped = line.strip()
         return bool(
-            DIRECTIVE_RE.match(line)
+            # ssir:box 标记容忍行首/行尾空白（手工编辑常带缩进，2026-09-08）
+            (stripped and BOX_MARKER_RE.match(stripped))
+            or DIRECTIVE_RE.match(line)
             or HEADING_RE.match(line)
             or line.startswith("$$")
             or line.startswith(">")
@@ -1512,6 +1636,256 @@ class CSMParser:
             )
             del blocks[index + 1]
 
+    def _repair_split_multipart_title(self, blocks: list[Block], issues: list[CSMIssue]) -> None:
+        """合并相邻两个 H1 拆开的多部分标准名称（CSM-STRUCT-004）。
+
+        封面/正文首页把名称元素分两行排印时，MinerU/OCR 产出两个连续 H1：
+        「# 主体要素」+「# 第N部分：分部分名称」（GB_T_20001.10-2014 正文首页
+        「标准编写规则」/「第10部分：产品标准」）。GB/T 1.1-2020 8.2.2 名称元素
+        间空一个汉字 → 合并为单个 H1「主体要素 第N部分：…」（与 merge 侧
+        _normalize_part_title 同规），同时消除 CSM-STRUCT-003 对多余 H1 的计数。
+        只在两个 H1 相邻（中间无任何内容块）、后者完整为「第N部分：…」且前者
+        不含“部分”字样时合并；其余形态不猜。
+        """
+        index = 0
+        while index + 1 < len(blocks):
+            head, part = blocks[index], blocks[index + 1]
+            if head.kind != "heading" or head.level != 1 or part.kind != "heading" or part.level != 1:
+                index += 1
+                continue
+            head_text = head.text.strip()
+            part_text = part.text.strip()
+            if not head_text or not part_text or "部分" in head_text or not _PART_TITLE_RE.match(part_text):
+                index += 1
+                continue
+            if len(head_text) + len(part_text) > 60:
+                index += 1
+                continue
+            merged = f"{head_text} {part_text}"
+            self._issue(
+                issues, "CSM-STRUCT-004",
+                f"Multi-part title split across two adjacent H1 lines "
+                f"({head_text!r} + {part_text!r}); merged to {merged!r}.",
+                line=head.start_line, repaired=True,
+                repair_action=f"Merged the split H1 lines into {merged!r} in memory.",
+            )
+            head.text = merged
+            head.end_line = part.end_line
+            del blocks[index + 1]
+            index += 1  # 合并一对后继续向后扫描（封面与正文首页可能各出现一对）
+
+    def _reclassify_footnote_definitions(self, blocks: list[Block], issues: list[CSMIssue]) -> None:
+        """GFM 脚注定义识别与绑定（[^1]: 文本 → kind=footnote，docs/07 §6.7）。
+
+        接受三种 canonical 摆放形态（回环写回统一用“紧随段尾”同行情，见 docs/07）：
+        1) 定义独立成行（[^1]: 文本）；
+        2) 定义紧跟其角标所在段落末尾、拼在同一行（可多条连续：
+          “…[^1]: 甲。[^2]: 乙。”），解析时从段尾剥离为独立 footnote 块；
+        3) 段首定义行与后续内容粘连成一个多行段（回收脚本曾漏插后空行，定义行
+          直接贴在下一条目/内容行上）——首行定义以句末标点收尾时剥离为 footnote
+          块、其余行保留为段落；首行无句末标点的换行续写长定义不猜。
+        仅处理段落类块，不改注/示例/表格等。识别的 label/text 写入 block.data；
+        builder 据此输出 footnote 内容并写 footnoteMarker/footnoteAnchorRef。
+
+        归类完成后按 label 把每个 footnote 块**绑定**到其锚点段（正文里含
+        “[^N]” 标记的块）之后：页脚绘制以锚点落页为准，定义若停留在 canonical
+        中的原始位置（远离锚点、甚至落进后续列表条目之间），渲染会把定义画到
+        错误页页脚。锚点唯一才搬，且已是锚点后“脚注连续段”一员时不搬；无锚点
+        或多个候选（正文多处引用该标记）保守原地保留。
+
+        上标脚注标记 OCR 常与正文粘连（“—2003”+上标 1) → “—20031”），回收脚本把
+        标记还原为 GFM “[^N]”、定义文本还原为 “[^N]: …”；本步负责语义归类与绑定。
+        """
+        segment_re = re.compile(r"\[\^([0-9A-Za-z_-]+)\]:\s*")
+
+        def _classify_paragraph(text: str, start_line: int, end_line: int, issue_line: int) -> list[Block]:
+            """归类一段文本 → [正文段(可无), *footnote]（形态 1 整行 / 形态 2 段尾剥离）。"""
+            stripped = text.strip()
+            whole = _FOOTNOTE_DEF_RE.match(stripped)
+            if whole and not stripped[whole.end():].strip():
+                # 形态 1：整行定义。
+                note = Block(
+                    kind="footnote", start_line=start_line, end_line=end_line,
+                    text=stripped,
+                    data={"label": whole.group(1), "text": whole.group(2)},
+                )
+                self._issue(
+                    issues, "CSM-STRUCT-005",
+                    f"GFM footnote definition recognised ([^{whole.group(1)}]: {whole.group(2)[:24]}...).",
+                    line=issue_line, repaired=True,
+                    repair_action="Reclassified the footnote definition line as a footnote block in memory.",
+                )
+                return [note]
+            segments = list(segment_re.finditer(stripped))
+            if not segments:
+                return [Block(kind="paragraph", start_line=start_line, end_line=end_line, text=text)]
+            body = stripped[: segments[0].start()].rstrip()
+            if not body:
+                # 行首即定义但整行匹配失败（换行续写长定义等）——保守原样保留。
+                return [Block(kind="paragraph", start_line=start_line, end_line=end_line, text=text)]
+            out: list[Block] = [Block(kind="paragraph", start_line=start_line, end_line=end_line, text=body)]
+            for index, seg in enumerate(segments):
+                label = seg.group(1)
+                cut = segments[index + 1].start() if index + 1 < len(segments) else len(stripped)
+                content = stripped[seg.end(): cut].strip()
+                out.append(Block(
+                    kind="footnote", start_line=start_line, end_line=end_line,
+                    text=f"[^{label}]: {content}", data={"label": label, "text": content},
+                ))
+                self._issue(
+                    issues, "CSM-STRUCT-005",
+                    f"GFM footnote definition recognised inline after its clause ([^{label}]: {content[:24]}...).",
+                    line=issue_line, repaired=True,
+                    repair_action="Split the trailing footnote definition(s) off the paragraph into footnote block(s).",
+                )
+            return out
+
+        rebuilt: list[Block] = []
+        for block in blocks:
+            if block.kind != "paragraph":
+                rebuilt.append(block)
+                continue
+            text_lines = block.text.split("\n")
+            # 形态 3：段首整行定义 + 粘连内容 → 逐个剥离定义行，内容行留作段落。
+            peeled: list[Block] = []
+            cursor = 0
+            while cursor < len(text_lines):
+                line = text_lines[cursor].strip()
+                if not line:
+                    cursor += 1
+                    continue
+                whole = _FOOTNOTE_DEF_RE.match(line)
+                trailing = line[whole.end():].strip() if whole else ""
+                has_rest = any(ln.strip() for ln in text_lines[cursor + 1:])
+                if whole and not trailing and has_rest and _FOOTNOTE_DEF_END_RE.search(whole.group(2).rstrip()):
+                    peeled.append(Block(
+                        kind="footnote", start_line=block.start_line + cursor, end_line=block.start_line + cursor,
+                        text=line,
+                        data={"label": whole.group(1), "text": whole.group(2)},
+                    ))
+                    self._issue(
+                        issues, "CSM-STRUCT-005",
+                        f"GFM footnote definition glued to following content recognised "
+                        f"([^{whole.group(1)}]: {whole.group(2)[:24]}...).",
+                        line=block.start_line + cursor, repaired=True,
+                        repair_action="Split the leading footnote definition line off the glued paragraph into a footnote block.",
+                    )
+                    cursor += 1
+                    continue
+                break
+            if peeled:
+                rebuilt.extend(peeled)
+                remainder = "\n".join(text_lines[cursor:]).strip()
+                if remainder:
+                    rebuilt.extend(_classify_paragraph(
+                        remainder, block.start_line + cursor, block.end_line, block.start_line + cursor,
+                    ))
+                continue
+            rebuilt.extend(_classify_paragraph(block.text, block.start_line, block.end_line, block.start_line))
+        blocks[:] = rebuilt
+
+        # 绑定：把每个 footnote 块移到其锚点段（唯一含 “[^N]” 标记的非脚注块）之后。
+        seen: set[tuple[str, int]] = set()
+        while True:
+            pick: tuple[int, tuple[str, int]] | None = None
+            for index in range(len(blocks) - 1, -1, -1):
+                block = blocks[index]
+                label = str(block.data.get("label", ""))
+                key = (label, block.start_line)
+                if block.kind == "footnote" and label and key not in seen:
+                    pick = (index, key)
+                    break
+            if pick is None:
+                break
+            f_index, key = pick
+            seen.add(key)
+            note = blocks[f_index]
+            label = key[0]
+            candidates = [
+                i for i, block in enumerate(blocks)
+                if i != f_index and block.kind != "footnote" and f"[^{label}]" in block.text
+            ]
+            if len(candidates) != 1:
+                continue  # 无锚点 / 正文多处引用该标记 → 保守不动
+            anchor = candidates[0]
+            # 已在锚点后的“脚注连续段”内（紧跟锚点，或紧跟同为该锚点的脚注）→ 不动
+            run_start = f_index
+            while run_start > 0 and blocks[run_start - 1].kind == "footnote":
+                run_start -= 1
+            if run_start > 0 and run_start - 1 == anchor:
+                continue
+            blocks.pop(f_index)
+            insert_at = anchor + 1 if anchor < f_index else anchor
+            blocks.insert(insert_at, note)
+            self._issue(
+                issues, "CSM-STRUCT-005",
+                f"Footnote definition [^{label}] relocated right after its anchor paragraph "
+                f"(now {insert_at + 1}-th block).",
+                line=note.start_line, repaired=True,
+                repair_action="Moved the footnote definition block directly after the block containing its anchor marker so page-bottom attribution lands on the anchor page.",
+            )
+
+    def _repair_reference_entry_brackets(self, blocks: list[Block], issues: list[CSMIssue]) -> None:
+        """参考文献条目方括号形态归一（CSM-OCR-013）。
+
+        OCR 可能丢掉 [N] 的左或右括号（GB_T_20001.10-2014 参考文献第 8、9 条：
+        “8] GB/T 27050.1 …”）。判别（保守，防误伤正文）：
+        - 段以 “数字] ” 开头且其后紧跟标准代号前缀（GBT-C06 白名单）→ 补回左括号；
+        - 段以 “[数字<空格>” 开头（即数字后无 “]”）且其后紧跟标准代号前缀 →
+          在数字后补回右括号。
+        其余形态（正文里的 “[GB/T 20000.1—2014，定义 7.9]” 等）不触碰。
+        """
+        open_lost = re.compile(r"^(\d+)\]\s*")
+        close_lost = re.compile(r"^\[(\d+)\s+")
+        for block in blocks:
+            if block.kind != "paragraph":
+                continue
+            text = block.text
+            stripped = text.lstrip()
+            indent = text[: len(text) - len(stripped)]
+            repaired = None
+            m = open_lost.match(stripped)
+            if m and _REFERENCE_STD_PREFIX_RE.match(stripped[m.end():]):
+                repaired = f"[{m.group(1)}] {stripped[m.end():]}"
+            else:
+                m2 = close_lost.match(stripped)
+                if m2 and _REFERENCE_STD_PREFIX_RE.match(stripped[m2.end():]):
+                    repaired = f"[{m2.group(1)}] {stripped[m2.end():]}"
+            if repaired is None:
+                continue
+            block.text = indent + repaired
+            self._issue(
+                issues, "CSM-OCR-013",
+                f"Reference entry bracket restored: {stripped[:40]!r} -> {repaired[:40]!r}.",
+                line=block.start_line, repaired=True,
+                repair_action="Restored the [N] bracket form of the reference entry in memory.",
+            )
+
+    def _repair_ocr_guide_phrase(self, blocks: list[Block], issues: list[CSMIssue]) -> None:
+        """OCR 固定引导语形近字修复（CSM-OCR-011）。
+
+        规范性引用文件引导语（GB/T 1.1-2020 固定句式“下列文件对于本文件的
+        应用是必不可少的……”）被 OCR 把“下”误读为形近字“卜”时，整句以
+        “卜列文件对于本文件”开头（“卜列”不是词，正文不可能这样写）——安全
+        替换回“下列”，避免该句被 GBT-C06 当缺失引导语/缺编号清单条目误报。
+        """
+        for block in blocks:
+            if block.kind not in ("paragraph", "heading"):
+                continue
+            if not _REFERENCE_GUIDE_OCR_RE.match(block.text.lstrip()):
+                continue
+            repaired = block.text.replace("卜列", "下列", 1)
+            if repaired == block.text:
+                continue
+            block.text = repaired
+            self._issue(
+                issues, "CSM-OCR-011",
+                "OCR misread the fixed reference-list guide sentence "
+                "(‘卜列文件…’); restored ‘下列文件…’.",
+                line=block.start_line, repaired=True,
+                repair_action="Restored '下列文件对于本文件' guide sentence in memory.",
+            )
+
     @staticmethod
     def _repair_heading_levels(blocks: list[Block], issues: list[CSMIssue]) -> None:
         """Normalise heading levels by clause-number depth (CSM-OCR-006).
@@ -1650,6 +2024,170 @@ class CSMParser:
             )
 
     @staticmethod
+    def _marker_family(marker: str) -> str | None:
+        """列表 marker 族：dash 破折号 / dot 间隔号 / letter 字母编号 / number 数字编号。"""
+        marker = str(marker or "").strip()
+        if re.fullmatch(r"[-—–]{1,3}", marker):
+            return "dash"
+        if marker in ("·", "•", "・"):
+            return "dot"
+        if re.fullmatch(r"[A-Za-z][)）]", marker):
+            return "letter"
+        if re.fullmatch(r"\d+[)）]", marker):
+            return "number"
+        return None
+
+    @classmethod
+    def _repair_colon_led_lists(cls, blocks: list[Block], issues: list[CSMIssue]) -> None:
+        """冒号引导完整列项组的缺失 marker 补齐（CSM-OCR-016）。
+
+        现象（GB_T_20001.10-2014 6.7.1.1/6.4.3/6.4.4/A.1 等）：引导句以「：」收尾、
+        条目逐段排布、条目以「；」收尾且仅末条以「。」收尾的列项组，OCR 常丢若干
+        条目的 marker（破折号/间隔号/a）/1) 均可），只个别条目幸存——幸存条目成
+        孤立列表、丢 marker 条目沦为普通段落（如 6.7.1.1 末条「形成标准的单独
+        部分。」）。完整性机制（非个例判定）：
+        - 整组按「：引导 + 『；』条目序列 + 『。』末条」判型；组内 ≥1 幸存 marker
+          决定 marker 族，缺 marker 条目补同族 marker（破折号/间隔号沿用幸存
+          marker 原样，字母/数字按组序重排 a）/1) 序号）；
+        - 6.4.4 型首条与引导句粘连（「…包括下述内容：分类原则与方法；」）按最后
+          一个「：」拆出首条；
+        - 保守不猜：组内无幸存 marker、幸存 marker 族不一致、条目数 <2、末条非
+          「。」收尾、中间出现非条目块/新冒号引导/编号条文/注示例表图 起始。
+        命中后整组收敛为一个 list 块（条目保序），记 CSM-OCR-016。
+        """
+        clause_prefix = re.compile(r"^(?:\d+(?:\.\d+)+|[A-Z]\.\d+(?:\.\d+)*)\s*\S|^[A-Z](?:\.\d+)?\s")
+        lead_prefix = re.compile(r"^(注|警示|示例|表|图|附录|附\s*录|参考文献|目\s*次)")
+        colon_intro = re.compile(r"[:：]\s*$")
+
+        def unmarked_item(block: Block) -> str | None:
+            """普通段落形条目（无 marker）的文本；非条目形态返回 None。"""
+            if block.kind != "paragraph":
+                return None
+            text = block.text.strip()
+            if not text or "\n" in text:
+                return None
+            if not text.endswith(("；", "。")):
+                return None
+            if clause_prefix.match(text) or lead_prefix.match(text) or colon_intro.match(text):
+                return None
+            return text
+
+        index = 0
+        while index < len(blocks) - 1:
+            intro = blocks[index]
+            if intro.kind != "paragraph":
+                index += 1
+                continue
+            intro_text = intro.text.strip()
+            colon_at = intro_text.rfind("：")
+            glued: str | None = None
+            if colon_at >= 0 and colon_at < len(intro_text) - 1:
+                # 粘连形态：引导句「：」后直接跟了首条（6.4.4「…内容：分类原则与方法；」）。
+                tail = intro_text[colon_at + 1:].strip()
+                if (
+                    tail.endswith("；")
+                    and "。" not in tail
+                    and len(tail) <= 60
+                    and not clause_prefix.match(tail)
+                    and not lead_prefix.match(tail)
+                ):
+                    glued = tail
+            if glued is None and not (colon_at >= 0 and colon_at == len(intro_text) - 1):
+                index += 1
+                continue
+
+            entries: list[tuple[str | None, str, int, Block | None]] = []  # (marker, text, line, src)
+            consumed_blocks: list[Block] = []
+            if glued is not None:
+                entries.append((None, glued, intro.start_line or 0, None))
+            scan = index + 1
+            while scan < len(blocks):
+                block = blocks[scan]
+                if block.kind == "list":
+                    items = block.data.get("items") or []
+                    if not items:
+                        break
+                    more: list[tuple[str | None, str, int, Block | None]] = []
+                    ok = True
+                    for item in items:
+                        itext = str(item.get("text") or "").strip()
+                        if not itext.endswith(("；", "。")):
+                            ok = False
+                            break
+                        more.append((str(item.get("marker") or ""), itext, int(item.get("line") or 0), None))
+                    if not ok:
+                        break
+                    entries.extend(more)
+                    consumed_blocks.append(block)
+                    scan += 1
+                    if more[-1][1].endswith("。"):
+                        break  # list 内末条「。」收尾即组完整，不再吸收后续散文
+                    continue
+                item_text = unmarked_item(block)
+                if item_text is None:
+                    break
+                entries.append((None, item_text, block.start_line or 0, block))
+                consumed_blocks.append(block)
+                scan += 1
+                # 完整性：末条以「。」收尾即列表完整；其后不再吸收（防把后续散文并入）。
+                if item_text.endswith("。"):
+                    break
+            if len(entries) < 2 or not consumed_blocks:
+                index += 1
+                continue
+            # 末条必须「。」收尾、其前全部「；」收尾——完整性判定。
+            if not entries[-1][1].endswith("。") or any(not text.endswith("；") for _, text, _, _ in entries[:-1]):
+                index += 1
+                continue
+            # 幸存 marker 族须 ≥1 且一致（首个幸存 marker 定族）。
+            marked = [marker for marker, _, _, _ in entries if marker]
+            if not marked:
+                index += 1
+                continue
+            family = CSMParser._marker_family(marked[0])
+            if family is None or any(CSMParser._marker_family(m) != family for m in marked):
+                index += 1
+                continue
+            missing = [e for e in entries if e[0] is None]
+            if not missing:
+                index += 1
+                continue
+            # 补 marker：破折号/间隔号沿用幸存 marker；字母/数字按组序重排（缺号自然补齐）。
+            if family in ("dash", "dot"):
+                restored = marked[0]
+                rebuilt = [(marker or restored, text, line) for marker, text, line, _ in entries]
+            else:
+                paren = "）" if marked[0].endswith("）") else ")"
+                start = marked[0][0]
+                def seq(i: int) -> str:
+                    base = start.lower() if family == "letter" else "0"
+                    if family == "letter":
+                        letter = chr(ord(base) + i)
+                        return letter.upper() if start.isupper() else letter
+                    return str(i + 1)
+                rebuilt = [(seq(i) + paren, text, line) for i, (_, text, line, _) in enumerate(entries)]
+            # 整组收敛为单个 list 块：引导句去粘连，组内首个源块改为 list，删除其余。
+            if glued is not None:
+                intro.text = intro_text[:colon_at + 1]
+            first_src = consumed_blocks[0]
+            first_src.kind = "list"
+            first_src.text = ""
+            first_src.data = {"items": [{"marker": m, "text": t, "line": ln} for m, t, ln in rebuilt]}
+            for extra in consumed_blocks[1:]:
+                if extra in blocks:
+                    blocks.remove(extra)
+            CSMParser._issue(
+                issues,
+                "CSM-OCR-016",
+                f"Colon-led list rebuilt with a complete item sequence: restored {len(missing)} "
+                f"missing {family} marker(s) after {intro_text[:20]!r}.",
+                line=first_src.start_line,
+                repaired=True,
+                repair_action="Rebuilt the colon-led item run as one list with family markers on every item.",
+            )
+            index += 2  # intro + 重建后的 list 块
+
+    @staticmethod
     def _repair_text_spacing(blocks: list[Block], issues: list[CSMIssue]) -> None:
         """Restore spacing OCR drops inside standard-document text (CSM-OCR-003/004).
 
@@ -1759,60 +2297,6 @@ class CSMParser:
             )
 
     @staticmethod
-    def _merge_split_clause_paragraphs(blocks: list[Block], issues: list[CSMIssue]) -> None:
-        """Join clause paragraphs an extractor page break split mid-sentence (CSM-OCR-010).
-
-        现象（GB_T_1.1-2020 9.4.2.2，2026-09-04）：MinerU 在页边界把无标题条文
-        （编号开头的正文段）拦腰断成两个 markdown 段落——「……不应该与“应”一起」+
-        「使用表示要求，建议与“宜”一起使用表示推荐。」。第一段以正文词收尾、无任何
-        句末/连接标点，空行续接的（，、）规则覆盖不到；第二段是汉字开头的续文。
-        块级判据全部满足才合并：首段以「编号条文」形态开头（≥2 段点分号或附录条号）
-        且不以 。！？；：，、 收尾（完整句不动）；次段为汉字开头的普通段落，不以
-        编号/示例/注/表/图 开头（独立条文/示例/注块各有块形态，误并为零）；术语条目
-        形态（中文 U+3000/空格 拉丁，CSM-OCR-003 术语行）两侧都跳过，防把术语行与
-        其后定义段粘成一段。链式断裂（A/B/C 三段）一次扫描收拢。
-        """
-        clause_start = re.compile(r"^(?:\d+(?:\.\d+)+|[A-Z]\.\d+(?:\.\d+)*)\s*\S")
-        term_line = re.compile(r"[\u4e00-\u9fff][ \u3000\u200b]+[A-Za-z]")
-        sentence_ended = ("。", "！", "？", "；", "：", "，", "、")
-        non_continuation_prefixes = ("示例", "注", "表", "图")
-        i = 0
-        while i < len(blocks) - 1:
-            first, second = blocks[i], blocks[i + 1]
-            first_text = first.text.strip()
-            second_text = second.text.strip()
-            if (
-                first.kind == "paragraph"
-                and second.kind == "paragraph"
-                and not first.data.get("code_fence")
-                and not second.data.get("code_fence")
-                and first.directive is None
-                and second.directive is None
-                and clause_start.match(first_text)
-                and not first_text.rstrip().endswith(sentence_ended)
-                and not term_line.search(first_text)
-                and _starts_with_han(second_text)
-                and not clause_start.match(second_text)
-                and not term_line.search(second_text)
-                and not second_text.startswith(non_continuation_prefixes)
-            ):
-                merged = first.text + second.text
-                CSMParser._issue(
-                    issues,
-                    "CSM-OCR-010",
-                    f"Merged a numbered clause paragraph the extractor split across lines: "
-                    f"{first.text[:30]!r} + {second.text[:30]!r}.",
-                    line=first.start_line,
-                    repaired=True,
-                    repair_action="Joined the two paragraph fragments into one in memory.",
-                )
-                first.text = merged
-                first.end_line = second.end_line
-                blocks.pop(i + 1)
-                continue
-            i += 1
-
-    @staticmethod
     def _classify_body_errors(errors: list[str], issues: list[CSMIssue]) -> list[str]:
         fatal_errors: list[str] = []
         for error in errors:
@@ -1821,6 +2305,10 @@ class CSMParser:
             elif "duplicate ssir id" in error:
                 # Explicit IDs participate in reference resolution; changing them can mis-bind a merge or asset.
                 fatal_errors.append(error)
+            elif "ssir:box" in error:
+                # ssir:box 配对/嵌套错误（2026-09-08 显式文档框声明）：不阻断解析，
+                # 宽容模式按确定性规则继续（未闭合开 → 延伸到文档尾；关无开/嵌套 → 忽略）。
+                CSMParser._issue(issues, "CSM-STRUCT-006", error)
             elif "table row has" in error:
                 # Short rows were repaired above. Extra cells have already been recorded as fatal there.
                 continue

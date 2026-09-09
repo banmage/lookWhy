@@ -1,7 +1,25 @@
 import re
+import tempfile
 import unittest
+from pathlib import Path
 
-from leleby_ssir.pdf_renderer import _TABLE_NOTE_CELL_RE, _append_nodes, _cell_text_natural_width, _clause_leading_number, _example_box, _footnote_superscripts, _heading_depth, _heading_parts, _latex_to_text, _list_marker, _markup, _ocr_l_one, _split_table_note_parts, _starts_new_page, _strip_pagebreaks, _table_cell_superscripts, _table_column_widths, _toc_label
+from leleby_ssir.pdf_renderer import _TABLE_NOTE_CELL_RE, _BODY_MEASURE, _append_nodes, _cell_text_natural_width, _clause_leading_number, _example_box, _example_box_inner_width, _footnote_superscripts, _heading_depth, _heading_parts, _latex_to_text, _list_marker, _markup, _ocr_l_one, _split_table_note_parts, _starts_new_page, _strip_pagebreaks, _table_cell_superscripts, _table_column_widths, _toc_label
+
+TABLE_FIXTURE = {
+    "id": "t1", "number": "1", "caption": "系统性能要求",
+    "rows": [
+        {"rowIndex": 0, "isHeader": True, "cells": [
+            {"colIndex": 0, "text": "序号"},
+            {"colIndex": 1, "text": "技术参数名称"},
+            {"colIndex": 2, "text": "参数"},
+        ]},
+        {"rowIndex": 1, "isHeader": False, "cells": [
+            {"colIndex": 0, "text": "1"},
+            {"colIndex": 1, "text": "模拟量U、I测量误差"},
+            {"colIndex": 2, "text": "≤0.2%"},
+        ]},
+    ],
+}
 
 
 class PdfRendererHeadingTests(unittest.TestCase):
@@ -124,44 +142,64 @@ class UntitledClauseFlushTests(unittest.TestCase):
         self.assertEqual(_list_marker("————"), "——")
         self.assertEqual(_list_marker("–"), "——")
         self.assertEqual(_list_marker("-—"), "——")
-        self.assertEqual(_list_marker("•"), "·")
+        self.assertEqual(_list_marker("•"), "●")
         self.assertEqual(_list_marker("a)"), "a)")
         self.assertEqual(_list_marker("1)"), "1)")
         self.assertEqual(_list_marker("·"), "·")
         self.assertEqual(_list_marker("●"), "●")
 
-    def test_table_cell_superscripts_marks_footnote_references(self):
-        # GB/T 1.1 表脚注：匝间绝缘ᵃ —— OCR 还原成普通字符后渲染回上角标（GBT-C18）。
-        # 哨兵经 _markup 的 XML 转义后恢复为真实 <super> 标签。
+    def test_table_cell_superscripts_explicit_markers(self) -> None:
+        # 2026-09-07 语法定案（docs/07 §6.7，GBT-X04 执行侧）：表注引用点
+        # [:^a] 与注文段开始 [^a] → 上标裸小写字母；注文段结束 [^a/] → 删除
+        # 不渲染。哨兵经 _markup 的 XML 转义后恢复为真实 <super> 标签。
         def rendered(text: str) -> str:
             return _markup(_table_cell_superscripts(text))
 
-        self.assertEqual(rendered("匝间绝缘a"), "匝间绝缘<super>a</super>")
-        self.assertEqual(rendered("匝间绝缘ａ"), "匝间绝缘<super>ａ</super>")
+        # 词中引用点（20001.10 表1 表头型）与词尾引用点
+        self.assertEqual(rendered("要素[:^a]的编排"), "要素<super>a</super>的编排")
+        self.assertEqual(rendered("表述形式[:^a]"), "表述形式<super>a</super>")
         self.assertEqual(
-            rendered("a 匝间绝缘的检验可在部件生产过程中进行。"),
-            "<super>a</super> 匝间绝缘的检验可在部件生产过程中进行。",
+            rendered("程序指示[:^b]\x00BR\x00追溯/证实方法[:^c]"),
+            "程序指示<super>b</super>\x00BR\x00追溯/证实方法<super>c</super>",
         )
-        # 单位字母/大写不误伤（仍不是上角标，但按 GBT-B12 补单位间隙）
+        # 注文段开始/结束（单段）
+        self.assertEqual(rendered("[^a]黑体表示“必备的”。[^a/]"), "<super>a</super>黑体表示“必备的”。")
+        # 多注文段同格（<br> 上层先转哨兵；此处直给哨兵形态）
+        self.assertEqual(
+            rendered("[^a]黑体表示“必备的”。[^a/]\x00BR\x00[^b]“程序指示”中的指示型条款…。[^b/]"),
+            "<super>a</super>黑体表示“必备的”。\x00BR\x00<super>b</super>“程序指示”中的指示型条款…。",
+        )
+        # 注文以引号开头（GB_T_20001.6-2017 表1 实测形态）不再依赖字形猜测
+        self.assertEqual(rendered("[^b]“程序指示”中的指示型条款。[^b/]"), "<super>b</super>“程序指示”中的指示型条款。")
+        # 结束标记无字面残留、结束/开始互不误食
+        self.assertNotIn("[^", rendered("[^c]追溯/证实方法中的…。[^c/]"))
+        # GFM 条文脚注引用（表内）仍为 “N)”（脚注规则不变）
+        self.assertEqual(rendered("见注[^1]"), "见注<super>1)</super>")
+
+    def test_table_cell_superscripts_plain_letters_stay_plain(self) -> None:
+        # 2026-09-07 移除“汉字后小写字母=上标”字形猜测（词尾/词中/行首解释
+        # 标记在单元格内均不再猜测）：字面小写字母（单位、变量、旧式锚点残字、
+        # 大写相位字母）一律按普通文本渲染。
+        def rendered(text: str) -> str:
+            return _markup(_table_cell_superscripts(text))
+
+        self.assertEqual(rendered("匝间绝缘a"), "匝间绝缘a")
+        self.assertEqual(rendered("匝间绝缘ａ"), "匝间绝缘ａ")
+        self.assertEqual(rendered("要素a的编排"), "要素a的编排")
+        self.assertEqual(rendered("表述形式a"), "表述形式a")
+        self.assertEqual(rendered("a 说明"), "a 说明")
+        self.assertEqual(rendered("b黑体表示…"), "b黑体表示…")
+        # 单位/大写/列项引用不误伤（原负例保留）
         self.assertEqual(rendered("规格mm"), "规格mm")
         self.assertEqual(rendered("输入功率W"), "输入功率W")
         self.assertEqual(rendered("250V"), "250\xa0V")
         self.assertEqual(rendered("≤55 dB(A)"), "≤55\xa0dB(A)")
-
-    def test_table_cell_superscripts_only_lowercase_leading_markers(self) -> None:
-        # 回归（2026-08-31，GB_T_43726-2024 表6）："A 相"/"B相"/"C相" 的相位
-        # 字母是内容，不是脚注标记，不应上角标；GB/T 1.1 表脚注用 a/b/c 小写。
-        def rendered(text: str) -> str:
-            return _markup(_table_cell_superscripts(text))
-
         self.assertEqual(rendered("A 相"), "A 相")
         self.assertEqual(rendered("B相"), "B相")
-        self.assertEqual(rendered("C相"), "C相")
-        # 小写脚注标记仍上角标
-        self.assertEqual(rendered("a 说明"), "<super>a</super> 说明")
-        self.assertEqual(rendered("b黑体表示…"), "<super>b</super>黑体表示…")
-        # 列项引用 ")" 不误伤
         self.assertEqual(rendered("编写a)中所述"), "编写a)中所述")
+        # 词尾引用点经显式标记还原（20001.10/20001.5 表1 表头型）
+        self.assertEqual(rendered("要素所允许的表述形式[:^a]"), "要素所允许的表述形式<super>a</super>")
+
 
     def test_body_footnote_explanation_marker_superscript(self) -> None:
         # 回归（2026-08-31，GB_T_1.1-2020 附录 E 图脚注）：脚注成对出现——
@@ -348,15 +386,16 @@ class TableCellLineBreakTests(unittest.TestCase):
     Regression (2026-08-31, GB_T_20001.6-2017 表1)：单元格 "术语和定义
     ……程序确立程序指示b追溯/证实方法……规范性附录" 被 OCR 压成单行，恢复为
     <br> 连接的多行后，_markup 必须把它转成 <br/>（不能折叠为空格），且
-    行尾脚注标记 b 仍触发上标。
+    行尾表注引用点（2026-09-07 起为显式 [:^b] 标记）仍触发上标。
     """
 
     def test_br_becomes_line_break_and_footnote_superscript_fires(self) -> None:
-        cell = "术语和定义<br>……<br>程序确立<br>程序指示b<br>追溯/证实方法<br>……<br>规范性附录"
+        cell = "术语和定义<br>……<br>程序确立<br>程序指示[:^b]<br>追溯/证实方法[:^c]<br>……<br>规范性附录"
         marked = cell.replace("<br>", "\x00BR\x00")
         out = _markup(_table_cell_superscripts(marked)).replace("\x00BR\x00", "<br/>")
         self.assertIn("<br/>", out)
         self.assertIn("<super>b</super>", out)
+        self.assertIn("<super>c</super>", out)
         self.assertEqual(out.count("<br/>"), 6)
 
     def test_plain_cells_unaffected(self) -> None:
@@ -470,8 +509,11 @@ class TableColumnWidthTests(unittest.TestCase):
             14 * 9.0,
         )
 
-    def test_widths_fill_frame_and_follow_content(self) -> None:
-        # 表4 型：关系列（长公式）明显宽于前三列；列宽和恰等于版心宽。
+    def test_widths_fill_frame_proportional_to_content(self) -> None:
+        # 2026-09-07 三次裁定：表格总宽恒 = 版心 455pt（充分利用版面空间，与
+        # 文字版心等宽）；每列在"需求 + 左右边距 8pt"上按需求比例吸收富余空间
+        # ——文字距两端线均有舒适留距、无临界折行；仅内容超版心才压缩。
+        # 表4 型：关系列（长公式）需求最大，比例分配后仍显著宽于窄列。
         rows = self._rows(
             ["量的名称", "单位名称", "单位符号", "与SI单位的关系"],
             [
@@ -481,9 +523,11 @@ class TableColumnWidthTests(unittest.TestCase):
             ],
         )
         widths = _table_column_widths(rows, 4, 9.0, {}, self._IMG)
-        self.assertAlmostEqual(sum(widths), 455.0, places=6)
+        self.assertAlmostEqual(sum(widths), 455.0, delta=1e-3)
         self.assertGreater(widths[3], widths[0])
         self.assertGreater(widths[3], 2 * widths[0])  # 关系列显著宽于窄列
+        # 列宽不低于"内容最大行宽 + 左右边距"（保证逐行不折行）
+        self.assertGreaterEqual(widths[0], _cell_text_natural_width("量的名称", 9.0) + 8.0 - 1e-6)
 
     def test_full_width_note_row_does_not_dominate(self) -> None:
         # 通栏注行（colspan=全部）不挤占单列需求：表头 36pt 需求列仍按内容分配。
@@ -501,15 +545,172 @@ class TableColumnWidthTests(unittest.TestCase):
             },
         )
         widths = _table_column_widths(rows, 4, 9.0, {}, self._IMG)
-        # 注行不撑爆任何单列（通栏摊分后各列仍按表头/数据内容分配）
+        # 注行不撑爆任何单列（通栏行不计入单列需求）；总宽恒 = 版心
         self.assertLess(widths[0], 150)
-        self.assertAlmostEqual(sum(widths), 455.0, places=6)
+        self.assertAlmostEqual(sum(widths), 455.0, delta=1e-3)
 
     def test_empty_column_gets_floor_width(self) -> None:
         rows = self._rows(["名称", "", "符号"], [["时间", "", "min"], ["长度", "", "m"]])
         widths = _table_column_widths(rows, 3, 9.0, {}, self._IMG)
         self.assertGreaterEqual(widths[1], 24.0)
-        self.assertAlmostEqual(sum(widths), 455.0, places=6)
+        self.assertAlmostEqual(sum(widths), 455.0, delta=1e-3)
+
+
+class ExampleBoxWidthTests(unittest.TestCase):
+    """示例线框内容宽模型 + 通栏对象按容器宽排布（2026-09-07 穿框根因修复）。
+
+    回归（GB_T_20001.5-2017 附录A 示例1）：表/图此前按正文固定 455pt 排布，
+    而示例线框（_example_box）单元格内容可用宽只有
+    doc_width - 2×Frame padding(6) - 2×框 padding(10) ≈ 421.5pt，
+    455pt 的表格右侧穿出黑色框线。修复后线框内内容按框内容宽排布。
+    """
+
+    @staticmethod
+    def _render(nodes: list[dict], box_inner_width: float | None, content_width: float = 455.0) -> list:
+        from pathlib import Path
+
+        from reportlab.lib import colors
+        from reportlab.lib.styles import ParagraphStyle
+        from reportlab.platypus import Image, Paragraph, Spacer, Table, TableStyle
+
+        styles = {}
+        for name in ("example-label", "example-title", "example-content", "body",
+                     "body-flush", "caption", "table-unit", "table", "table-body",
+                     "note", "list", "list-sub", "formula", "section", "subclause",
+                     "clause", "front"):
+            styles[name] = ParagraphStyle(name, fontName="Helvetica", fontSize=10)
+        from leleby_ssir.pdf_renderer import PDFRenderReport
+
+        report = PDFRenderReport(
+            input_file="test.pdf", output_file="test.render.pdf",
+            profile_file="", profile_id="", font_file="",
+        )
+        story: list = []
+        _append_nodes(
+            story, nodes,
+            registries={"tables": {"t1": TABLE_FIXTURE}, "figures": {}, "formulas": {}},
+            styles=styles, font="Helvetica", report=report, asset_dir=Path("."),
+            colors=colors, Table=Table, TableStyle=TableStyle, Paragraph=Paragraph,
+            Spacer=Spacer, Image=Image, marker_factory=None, PageBreak=None,
+            example_default="frame", content_width=content_width,
+            box_inner_width=box_inner_width,
+        )
+        return story
+
+    @staticmethod
+    def _find_table(flowables: list) -> list:
+        """Find every reportlab grid Table (colWidths set) inside a story/box."""
+        from reportlab.platypus import Table as ReportlabTable
+
+        found: list = []
+        for flowable in flowables:
+            widths = getattr(flowable, "_colWidths", None)
+            # 只认显式列宽的表格 GRID（示例线框外框 Table 的 colWidths=[None] 不算）。
+            if isinstance(flowable, ReportlabTable) and widths and all(w is not None for w in widths):
+                found.append(flowable)
+            cells = getattr(flowable, "_cellvalues", None)
+            if cells:  # example box rows: nested grid tables live in cells
+                for row in cells:
+                    for cell in row:
+                        if isinstance(cell, ReportlabTable) and all(w is not None for w in getattr(cell, "_colWidths", [])):
+                            found.append(cell)
+        return found
+
+    def test_box_inner_width_math(self) -> None:
+        # A4 - (28+22)mm = 453.5433…；reportlab Frame 默认 padding 6×2 → 线框宽
+        # 441.5433…；单元格内容再减左右 10pt padding → 421.5433…。
+        self.assertAlmostEqual(_example_box_inner_width(453.5433070866142), 421.5433070866142, places=6)
+
+    def test_table_outside_box_keeps_body_measure(self) -> None:
+        # 正文容器（无框）表格总宽保持 _BODY_MEASURE（455pt），不因修复收窄。
+        nodes = [{
+            "nodeType": "section", "number": "1", "title": "范围",
+            "exampleContent": False, "contentElements": [
+                {"presentationType": "paragraph", "textContent": "本文件规定了…"},
+                {"presentationType": "table", "tableRef": "t1"},
+            ], "children": [],
+        }]
+        story = self._render(nodes, box_inner_width=None)
+        grids = self._find_table(story)
+        self.assertEqual(len(grids), 1)
+        self.assertAlmostEqual(sum(grids[0]._colWidths), 455.0, delta=1e-3)
+
+    def test_table_inside_example_box_uses_box_inner_width(self) -> None:
+        # 线框内表格总宽 = 线框内容宽（421.54），不再按 455 穿出右侧黑框线。
+        nodes = [
+            {"nodeType": "documentBlock", "title": "示例 1：", "exampleContent": True,
+             "children": [], "contentElements": []},
+            {"nodeType": "clause", "number": "7.1", "title": "系统性能要求",
+             "exampleContent": True, "children": [], "contentElements": [
+                {"presentationType": "paragraph", "textContent": "系统性能应符合表1规定的要求。"},
+                {"presentationType": "table", "tableRef": "t1"},
+            ]},
+        ]
+        inner = _example_box_inner_width(453.5433070866142)
+        story = self._render(nodes, box_inner_width=inner)
+        # story = [示例题注 Paragraph, 线框 Table]
+        self.assertEqual(len(story), 2)
+        box = story[1]
+        grids = self._find_table([box])
+        self.assertEqual(len(grids), 1)
+        self.assertAlmostEqual(sum(grids[0]._colWidths), inner, delta=1e-3)
+        # 表宽 ≤ 线框内容可用宽：穿框必然消失。
+        self.assertLessEqual(sum(grids[0]._colWidths), 455.0 - 2 * 10.0)
+
+
+class RenderPdfExampleBoxGeometryTests(unittest.TestCase):
+    """渲染几何回归（2026-09-07 穿框修复）：示例线框内表格不得穿出黑色框线。
+
+    夹具 tests/fixtures/render_example_box.ssir.json 由 GB_T_20001.5-2017
+    附录 A 示例 1/2 区裁剪而来（三张表全部位于示例线框内，schema 校验通过）。
+    断言基于 PDF 内部矢量对象（GEN-090/091 同口径，非视觉比对）：
+    0.75pt 黑竖线 = 示例线框边（_example_box BOX），0.5pt 竖线 = 表格 GRID 竖线。
+    """
+
+    def _geometry(self) -> tuple[int, int, list[str]]:
+        import pymupdf
+        from reportlab.pdfbase.ttfonts import TTFont
+
+        font = Path(__file__).resolve().parents[1] / "config" / "rendering" / "fonts" / "NotoSerifCJKsc-Regular.ttf"
+        if not font.is_file():
+            self.skipTest("body font not available; skipping real-PDF geometry check")
+        from leleby_ssir.pdf_renderer import render_pdf_file
+
+        fixture = Path(__file__).resolve().parent / "fixtures" / "render_example_box.ssir.json"
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "render.pdf"
+            report = render_pdf_file(str(fixture), str(out))
+            doc = pymupdf.open(str(out))
+            boxes = tables = 0
+            violations: list[str] = []
+            for pno in range(doc.page_count):
+                verticals_75 = []
+                verticals_05 = []
+                for d in doc[pno].get_drawings():
+                    if d["type"] != "s" or d.get("color") != (0.0, 0.0, 0.0):
+                        continue
+                    rb = d["rect"]
+                    if rb.height > 40:  # 竖线
+                        if abs(d.get("width", 0) - 0.75) < 0.01:
+                            verticals_75.append(rb.x0)
+                        elif abs(d.get("width", 0) - 0.5) < 0.01:
+                            verticals_05.append(rb.x0)
+                if verticals_75:
+                    boxes += 1
+                    left, right = min(verticals_75), max(verticals_75)
+                    for x in verticals_05:
+                        tables += 1
+                        if x < left - 0.5 or x > right + 0.5:
+                            violations.append(
+                                f"page {pno + 1}: table vertical x={x:.1f} outside example box [{left:.1f},{right:.1f}]"
+                            )
+            return boxes, tables, violations
+
+    def test_example_box_tables_stay_inside_black_frame(self) -> None:
+        boxes, tables, violations = self._geometry()
+        self.assertGreater(boxes, 0, "fixture should contain example-box pages")
+        self.assertGreater(tables, 0, "fixture should contain tables inside the box")
+        self.assertEqual(violations, [])
 
 
 if __name__ == "__main__":

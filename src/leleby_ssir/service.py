@@ -58,7 +58,7 @@ def round_trip_csm(
 ) -> tuple[dict, dict, RoundTripReport]:
     """Execute CSM(canonical) -> SSIR -> CSM(render.md) -> verify and compare semantic views.
 
-    ``render_md_output`` 是 SSIR 确定性渲染回的 CSM（04_render 中间产物，原 Std1）；
+    ``render_md_output`` 是 SSIR 确定性渲染回的 CSM（04_render 中间产物）；
     ``verify_output`` 可选，用于持久化从 ``render.md`` 再解析得到的 SSIR
     （05_verify 的 verify.json，原 SSIR2），供回环报告引用。
     """

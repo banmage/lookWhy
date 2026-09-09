@@ -452,6 +452,16 @@
           "type": "string",
           "enum": ["frame", "shaded"],
           "description": "示例框样式（GBT-B11，抽取时按原稿识别）：frame=黑色细实线框；shaded=浅色背景（类代码块）。缺失时用渲染 profile 的 examples.style 默认值。"
+        },
+        "box": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "显式文档框 id（ssir:box 声明，2026-09-08）：该节点整体位于第 n 个声明框内（canonical 开/关标记之间）。无此字段 = 不在任何显式框内。框内成员逐单元按相同 id 渲染成一整框。"
+        },
+        "boxStyle": {
+          "type": "string",
+          "enum": ["frame", "shaded"],
+          "description": "该显式框开标记声明的样式（缺省 frame）：frame=黑色细实线框；shaded=浅色背景。"
         }
       },
       "required": [
@@ -509,6 +519,15 @@
         "parentNodeId": {
           "type": "string",
           "pattern": "^ssir:[A-Za-z0-9._:/-]+/[A-Za-z0-9._-]+$"
+        },
+        "footnoteMarker": {
+          "type": "string",
+          "description": "脚注标记（如 1），供本体/合规按标记关联引用点。"
+        },
+        "footnoteAnchorRef": {
+          "type": "string",
+          "pattern": "^ssir:[A-Za-z0-9._:/-]+/[A-Za-z0-9._-]+$",
+          "description": "该脚注所注释/出现的条款（structural node）id——脚注与条款关系，供本体层处理。"
         },
         "semanticTypes": {
           "type": "array",
@@ -568,6 +587,16 @@
           "type": "integer",
           "minimum": 0,
           "description": "并列组内列序号（0-based，按源 PDF x 坐标升序）。"
+        },
+        "box": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "显式文档框 id（ssir:box 声明，2026-09-08）：该内容元素位于第 n 个声明框内（canonical 开/关标记之间，可为同一条款内容中途切分）。无此字段 = 不在任何显式框内。"
+        },
+        "boxStyle": {
+          "type": "string",
+          "enum": ["frame", "shaded"],
+          "description": "该显式框开标记声明的样式（缺省 frame）：frame=黑色细实线框；shaded=浅色背景。"
         }
       },
       "required": [

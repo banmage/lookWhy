@@ -48,9 +48,10 @@ class RestoreEllipsisTests(unittest.TestCase):
             self.assertLess(out.index("a）在超净工作台上切段。"), out.index("……"))
             self.assertLess(out.index("……"), out.index("## 5.8扩繁"))
 
-    def test_table_cell_ellipsis_rebuilt_with_br_lines(self) -> None:
-        # 表1 型：单元格被 OCR 压成单行，文本层保留 术语和定义/……/程序确立/
-        # ……/规范性附录 的逐行结构 → 恢复为 <br> 连接（渲染端转 <br/>）。
+    def test_table_cell_ellipsis_left_inline(self) -> None:
+        # 2026-09-07 用户裁定：表格单元格不再按"……"切段重建 <br> 行——恢复
+        # 功能整条取消（正文省略号恢复保留），raw 单元格保持单行原样，由
+        # canonical 人工处理换行。
         with tempfile.TemporaryDirectory() as directory:
             pdf = self._make_pdf(Path(directory), [
                 [
@@ -71,7 +72,10 @@ class RestoreEllipsisTests(unittest.TestCase):
                 "| 规范性技术要素 | 术语和定义……程序确立……规范性附录 | 条文图表注脚注 |\n"
             )
             out = _restore_ellipsis_lines(raw, pdf)
-            self.assertIn("术语和定义<br>……<br>程序确立<br>……<br>规范性附录", out)
+            # 单元格文本保持原样（不插入 <br>），正文无省略号插入 → 整体不变
+            self.assertIn("术语和定义……程序确立……规范性附录", out)
+            self.assertNotIn("<br>", out)
+            self.assertEqual(out, raw)
 
 
 class PdfExtractorTests(unittest.TestCase):

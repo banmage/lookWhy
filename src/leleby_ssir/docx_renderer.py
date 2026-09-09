@@ -25,12 +25,14 @@ from typing import Any
 
 from .pdf_renderer import (
     _TABLE_NOTE_CELL_RE,
+    _cell_text_natural_width,
     _clause_leading_number,
     _footnote_superscripts,
     _heading_parts,
     _heading_text,
     _is_toc_node,
     _latex_to_text,
+    _list_marker,
     _order,
     _protect_literal_stars,
     _resolve_asset,
@@ -381,6 +383,7 @@ class _DocxBuilder:
         self.standard = document.get("metadata", {}).get("standard", {})
         self.title = str(self.common.get("title") or "")
         self.body_title_inserted = False
+        self._box: dict[str, Any] | None = None  # ssir:box 显式框（docx 侧活动容器，2026-09-08）
         self._configure()
 
     # -- 页面与样式 ---------------------------------------------------------
@@ -441,7 +444,11 @@ class _DocxBuilder:
         custom(STYLE_EXAMPLE_TITLE, ea=EA_HEI, align=align.CENTER, space_after=3, fill="F2F2F2")
         cell = custom(STYLE_TABLE_TEXT, size=9.0, align=align.CENTER, space_after=0)
         cell.paragraph_format.alignment = None  # 单元格内由段落自行控制
-        custom(STYLE_TABLE_NOTE, size=9.0, align=align.LEFT, first_indent_pt=18.0, space_after=0)
+        table_note = custom(STYLE_TABLE_NOTE, size=9.0, align=align.LEFT, first_indent_pt=18.0, space_after=0)
+        # 2026-09-07 用户裁定：表内文字行距适度放宽（PDF leading 15pt/9pt 字 ≈ 1.67×，
+        # docx 用 1.5 倍行距近似，双胞胎一致观感）。
+        cell.paragraph_format.line_spacing = 1.5
+        table_note.paragraph_format.line_spacing = 1.5
         _style_fonts(self.doc.styles["Normal"], docx, ea=EA_SONG, size_pt=10.5)
 
     # -- core properties -----------------------------------------------------
@@ -562,8 +569,67 @@ class _DocxBuilder:
         self.doc.add_page_break()
 
     # -- 正文 ----------------------------------------------------------------
+    def _has_boxes(self) -> bool:
+        """文档是否存在 ssir:box 显式声明（2026-09-08）：有则框决策走显式流式分组。"""
+        def visit(nodes: list[dict[str, Any]]) -> bool:
+            for node in nodes:
+                if "box" in node:
+                    return True
+                if any("box" in c for c in node.get("contentElements", []) or []):
+                    return True
+                if visit(node.get("children", []) or []):
+                    return True
+            return False
+        return visit(self._root_nodes())
+
+    def _box_cell(self, box: int | None, box_style: str | None = None) -> None:
+        """显式框开合（docx 侧，2026-09-08）：1×1 外框表承载框内流；
+        无标记文档不受影响。frame=黑细边框；shaded=浅灰底。"""
+        if box is None:
+            self._box = None
+            return
+        if self._box is not None and self._box.get("id") == box:
+            return
+        self._box = None  # 关闭上一框（关旧再开新 = 相邻两框）
+        outer = self.doc.add_table(rows=1, cols=1)
+        cell = outer.cell(0, 0)
+        mode = box_style if box_style in ("frame", "shaded") else "frame"
+        if mode == "shaded":
+            tc_pr = cell._tc.get_or_add_tcPr()
+            shd = tc_pr.makeelement(self.docx["qn"]("w:shd"), {
+                self.docx["qn"]("w:val"): "clear",
+                self.docx["qn"]("w:color"): "auto",
+                self.docx["qn"]("w:fill"): "F2F2F2",
+            })
+            tc_pr.append(shd)
+        else:
+            _table_borders(outer, self.docx)
+        self._box = {"id": box, "cell": cell, "para_used": False}
+
+    def _container_paragraph(self, style: str | None = None) -> Any:
+        """正文段落槽：显式框内写入框单元格（首个段落复用单元格默认空段），
+        框外直接写文档体。"""
+        if self._box is None:
+            return self.doc.add_paragraph(style=style) if style else self.doc.add_paragraph()
+        cell = self._box["cell"]
+        if not self._box["para_used"]:
+            self._box["para_used"] = True
+            paragraph = cell.paragraphs[0]
+            if style:
+                paragraph.style = self.doc.styles[style]
+            return paragraph
+        return cell.add_paragraph(style=style) if style else cell.add_paragraph()
+
+    def _container_table(self, rows: int, cols: int) -> Any:
+        if self._box is None:
+            return self.doc.add_table(rows=rows, cols=cols)
+        return self._box["cell"].add_table(rows=rows, cols=cols)
+
     def render_body(self) -> None:
         nodes = self._root_nodes()
+        if self._has_boxes():
+            self._marked_body(nodes)
+            return
         index = 0
         while index < len(nodes):
             node = nodes[index]
@@ -586,6 +652,64 @@ class _DocxBuilder:
                 self.doc.add_paragraph("")
             self._node(node)
             index += 1
+
+    def _marked_body(self, nodes: list[dict[str, Any]]) -> None:
+        """ssir:box 显式模式的根级发射（2026-09-08）：示例启发式连续打包停用，
+        框归属完全来自标记（节点/内容元素均可中途开合）。"""
+        self._box = None
+        index = 0
+        while index < len(nodes):
+            node = nodes[index]
+            if _is_toc_node(node):
+                index += 1
+                continue
+            if not self.body_title_inserted and node.get("number") == "1":
+                self.body_title_inserted = True
+                if self.has_cover():
+                    self.doc.add_page_break()
+                paragraph = self.doc.add_paragraph(style="Heading 1")
+                _run_fonts(paragraph, self.title, docx=self.docx, ea=EA_HEI, bold=True)
+                self.doc.add_paragraph("")
+            # 「示例N：」框外题注：不进框（黑体），其后子内容/正文照常渲染。
+            title = str(node.get("title") or "").strip()
+            if node.get("exampleContent") and not node.get("box") and re.match(r"^示例\s*\d*\s*[:：]\s*$", title):
+                paragraph = self.doc.add_paragraph()
+                _run_fonts(paragraph, title, self.docx, ea=EA_HEI, bold=True)
+                index += 1
+                for child in node.get("children", []) or []:
+                    self._marked_node(child)
+                for content in sorted(node.get("contentElements", []) or [], key=_order):
+                    self._marked_content(content)
+                continue
+            self._marked_node(node)
+            index += 1
+
+    def _marked_node(self, node: dict[str, Any]) -> None:
+        """显式模式的节点发射：标题（单元）→ 内容元素（逐单元）→ 子节点，单元按 box 进出框。
+
+        示例内容（exampleContent）标题沿用 PDF 的示例排版语义（框内首个无编号
+        标题黑体居中、编号标题黑体顶格），不套 Word Heading 字号，保持附录示例
+        观感与旧 docx 一致；非示例节点照常使用 Heading 层级。
+        """
+        self._box_cell(node.get("box"), node.get("boxStyle"))
+        heading_text = self._word_heading(node)
+        if heading_text:
+            if node.get("exampleContent"):
+                paragraph = self._container_paragraph()
+                paragraph.paragraph_format.alignment = self.docx["ALIGN"].CENTER if not node.get("number") else self.docx["ALIGN"].LEFT
+                _run_fonts(paragraph, heading_text, self.docx, ea=EA_HEI, bold=True, size_pt=12)
+            else:
+                level = self._heading_level(node)
+                paragraph = self._container_paragraph(style=f"Heading {level}")
+                _run_fonts(paragraph, heading_text, self.docx, ea=EA_HEI, bold=True)
+        for content in sorted(node.get("contentElements", []), key=_order):
+            self._marked_content(content)
+        for child in sorted(node.get("children", []), key=_order):
+            self._marked_node(child)
+
+    def _marked_content(self, content: dict[str, Any]) -> None:
+        self._box_cell(content.get("box"), content.get("boxStyle"))
+        self._content(content)
 
     def _word_heading(self, node: dict[str, Any]) -> str:
         if node.get("nodeType") == "annex":
@@ -628,7 +752,7 @@ class _DocxBuilder:
     # -- 内容元素分发 ---------------------------------------------------------
     def _content(self, content: dict[str, Any]) -> None:
         kind = content.get("presentationType")
-        if kind in {"paragraph", "quote", "warning", "example"}:
+        if kind in {"paragraph", "quote", "warning", "example", "footnote"}:
             text = str(content.get("textContent") or "")
             if not text.strip():
                 return
@@ -638,17 +762,21 @@ class _DocxBuilder:
             text = str(content.get("textContent") or "")
             if not text.strip():
                 return
-            paragraph = self.doc.add_paragraph(style=STYLE_NOTE)
+            paragraph = self._container_paragraph(style=STYLE_NOTE)
             _add_markup(paragraph, _flatten_latex(text), self.docx, asset_dir=self.asset_dir, size_pt=9)
         elif kind == "list":
             items = sorted(content.get("listItems", []), key=_order)
             for item in items:
-                marker = str(item.get("marker", "-"))
+                marker = _list_marker(str(item.get("marker", "-")))
                 text = _flatten_latex(str(item.get("text") or ""))
-                paragraph = self.doc.add_paragraph(style=STYLE_LIST)
+                paragraph = self._container_paragraph(style=STYLE_LIST)
                 paragraph.paragraph_format.left_indent = self.docx["Cm"](0.85)
                 paragraph.paragraph_format.first_line_indent = self.docx["Cm"](-0.85)
-                _run_fonts(paragraph, f"{marker} ", self.docx, ea=EA_SONG)
+                if marker in ("●", "○", "•"):
+                    # 圆点列项符号缩小呈现（0.62×，与 PDF 渲染同裁定 2026-09-07）
+                    _run_fonts(paragraph, f"{marker} ", self.docx, ea=EA_SONG, size_pt=7)
+                else:
+                    _run_fonts(paragraph, f"{marker} ", self.docx, ea=EA_SONG)
                 _add_markup(paragraph, text, self.docx, asset_dir=self.asset_dir)
         elif kind == "table":
             table = self.registries["tables"].get(content.get("tableRef", ""))
@@ -660,7 +788,7 @@ class _DocxBuilder:
             self._formula(content)
         elif kind == "other":
             unknown = self.registries["unknownContents"].get(content.get("unknownRef", ""), {})
-            paragraph = self.doc.add_paragraph(style=STYLE_CODE)
+            paragraph = self._container_paragraph(style=STYLE_CODE)
             for part_index, part in enumerate(str(unknown.get("rawContent") or "").splitlines()):
                 if part_index:
                     paragraph.add_run().add_break()
@@ -677,12 +805,12 @@ class _DocxBuilder:
             return
         # 图题/表题形态段落（MinerU 偶尔抽成独立段）→ 黑体居中（同 PDF caption）
         if re.fullmatch(r"图\s*[\d.]*[^。\n]{0,60}", stripped) and not _clause_leading_number(stripped):
-            paragraph = self.doc.add_paragraph(style=STYLE_FIGURE_CAPTION)
+            paragraph = self._container_paragraph(style=STYLE_FIGURE_CAPTION)
             _add_markup(paragraph, _flatten_latex(stripped), docx, asset_dir=self.asset_dir)
             return
         flush = bool(_clause_leading_number(stripped))
         style = None if not flush else None
-        paragraph = self.doc.add_paragraph()
+        paragraph = self._container_paragraph()
         if not flush:
             paragraph.paragraph_format.first_line_indent = docx["Pt"](21)
         paragraph.paragraph_format.alignment = docx["ALIGN"].JUSTIFY
@@ -697,10 +825,10 @@ class _DocxBuilder:
         caption = str(table.get("caption") or "").strip()
         unit = str(table.get("unit") or "").strip()
         if number or caption:
-            paragraph = self.doc.add_paragraph(style=STYLE_TABLE_CAPTION)
+            paragraph = self._container_paragraph(style=STYLE_TABLE_CAPTION)
             _run_fonts(paragraph, f"表{number} {caption}".strip(), docx, ea=EA_HEI)
         if unit:
-            paragraph = self.doc.add_paragraph(style=STYLE_UNIT)
+            paragraph = self._container_paragraph(style=STYLE_UNIT)
             _run_fonts(paragraph, f"单位为{unit}", docx, size_pt=9)
         rows = sorted(table.get("rows", []), key=lambda row: row["rowIndex"])
         if not rows:
@@ -722,7 +850,7 @@ class _DocxBuilder:
         cols = max(len(row) for row in grid)
         if cols == 0:
             return
-        wtable = self.doc.add_table(rows=len(grid), cols=cols)
+        wtable = self._container_table(rows=len(grid), cols=cols)
         try:
             wtable.style = self.doc.styles["Table Grid"]
         except KeyError:
@@ -731,27 +859,34 @@ class _DocxBuilder:
         for row_index, row in enumerate(grid):
             for col_index in range(cols):
                 text = row[col_index] if col_index < len(row) else ""
-                self._write_cell(wtable.cell(row_index, col_index), text)
+                self._write_cell(wtable.cell(row_index, col_index), text, is_header=row_index < header_rows)
         self._merge_cells(wtable, merges, grid)
         if header_rows:
             _repeat_header_rows(wtable, header_rows, docx)
 
-    def _write_cell(self, cell: Any, text: str) -> None:
-        """单元格文本：脚注标记/平拍指数 → 上标；<br> → 分段/换行；注行居左。"""
+    def _write_cell(self, cell: Any, text: str, is_header: bool = False) -> None:
+        """单元格文本：脚注标记/平拍指数 → 上标；<br> → 分段/换行；表头居中、
+        数据行居左、注行居左首行缩进（2026-09-07 用户裁定）。"""
         docx = self.docx
-        # 表注行（注1：…）→ 每条注独立段、居左、首行空两格（GBT-B09 例外）
+        # 表注行（注1：…）→ 每条注独立段、居左、首行空两格（GBT-B09 例外）；
+        # 续行悬挂缩进到「注N：」冒号后文字对齐（2026-09-07 用户裁定）。
         stripped_images = _IMG_MD_RE.sub("", text).strip()
         if _TABLE_NOTE_CELL_RE.match(stripped_images):
             for part_index, part in enumerate(_split_table_note_parts(text)):
                 paragraph = cell.paragraphs[0] if part_index == 0 and not cell.paragraphs[0].runs else cell.add_paragraph()
                 paragraph.style = self.doc.styles[STYLE_TABLE_NOTE]
-                paragraph.paragraph_format.first_line_indent = docx["Pt"](18)
                 paragraph.paragraph_format.alignment = docx["ALIGN"].LEFT
+                paragraph.paragraph_format.left_indent = docx["Pt"](0)
+                prefix = re.match(r"^(注\s*\d*\s*[:：])", part)
+                if prefix:
+                    label_width = _cell_text_natural_width(prefix.group(1), 9.0)
+                    paragraph.paragraph_format.left_indent = docx["Pt"](18.0 + label_width)
+                    paragraph.paragraph_format.first_line_indent = docx["Pt"](-label_width)
                 self._write_cell_rich(paragraph, part)
             return
         paragraph = cell.paragraphs[0]
         paragraph.style = self.doc.styles[STYLE_TABLE_TEXT]
-        paragraph.paragraph_format.alignment = docx["ALIGN"].CENTER
+        paragraph.paragraph_format.alignment = docx["ALIGN"].CENTER if is_header else docx["ALIGN"].LEFT
         paragraph.paragraph_format.space_after = docx["Pt"](0)
         self._write_cell_rich(paragraph, text)
 
@@ -800,7 +935,7 @@ class _DocxBuilder:
         asset = figure.get("assetRef")
         number = str(figure.get("number") or "")
         caption = str(figure.get("caption") or "")
-        paragraph = self.doc.add_paragraph()
+        paragraph = self._container_paragraph()
         paragraph.alignment = self.docx["ALIGN"].CENTER
         image_path = _resolve_asset(self.asset_dir, asset) if asset else Path("")
         if asset and image_path.is_file():
@@ -810,14 +945,14 @@ class _DocxBuilder:
             _run_fonts(paragraph, "[图像资产缺失]", self.docx, ea=EA_HEI)
         caption_text = f"图{number} {caption}".strip() if (number or caption) else ""
         if caption_text:
-            caption_paragraph = self.doc.add_paragraph(style=STYLE_FIGURE_CAPTION)
+            caption_paragraph = self._container_paragraph(style=STYLE_FIGURE_CAPTION)
             _run_fonts(caption_paragraph, caption_text, self.docx, ea=EA_HEI)
 
     def _formula(self, content: dict[str, Any]) -> None:
         formula = self.registries["formulas"].get(content.get("formulaRef", ""), {})
         asset = formula.get("assetRef")
         image_path = _resolve_asset(self.asset_dir, asset) if asset else Path("")
-        paragraph = self.doc.add_paragraph()
+        paragraph = self._container_paragraph()
         paragraph.alignment = self.docx["ALIGN"].CENTER
         if asset and image_path.is_file():
             _add_picture(paragraph, image_path, self.docx)
@@ -827,7 +962,7 @@ class _DocxBuilder:
                 _add_markup(paragraph, _latex_to_text(str(raw)), self.docx, asset_dir=self.asset_dir)
                 self.warnings.append(f"Formula typeset as text: {formula.get('id', '?')}")
         if formula.get("number"):
-            number_paragraph = self.doc.add_paragraph(style=STYLE_TABLE_CAPTION)
+            number_paragraph = self._container_paragraph(style=STYLE_TABLE_CAPTION)
             _run_fonts(number_paragraph, str(formula["number"]), self.docx, ea=EA_HEI)
 
     def _example_group(self, nodes: list[dict[str, Any]]) -> None:
@@ -861,8 +996,11 @@ class _DocxBuilder:
                 paragraph = self.doc.add_paragraph(style=STYLE_EXAMPLE)
                 paragraph.paragraph_format.left_indent = self.docx["Cm"](0.85)
                 paragraph.paragraph_format.first_line_indent = self.docx["Cm"](-0.85)
-                marker = str(item.get("marker", "-"))
-                _run_fonts(paragraph, f"{marker} ", self.docx, ea=EA_SONG)
+                marker = _list_marker(str(item.get("marker", "-")))
+                if marker in ("●", "○", "•"):
+                    _run_fonts(paragraph, f"{marker} ", self.docx, ea=EA_SONG, size_pt=7)
+                else:
+                    _run_fonts(paragraph, f"{marker} ", self.docx, ea=EA_SONG)
                 _add_markup(paragraph, _flatten_latex(str(item.get("text") or "")), self.docx,
                             asset_dir=self.asset_dir)
         elif kind == "table":

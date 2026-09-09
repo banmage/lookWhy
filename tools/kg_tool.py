@@ -62,7 +62,8 @@ def cmd_build(args: argparse.Namespace) -> int:
     print(f"构建完成: {src}")
     print(f"  输出: {out}")
     print(f"  节点 {len(kgd['nodes'])} · 边 {len(kgd['edges'])} · 分类 {kgd['counts']}")
-    print(f"  schema 校验: {'通过' if not errs else 'FAIL\\n  ' + chr(10).join(errs)}")
+    status = '通过' if not errs else 'FAIL\\n  ' + chr(10).join(errs)
+    print(f"  schema 校验: {status}")
     if kgd["document"].get("references"):
         print(f"  第2章引用 {len(kgd['document']['references'])} 条（示例）:")
         for r in kgd["document"]["references"][:5]:

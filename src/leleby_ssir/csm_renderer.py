@@ -1,12 +1,15 @@
 """Render the M1 SSIR subset back into deterministic Canonical SSIR Markdown."""
 
 from __future__ import annotations
+import re
 
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from .parser import escape_table_cell
 
 
 def render_csm(document: dict[str, Any]) -> str:
@@ -20,6 +23,10 @@ def render_csm(document: dict[str, Any]) -> str:
     state = _RenderState(document)
     for node in sorted(document["structuralRoot"].get("children", []), key=_sort_order):
         state.render_node(node)
+    if state.box_open is not None:
+        # 文档尾收拢未闭合的框（宽容语义：延伸到文档尾）。
+        state.lines.append("<!-- ssir:/box -->")
+        state.lines.append("")
     return "\n".join(lines + state.lines).rstrip() + "\n"
 
 
@@ -89,9 +96,28 @@ class _RenderState:
         self.formulas = {formula["id"]: formula for formula in document.get("formulas", [])}
         self.unknowns = {unknown["id"]: unknown for unknown in document.get("unknownContents", [])}
         self.counts: defaultdict[str, int] = defaultdict(int)
+        self.last_kind: str | None = None
+        self.box_open: int | None = None  # 当前输出流已打开的 ssir:box id
+
+    def _sync_box(self, box: int | None, style: str | None = None) -> None:
+        """单元边界确定性重放 ssir:box 开/关标记（roundtrip 等价前提，2026-09-08）。"""
+        box = box if box is not None else None
+        if box == self.box_open:
+            return
+        if self.box_open is not None:
+            self.lines.append("<!-- ssir:/box -->")
+            self.lines.append("")
+            self.box_open = None
+        if box is not None:
+            box_style = style if style in ("frame", "shaded") else "frame"
+            attr = f' style="{box_style}"' if box_style != "frame" else ""
+            self.lines.append(f"<!-- ssir:box{attr} -->")
+            self.lines.append("")
+            self.box_open = box
 
     def render_node(self, node: dict[str, Any]) -> None:
         # 规则对应: GBT-H02—H04（章条编号与标题的层级编排）、GEN-031（编号规范化）。
+        self._sync_box(node.get("box"), node.get("boxStyle"))
         level = min(max(int(node.get("level", 1)) + 1, 2), 6)
         self.lines.extend(["#" * level + " " + self._heading(node), ""])
         for content in sorted(node.get("contentElements", []), key=_sort_order):
@@ -113,8 +139,23 @@ class _RenderState:
 
     def render_content(self, content: dict[str, Any]) -> None:
         # 规则对应: GBT-B03（段落）、GBT-B04（列项）、GBT-X03（注）、GBT-X05（示例）。
+        self._sync_box(content.get("box"), content.get("boxStyle"))
         kind = content["presentationType"]
-        if kind in {"paragraph", "note", "example", "warning", "quote"}:
+        prev_kind = self.last_kind
+        self.last_kind = kind
+        if kind == "footnote":
+            # canonical 写回：定义紧随其角标段落的段尾、拼在同一行（GB/T 版式
+            # 要求注释只出现在当页页脚，故定义与段落在文件中同处一行，渲染端
+            # 以 0 高占位锚定页底）；导入端两种形态均接受（docs/07 §6.7）。
+            m = re.match(r"^(\d+)[)）]\s*(.*)$", content.get("textContent", ""), re.S)
+            def_line = f"[^{m.group(1)}]: {m.group(2)}" if m else content.get("textContent", "")
+            if self.lines and self.lines[-1] == "" and prev_kind in ("paragraph", "footnote"):
+                self.lines.pop()
+                self.lines[-1] += def_line
+            else:
+                self.lines.append(def_line)
+            self.lines.append("")
+        elif kind in {"paragraph", "note", "example", "warning", "quote"}:
             text = content.get("textContent", "")
             if kind == "paragraph":
                 self.lines.extend([text, ""])
@@ -183,7 +224,7 @@ class _RenderState:
 
     @staticmethod
     def _table_cell(text: str) -> str:
-        return text.replace("|", r"\|")
+        return escape_table_cell(text)
 
     def _render_figure(self, figure: dict[str, Any]) -> None:
         # 规则对应: GBT-X01（图编号+图题；资产缺失时以占位符标注并保留编号）。

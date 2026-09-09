@@ -186,3 +186,7 @@ rules:
   stage: build
   priority: must
   rule: 文后/前置要素归属：目次、前言、引言、参考文献、索引是文档级要素；扁平树（MinerU 全 ## 抽取）中最后一个附录之后的这些要素不得被并入附录示例内容（附录示例标记只作用于附录内示例块）。
+- id: GEN-094
+  stage: extract/merge
+  priority: should
+  rule: 表格块 hybrid-engine 第二遍：MinerU pipeline 的表格结构识别只在可见网格线处断行——\"隐藏行表\"（块内逐行叠印无网格线，GB_T_5171.1-2014 表1 温升限值、GB_T_755-2025 表13 类）被压成单行单元格且数值串粘接不可逆；正文不得整体换 hybrid-engine（VLM 整页正文丢数字/拉丁短串）。extract 阶段对含表页额外跑 hybrid-engine 表格识别，merge 按（页, 页内序）替换 pipeline 表块的行结构、保留 pipeline 指令行（id/题注/编号）、改写 merge 指令的 table 引用；hybrid 缺失/失败/表数不齐时确定性回退 pipeline 表块（不猜测）；content_list 的 page_idx 是相对 invocation 起始页的本地索引，换算全局页号需加 base。该通道默认关闭（hybrid VLM 整页跑耗时）：不加参数时表格保持 pipeline 原样（原始逻辑），仅 --hybrid-tables 显式开启（未开启时丢弃历史 hybrid 结果，防 merge 误用上一轮替换）。

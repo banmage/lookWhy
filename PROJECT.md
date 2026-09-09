@@ -24,9 +24,9 @@ PDF ──MinerU OCR──▶ raw CSM Markdown ──normalize──▶ canonica
 
 之间转换，并按 **规则库三层合规验证**（GEN-* → GBT-* → P10-*）审计结果。
 
-> **命名（2026-08 重构）**：Std0→`canonical`、Std1→`render.md`、SSIR1→`ssir`、
-> SSIR2→`verify`；文件名统一 `<STANDARD_ID>.<representation>.<ext>`，实现集中在
-> `src/leleby_ssir/naming.py`，规范见 `naming_specification.txt` v2.0。
+> **命名（2026-08 重构）**：数据形态统一为 `canonical`、`ssir`、`render.md`、
+> `verify`；文件名 `<STANDARD_ID>.<representation>.<ext>`，实现集中在
+> `src/leleby_ssir/naming.py`，规范见 `naming_specification.txt`。
 
 核心价值：不是普通 PDF 转换器，而是"**规则驱动**"的标准文档生产线——每条
 抽取/渲染逻辑都在源码中以 `规则对应: XXX` 注释映射到 `rules/` 下的规则 ID，
@@ -37,7 +37,7 @@ main，Python 3.12，venv 在 `.venv/`。
 
 ## 2. 运行环境
 
-- **Python ≥ 3.11**（实测 3.12.3）；系统无 pip 模块（PEP 668），必须用 venv：
+- **Python ≥ 3.12**（实测 3.12.14）；系统无 pip 模块（PEP 668），必须用 venv：
   ```bash
   python3 -m venv .venv
   .venv/bin/pip install -e .     # 安装 leleby-ssir 包 + 全部依赖
@@ -61,9 +61,9 @@ main，Python 3.12，venv 在 `.venv/`。
 | 概念 | 说明 |
 |---|---|
 | **CSM** | Canonical SSIR Markdown：YAML front-matter + 结构化 Markdown，`<!-- ssir:... -->` 指令承载表格/图/块 |
-| **Canonical** | normalize 后的权威 CSM（`<ID>.canonical.md`），roundtrip 唯一输入（原 Std0） |
+| **Canonical** | normalize 后的权威 CSM（`<ID>.canonical.md`），roundtrip 唯一输入 |
 | **SSIR** | 结构化 JSON（`ssir.schema.json` 校验，additionalProperties:false），`metadata.common/standard` + `structuralRoot` 树 + `tables/figures/formulas` 注册表 |
-| **Render.md** | 从 SSIR 确定性渲染回 CSM（`<ID>.render.md`），再 parse 成 verify 对比等价性（原 Std1） |
+| **Render.md** | 从 SSIR 确定性渲染回 CSM（`<ID>.render.md`），再 parse 成 verify 对比等价性 |
 | **Verify** | 从 render.md 再解析的 SSIR（`<ID>.verify.json`，原 SSIR2） |
 | **规则三层** | Layer1 GEN-*（通用抽取/渲染工程规则）→ Layer2 GBT-*（GB/T 1.1-2020 要求）→ Layer3 P10-*（GB/T 20001.10-2014 产品标准专项，仅产品标准加载） |
 | **documentBlock** | 无编号的块节点（封面标题、前 言、无编号小节标题等） |
@@ -93,8 +93,9 @@ lookWhy/
 ├── tools/
 │   ├── mineru_full_standard.py # ★ PDF 全流程工具（分块抽取→合并→normalize→parse→roundtrip→render）
 │   ├── parse_standard_names.py # 批量解析标准名称 CSV → 类型/主对象/场合 TSV
-│   ├── verify_markdown_roundtrip.py  # 批量 roundtrip 回归（corpus/golden/csm）
-│   └── extract_schema.py       # schema 工具
+│   │   ├── verify_markdown_roundtrip.py  # 批量 roundtrip 回归（corpus/golden/csm）
+│   │   ├── reprocess_canonical.py  # ★ canonical 半程重跑：改 canonical → parse/roundtrip/render 刷新
+│   │   └── extract_schema.py       # schema 工具
 ├── config/
 │   ├── rendering/GB_T_1.1-2020.yaml   # 渲染 profile：字体/字号/边距/emblems 徽标映射
 │   ├── emblems/                # ★ 封面徽标固定目录（GB_logo.png/JB_logo.png/company_logo.png…）
@@ -137,7 +138,6 @@ lookWhy/
 .venv/bin/ssir csm parse     --input out/GB_T_15034-2012.canonical.md --output out/GB_T_15034-2012.ssir.json --format json --report out/r2.json
 .venv/bin/ssir csm roundtrip --input out/GB_T_15034-2012.canonical.md --render-md-output out/GB_T_15034-2012.render.md --verify-output out/GB_T_15034-2012.verify.json
 .venv/bin/ssir pdf render    --input out/GB_T_15034-2012.ssir.json --output out/GB_T_15034-2012.render.pdf --toc-depth 2
-# 旧旗标 --std0-output / --std1-output 仍兼容
 ```
 
 ### 5.2 PDF 全流程（MinerU OCR，推荐）
@@ -160,6 +160,14 @@ lookWhy/
   `05_verify/<ID>.verify.json` + `.roundtrip.json`、`assets/images/`（图/公式资产）、
   `manifest.json`（文档索引）。
 - 后台跑法（长文档）：`terminal(background=true)` + 日志轮询；6 页小 PDF 约 1 分钟。
+- **半程重跑**（手工编辑 canonical 后刷新下游，**不重跑 normalize、不覆盖 canonical**）：
+  `.venv/bin/python tools/reprocess_canonical.py GB_T_1.1-2020`——以
+  `02_canonical/GB_T_1.1-2020.canonical.md` 为输入跑 parse → roundtrip → render
+  （PDF+docx）→ compare → manifest；共享 mineru_full_standard 的阶段路径/版面印记/对比逻辑。
+- **自动半程续跑**：`mineru_full_standard.py` 检测到 `02_canonical/<ID>.canonical.md`
+  已存在时，同一快捷命令自动跳过 OCR/PDF 抽取、合并与 normalize，直接从 canonical
+  续跑（与 reprocess_canonical.py 功能等同，canonical 不被覆盖）；
+  显式 `--stage extract/merge/finalize` 仍按原语义执行。
 
 ### 5.3 关键阶段函数（tools/mineru_full_standard.py，约 1240 行）
 | 函数 | 职责 |

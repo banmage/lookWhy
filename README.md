@@ -9,9 +9,9 @@
 ```text
 原始 Markdown
   -> 宽容校验与安全纠错
-  -> Canonical：权威 CSM Markdown 基线（原 Std0）
+  -> Canonical：权威 CSM Markdown 基线
   -> SSIR JSON
-  -> Render.md：由 SSIR 确定性渲染的 CSM Markdown（原 Std1）
+  -> Render.md：由 SSIR 确定性渲染的 CSM Markdown
   -> Verify JSON（原 SSIR2）
   -> 四层等价比较与关键损失报告
 ```
@@ -27,16 +27,71 @@
 
 ## 快速开始
 
-运行环境为 Python 3.11 或更高版本。
+运行环境为 Python 3.12 或更高版本；**推荐 3.12.x**（本项目在 3.12.14 实测通过）。
+
+### 依赖安装（国内源，可完整执行）
+
+完整依赖约 2 GB（含 torch、mineru）。以下命令均可在国内网络下直接执行；
+若只想用国内 PyPI 源而不关心 CPU 版 torch，第 ② 步可跳过（但会多下载数 GB
+CUDA 依赖）。
+
+**① 准备 Python 3.12 虚拟环境（二选一）**
+
+系统已装有带 venv 的 python3.12：
 
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -e .
+python3.12 -m venv .venv                 # 在仓库根目录执行
 ```
 
-若希望直接启用 MinerU PDF 后端，请同时确保系统中可用 `mineru`（或 `magic-pdf` 兼容 CLI）命令；`pyproject.toml` 已加入 `mineru` 依赖，安装后会一并放入环境。
+没有 python3.12 时，可用 uv 安装独立 3.12（GitHub 直连不通会自动走国内镜像）：
 
-未安装包时，也可以在仓库根目录使用 `PYTHONPATH=src python3 -m leleby_ssir` 运行命令。
+```bash
+# 安装 uv（https://docs.astral.sh/uv/ ，国内可用 ghfast.top 加速其安装脚本）
+export UV_PYTHON_INSTALL_MIRROR="https://ghfast.top/https://github.com/astral-sh/python-build-standalone/releases/download"
+uv python install 3.12.14
+export UV_DEFAULT_INDEX="https://mirrors.aliyun.com/pypi/simple/"
+uv venv --seed --python 3.12.14 .venv    # --seed 使 venv 自带 pip
+```
+
+**② 先装 CPU 版 torch（无 NVIDIA GPU 的机器必做）**
+
+PyPI/阿里源上的默认 torch 是 CUDA 版，会额外拉取数 GB nvidia 依赖。先固定安装
+CPU 轮子，之后第 ③ 步因版本已满足不会再改动它：
+
+```bash
+export TMPDIR="$HOME/tmp" && mkdir -p "$TMPDIR"   # WSL 的 /tmp 是内存盘，务必换到真实磁盘
+.venv/bin/pip install --no-cache-dir --timeout 600 \
+  --index-url https://mirrors.aliyun.com/pypi/simple/ \
+  --extra-index-url https://download.pytorch.org/whl/cpu \
+  "torch==2.14.0+cpu" "torchvision==0.29.0+cpu"
+```
+
+有 NVIDIA GPU 需要 CUDA 时，去掉 `+cpu` 后缀与 `--extra-index-url`，或改装
+对应的 `cu1xx` 版本即可。
+
+**③ 安装 leleby-ssir 与其余依赖**
+
+```bash
+.venv/bin/pip install --no-cache-dir --timeout 600 \
+  --index-url https://mirrors.aliyun.com/pypi/simple/ -e .
+```
+
+**④ 安装后核验**
+
+```bash
+.venv/bin/python -c "import torch; print(torch.__version__)"  # 应显示 ...+cpu
+.venv/bin/pip check                                            # 无 broken requirements
+.venv/bin/ssir --help                                          # 命令可用即环境就绪
+```
+
+说明：
+
+- 若嫌每条命令带 `--index-url` 太长，可写入 `~/.config/pip/pip.conf`：
+  `[global] index-url = https://mirrors.aliyun.com/pypi/simple/`。
+- MinerU 的模型不在此步下载：首次运行 PDF 抽取时自动拉取（数 GB），模型来源可在
+  mineru 配置的 `model-source` 中选 `modelscope` 或 `huggingface`。
+- 未安装包时，也可以在仓库根目录使用
+  `PYTHONPATH=src .venv/bin/python -m leleby_ssir` 运行命令。
 
 ### 1. 校验或规范化用户文件
 
@@ -51,7 +106,7 @@ ssir csm normalize \
   --report out/GB_T_15034-2012.normalize-report.json
 ```
 
-`Canonical` 是回旋转换的唯一输入基线（旧旗标 `--std0-output` 仍兼容）。转换报告保存原始文件的 SHA-256、问题代码、行号、是否已修复以及修复动作。加上 `--strict` 时，任何警告都会使命令失败，适合 CI 和 Golden 数据集。
+`Canonical` 是回旋转换的唯一输入基线。转换报告保存原始文件的 SHA-256、问题代码、行号、是否已修复以及修复动作。加上 `--strict` 时，任何警告都会使命令失败，适合 CI 和 Golden 数据集。
 
 ### 2. 将 Canonical 转换为 SSIR
 
@@ -80,7 +135,7 @@ ssir csm roundtrip \
   --report out/GB_T_15034-2012.roundtrip.json
 ```
 
-命令返回值：`0` 表示通过，`2` 表示输入或生成文档存在不可恢复错误，`3` 表示 SSIR 与 Verify 不等价或发生关键损失。旧旗标 `--std1-output` 仍兼容。
+命令返回值：`0` 表示通过，`2` 表示输入或生成文档存在不可恢复错误，`3` 表示 SSIR 与 Verify 不等价或发生关键损失。
 
 ### 4. 从 PDF 提取 CSM Markdown
 
@@ -98,15 +153,22 @@ ssir pdf extract \
 **一条命令跑完全流程（推荐）**：直接附加需处理的标准文件名即可，程序默认在 `corpus/golden/` 目录中查找（可带或不带 `.pdf` 后缀，也接受子路径），并自动完成提取、渲染与回环验证：
 
 ```bash
-# 自动定位 corpus/golden/T_ZZB_2224-2021.pdf，完成 提取 → 解析 → 回环验证 → 渲染
-.venv/bin/python tools/mineru_full_standard.py T_ZZB_2224-2021
+# 自动定位 corpus/golden/GB_T_1.1-2020.pdf，完成 提取 → 解析 → 回环验证 → 渲染
+.venv/bin/python tools/mineru_full_standard.py GB_T_1.1-2020
 
 # 等价写法：显式 .pdf 后缀 / 子路径 / 完整路径
-.venv/bin/python tools/mineru_full_standard.py T_ZZB_2224-2021.pdf
-.venv/bin/python tools/mineru_full_standard.py corpus/golden/T_ZZB_2224-2021.pdf
+.venv/bin/python tools/mineru_full_standard.py GB_T_1.1-2020.pdf
+.venv/bin/python tools/mineru_full_standard.py corpus/golden/GB_T_1.1-2020.pdf
 ```
 
-快捷模式等价于 `--input corpus/golden/T_ZZB_2224-2021.pdf --stage all --roundtrip --render`，退出码 `0` 表示流程完成且回旋等价，`3` 表示 SSIR 与 Verify 不等价或发生关键信息损失，`2` 表示抽取或转换失败。需要分步控制（只抽取、跳过渲染等）时改用 `--input` 加阶段旗标：
+**已有 canonical 时自动半程续跑**：同一快捷命令每次执行都会检查
+`out/mineru/<ID>/02_canonical/<ID>.canonical.md`——若该文件已存在（上一轮产出的
+人工可编辑权威基线），则自动跳过 MinerU OCR/PDF 抽取、合并与 normalize，直接从
+canonical 续跑 parse → roundtrip → render（PDF+docx）→ 对比 → manifest
+（功能与下文的 `tools/reprocess_canonical.py` 完全等同，**canonical 不会被覆盖**）。
+需要重新做 OCR/PDF 抽取时用显式阶段旗标（如 `--stage extract`）或先删除 canonical 文件。
+
+快捷模式等价于 `--input corpus/golden/GB_T_1.1-2020.pdf --stage all --roundtrip --render`，退出码 `0` 表示流程完成且回旋等价，`3` 表示 SSIR 与 Verify 不等价或发生关键信息损失，`2` 表示抽取或转换失败。需要分步控制（只抽取、跳过渲染等）时改用 `--input` 加阶段旗标：
 
 ```bash
 .venv/bin/python tools/mineru_full_standard.py \
@@ -132,6 +194,19 @@ PYTHONPATH=src .venv/bin/python -m leleby_ssir csm roundtrip \
   --render-md-output out/GB_T_10401-2023/04_render/GB_T_10401-2023.render.md \
   --verify-output out/GB_T_10401-2023/05_verify/GB_T_10401-2023.verify.json
 ```
+
+**半程重跑（编辑 canonical 后刷新下游）**：`tools/reprocess_canonical.py` 以
+`out/mineru/<ID>/02_canonical/<ID>.canonical.md`（唯一人工可编辑的权威基线）为输入，
+跳过 抽取/合并/normalize（**不会覆盖 canonical**），重跑 parse → roundtrip → render
+（PDF + 内容等价 docx）→（源 PDF 存在时）PDF 版面印记恢复与渲染对比，并刷新
+`manifest.json`。适合“改 canonical → 看新渲染”的迭代：
+
+```bash
+# 先手工编辑 out/mineru/GB_T_1.1-2020/02_canonical/GB_T_1.1-2020.canonical.md，然后：
+.venv/bin/python tools/reprocess_canonical.py GB_T_1.1-2020
+```
+
+退出码 `0` 成功；`2` 失败（roundtrip 不等价按 `3` 记录在报告中，不算失败）。
 
 ### 5. 生成传统 PDF 标准文稿
 
@@ -167,9 +242,9 @@ PYTHONPATH=src python3 -m unittest discover -v
 | 项目 | 说明 |
 |---|---|
 | 原始 Markdown | 用户上传的 `.md` 文件，可以存在可恢复的格式问题。 |
-| Canonical | 经安全纠错并冻结的权威 CSM Markdown（`<ID>.canonical.md`，原 Std0）；用于生成 SSIR。 |
+| Canonical | 经安全纠错并冻结的权威 CSM Markdown（`<ID>.canonical.md`）；用于生成 SSIR。 |
 | SSIR JSON | 主输出，符合项目内 Draft-07 JSON Schema，包含结构、内容、来源锚点、处理记录和质量状态。 |
-| Render.md | 由 SSIR 渲染的确定性 CSM Markdown（`<ID>.render.md`，原 Std1）；用于生成 Verify。 |
+| Render.md | 由 SSIR 渲染的确定性 CSM Markdown（`<ID>.render.md`）；用于生成 Verify。 |
 | Verify | 从 Render.md 再解析的 SSIR（`<ID>.verify.json`，原 SSIR2）。 |
 | 纠错/解析报告 | `<ID>.normalize-report.json` / `<ID>.parse-report.json`，记录导入诊断、修复和质量提示（原 conversion-report）。 |
 | 回环报告 | `<ID>.roundtrip.json`，记录四层状态、关键损失和差异（原 roundtrip-report）。 |

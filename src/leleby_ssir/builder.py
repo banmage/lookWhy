@@ -5,6 +5,10 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 import re
+
+
+# GFM 脚注引用标记：[^N]（docs/07 §6.7）；用于把脚注定义与其注释的条款关联。
+_FOOTNOTE_REF_RE = re.compile(r"\[\^([0-9A-Za-z_-]+)\]")
 from typing import Any
 
 from .parser import EX_HEADER_RE, Block, CSMDocument
@@ -136,7 +140,23 @@ class SSIRBuilder:
         chapter_re = re.compile(r"^\d+\s+\S")
         term_number_re = re.compile(r"^\d+(?:\.\d+)+$")
 
+        marker_nodes: dict[str, str] = {}  # 脚注标记 label → 出现所在条款节点 id
+        # ssir:box 显式文档框（2026-09-08）：开/关事件在块流上推进，当前打开的
+        # 框 id（从 1 起单调递增）与样式挂到其后的每个结构节点/内容元素上；
+        # 嵌套开（parser 已报 CSM-STRUCT-006）在此忽略，与宽容解析语义一致。
+        active_box: int | None = None
+        active_box_style: str = "frame"
         for block in document.blocks:
+            if block.kind == "box":
+                if block.data.get("event") == "open" and active_box is None:
+                    active_box = (state.counters["box"] + 1)
+                    state.counters["box"] = active_box
+                    active_box_style = str(block.data.get("style") or "frame")
+                elif block.data.get("event") == "close":
+                    active_box = None
+                    active_box_style = "frame"
+                state.canonical_parts.append(block.text)
+                continue
             if block.kind == "heading":
                 # The document title is the sole H1 that is not a structural
                 # node.  MinerU commonly emits annex starts as later H1s.
@@ -152,6 +172,9 @@ class SSIRBuilder:
                     continue
                 node = self._make_node(state, block, node_sort)
                 node_sort += 1
+                if active_box is not None:
+                    node["box"] = active_box
+                    node["boxStyle"] = active_box_style
                 depth = max((block.level or 2) - 1, 1)
                 while stack and stack[-1][0] >= depth:
                     stack.pop()
@@ -196,9 +219,25 @@ class SSIRBuilder:
             parent_id = parent["id"]
             element = self._make_content(state, block, parent_id, content_sort[parent_id])
             content_sort[parent_id] += 1
+            if active_box is not None:
+                element["box"] = active_box
+                element["boxStyle"] = active_box_style
             parent.setdefault("contentElements", []).append(element)
             state.canonical_refs.append(element["id"])
             state.canonical_parts.append(self._canonical_fragment(block))
+            # 脚注关系：正文元素中出现的 [^N] 记录其所属条款节点；脚注定义元素
+            # 据此写入 footnoteMarker / footnoteAnchorRef（本体层可做 脚注-条款 关系）。
+            text_content = str(element.get("textContent") or "")
+            for m in _FOOTNOTE_REF_RE.finditer(text_content):
+                marker_nodes[m.group(1)] = parent_id
+            if element.get("presentationType") == "footnote":
+                label = str(block.data.get("label") or "")
+                if not label:
+                    match = re.match(r"^(\d+)[)）]", text_content)
+                    if match:
+                        label = match.group(1)
+                element.setdefault("footnoteMarker", label)
+                element["footnoteAnchorRef"] = marker_nodes.get(label, parent_id)
             # 合并形态术语条目：紧随标题的首个正文段即定义（来源行 [来源：…] 除外）
             if pending_def is not None and parent is pending_def:
                 raw_text = str(element.get("textContent") or "").strip()
@@ -404,7 +443,12 @@ class SSIRBuilder:
             "sortOrder": sort_order,
             "sourceAnchors": [state.anchor(block)],
         }
-        if block.kind in {"paragraph", "note", "example", "warning", "quote"}:
+        if block.kind == "footnote":
+            content["presentationType"] = "footnote"
+            label = str(block.data.get("label") or "")
+            text = str(block.data.get("text") or block.text)
+            content["textContent"] = (f"{label}) {text}" if label else text)
+        elif block.kind in {"paragraph", "note", "example", "warning", "quote"}:
             content["presentationType"] = block.kind if block.kind != "paragraph" else "paragraph"
             content["textContent"] = block.text
             content["semanticTypes"] = self._semantic_types(parent_id, block.text)
