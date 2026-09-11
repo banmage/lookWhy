@@ -86,8 +86,10 @@ def _render_block(lines: list[str], block: Block) -> None:
             lines.extend(["```formula", block.text, "```"])
         else:
             lines.extend(["$$", block.text, "$$"])
-        if block.data.get("number"):
-            lines.append(block.data["number"])
+        if str(block.data.get("number") or "").strip():
+            # 编号行是 CSM 语法「式(N)」（与 csm_renderer 同规，docs/07 §6.7）；
+            # SSIR/builder 里的 formula.number 是纯编号标签。
+            lines.append(f"式({block.data['number']})")
         lines.append("")
     elif block.kind == "unknown":
         if block.directive:

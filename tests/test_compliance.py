@@ -14,6 +14,7 @@ def _document(
     children: list[dict] | None = None,
     tables: list[dict] | None = None,
     figures: list[dict] | None = None,
+    formulas: list[dict] | None = None,
 ) -> dict:
     return {
         "metadata": {
@@ -44,6 +45,7 @@ def _document(
         },
         "tables": tables or [],
         "figures": figures or [],
+        "formulas": formulas or [],
     }
 
 
@@ -405,6 +407,48 @@ class NumberingContinuityTests(unittest.TestCase):
         x04 = [f for f in report.findings if f.rule_id == "GBT-X04" and "小写" in f.message]
         self.assertEqual(len(x04), 1)
         self.assertIn("A", x04[0].message)
+
+
+class FormulaNumberingComplianceTests(unittest.TestCase):
+    """GBT-X06：公式编号全文档管理（GB/T 1.1-2020 9.9.2、9.6.3）。"""
+
+    def _doc(self, texts: list[str], numbers: list[str | None]):
+        return _document(
+            children=[_clause("1", "范围", content=[
+                {"presentationType": "paragraph", "textContent": text} for text in texts
+            ])],
+            formulas=[{"id": f"fm-{i}", "number": number} for i, number in enumerate(numbers)],
+        )
+
+    def test_clean_numbering_and_reference_reports_nothing(self) -> None:
+        doc = self._doc(["绕组温升可由式(1)计算求得。", "负载的标称转动惯量值按式(2)计算。"], ["1", "2"])
+        report = verify_compliance(doc)
+        self.assertEqual([f for f in report.findings if f.rule_id == "GBT-X06"], [])
+
+    def test_reference_to_missing_number_is_reported(self) -> None:
+        doc = self._doc(["绕组温升可由式(3)计算求得。"], ["1", "2"])
+        report = verify_compliance(doc)
+        x06 = [f for f in report.findings if f.rule_id == "GBT-X06" and f.check == "formula-references-resolve"]
+        self.assertEqual(len(x06), 1)
+        self.assertIn("式(3)", x06[0].message)
+
+    def test_duplicate_and_non_contiguous_numbers_are_reported(self) -> None:
+        doc = self._doc([], ["1", "1", "3"])
+        report = verify_compliance(doc)
+        checks = {f.check for f in report.findings if f.rule_id == "GBT-X06"}
+        self.assertIn("formula-numbers-unique", checks)
+        self.assertIn("formula-numbers-continuous", checks)
+
+    def test_annex_prefix_restarts_own_sequence(self) -> None:
+        doc = self._doc([], ["1", "2", "A.1", "A.2"])
+        report = verify_compliance(doc)
+        self.assertEqual([f for f in report.findings if f.rule_id == "GBT-X06"], [])
+
+    def test_unnumbered_formulas_are_allowed(self) -> None:
+        # 9.9.2：编号只在需要引用或提示时要求；未编号且未被引用 → 无发现。
+        doc = self._doc(["常用的符号有：Cp、Cpk 等。"], [None, None])
+        report = verify_compliance(doc)
+        self.assertEqual([f for f in report.findings if f.rule_id == "GBT-X06"], [])
 
 
 if __name__ == "__main__":

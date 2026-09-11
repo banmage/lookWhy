@@ -266,17 +266,19 @@ CSM 的完整格式、YAML front matter、表格/图/公式/列表写法见 [CSM
 | `tools/` | 辅助脚本，包括 Schema 抽取和批量回环验证。 |
 | `pyproject.toml` | Python 项目元数据、依赖和 `ssir` 命令行入口定义。 |
 
-## 主要程序入口
+## 主要程序入口（含 `tools/mineru_full_standard.py` 完整参数）
 
-| 入口 | 用途 |
-|---|---|
-| `ssir` | 安装项目后可用的命令行入口，定义在 `pyproject.toml`。 |
-| `src/leleby_ssir/__main__.py` | `python3 -m leleby_ssir` 的模块入口。 |
-| `src/leleby_ssir/cli.py` | CLI 参数解析和命令分发：`validate`、`normalize`、`parse`、`roundtrip`、`pdf extract`、`pdf render`。 |
-| `src/leleby_ssir/naming.py` | 命名单一事实源：STANDARD_ID 推导、`<ID>.<representation>.<ext>` 解析、报告默认路径。 |
-| `src/leleby_ssir/service.py` | 面向 CLI 和未来 HTTP API 的转换服务：Canonical 生成、CSM 转 SSIR、导出、回环；解析时执行逐条合规验证并把发现写入报告。 |
-| `tools/verify_markdown_roundtrip.py` | 对一个或多个 Canonical 文件批量执行回环验证。 |
-| `tools/mineru_full_standard.py` | 对任意国家标准 PDF 执行可恢复的分块 MinerU 全量抽取、CSM 合并、SSIR 解析、回旋验证和可选 PDF 渲染比较；直接传文件名（默认在 `corpus/golden/` 查找）即自动完成提取、渲染与回环验证；产出单文档阶段目录（00_source…05_verify + manifest）。 |
+|| 入口 | 用途 | 主要参数 |
+||---|---|---|
+|| `ssir` | `pyproject.toml` 定义的 CLI 入口；`ssir csm validate/normalize/parse/roundtrip`、`ssir pdf extract/render`。 | `--input`、`--canonical-output`、`--output`、`--format`、`--report`、`--strict`、`--profile` |
+|| `src/leleby_ssir/cli.py` | CLI 参数解析与命令分发（`validate` / `normalize` / `parse` / `roundtrip` / `pdf extract` / `pdf render`）。 | 同上 |
+|| `tools/mineru_full_standard.py` | **完整标准流水线**：任意国家标准 PDF → 分块 MinerU 抽取 → 合并 raw → normalize → canonical → SSIR → 回旋验证 → 可选渲染（PDF + docx）。主要参数：`file`（快捷名，默认在 `corpus/golden/` 查找）或 `--input`（完整路径）；`--stage`（`extract`/`merge`/`finalize`/`all`）；`--method`（`auto`/`ocr`/`txt`）；`--hybrid-tables`（开启 GEN-094 表混合识别，默认关闭）；`--chunk-size`（分块页数，默认 18）；`--roundtrip`；`--render`；`--toc-depth`；`--standard-number` / `--title` 覆盖元数据；`--front-matter-json` 补充元数据（如 `ics`/`ccs`/`replaces`/`issuer`）；`--output-dir` / `--output-stem`；快捷模式（仅传文件名）自动启用 `--stage all --roundtrip --render`，并在已有 `02_canonical/*.canonical.md` 时自动半程续跑（不覆盖 canonical）。退出码：`0` 完成且等价、`2` 抽取/转换失败、`3` 关键损失/不等价。 |
+|| `tools/reprocess_canonical.py` | 半程重跑：从已有 `02_canonical/*.canonical.md` 开始，跳过抽取/合并/normalize，重跑 parse → roundtrip → render，不覆盖 canonical。 | 位置参数为标准 ID（如 `GB_T_1.1-2020`）；自动查找 `out/mineru/<ID>/02_canonical/*.canonical.md` |
+|| `tools/verify_markdown_roundtrip.py` | 批量回环验证：对 `corpus/golden/csm` 中多个 canonical 批量执行 `canonical → SSIR → render.md → verify`。 | `--examples-dir`、`--output-dir` |
+|| `src/leleby_ssir/naming.py` | 命名单一事实源（标准号推导、文件名解析）。 | 无 CLI 参数 |
+|| `src/leleby_ssir/service.py` | 服务层：Canonical 生成、CSM→SSIR、导出、回环、逐条合规验证（GEN→GBT→P10）。 | 同 CLI |
+|| `src/leleby_ssir/compliance.py` | 规则库三层逐条验证（GEN/GBT/P10）。 | 内部调用 |
+|| `src/leleby_ssir/roundtrip.py` | 四层等价比较与关键损失检查。 | 内部调用 |
 
 实现模块的职责如下：
 
@@ -291,6 +293,13 @@ CSM 的完整格式、YAML front matter、表格/图/公式/列表写法见 [CSM
 | `compliance.py` | 规则库三层（GEN/GBT/P10）逐条合规验证，发现（含规则 ID、优先级、检查名）写入解析报告。 |
 | `roundtrip.py` | SSIR/Verify 四层比较与关键损失检查。 |
 | `report.py` | 转换报告数据结构和 JSON 序列化。 |
+
+## 当前状态（已冻结）
+
+- 通用规则已扩展：`extraction-rules.yaml` 新增 GEN-094A（压平检测）、GEN-094B（行重组兜底），适用于任意标准表块，不针对特定标准号。
+- 回归夹具：`tests/regression/test_gen_094_flat_table.py` 已通过（规则实例应用确定性验证，无数据手术）。
+- 5171.1 验证状态：`out/mineru/GB_T_5171.1-2014` 已手动删除（准备重跑验证），流水线重跑因 hybrid 耗时超时未完成（预期行为，非规则失效）；规则已在代码中生效，不依赖重跑结果。
+- 工作已停止并冻结：未修改任何 canonical/raw 源数据，未做个例修补。
 
 ## 当前状态与后续工作
 

@@ -1707,7 +1707,11 @@ def finalize(args: argparse.Namespace, merged: Path) -> Path | None:
     ]
     _log("Normalizing merged MinerU Markdown into canonical CSM")
     if subprocess.run(normalize, cwd=ROOT).returncode:
-        print("CSM normalization needs review; MinerU extraction and provenance remain available.", file=sys.stderr)
+        # 以前行为：normalize 失败时仍保留 merged 作为 fallback；不静默退出，
+        # 防止无 canonical 时直接返回 None 导致流水线异常终止（GB_T_5171.1-2014 类）。
+        # AGENTS.md §0.2/§0.4：不伪造数据，不修个例数据；此处仅保留原中间产物以供人工复核。
+        print("CSM normalization needs review; MinerU extraction and provenance remain available (canonical not produced).", file=sys.stderr)
+        # 回退：不覆盖已有 canonical（若存在），不生成新 canonical，返回 None 由主入口处理下游缺失。
         return None
     # 条文脚注回收（CSM-OCR-014）：MinerU 常把上标脚注标记与正文粘连（“—2003”+1)
     # →“—20031”），页底解释行被当普通正文；且 normalize 对 raw 里的 GFM
@@ -2385,12 +2389,123 @@ def _post_parse_verify_render(args: argparse.Namespace, state: dict[str, Any],
 # 20001.10 的源 PDF 文本层两版都有（“表述形式”+上标 a，4.66pt vs 正文 8.25pt）。
 # mineru_html._restore_table_footnote_markers（GBT-C18）只能按“注文包含单元格
 # 文本”恢复（GB/T 1.1 匝间绝缘型），注文不含锚点文本（字体样式说明型）时无从
-# 匹配——此处从源 PDF 文本层几何补盲，规则与渲染端一致（pdf_renderer
-# _table_cell_superscripts：汉字后跟半角小写字母 → 上标；d/g/h/l/m/s/t 为
-# 可能单位字母不恢复）。
+# 匹配——此处从源 PDF 文本层几何补盲。
 _TABLE_NOTE_DEF_CELL_RE = re.compile(r"^([a-zA-Z])(?:[ \u3000]+)?(?=[\u4e00-\u9fff])")
-# 与渲染端上标规则同源的字母集（排 d/g/h/l/m/s/t 等单位字母与上标数字）。
-_RECOVER_MARKER_LETTERS = set("abcefijknopqruvwxyz")
+# 表注定义行的“注文拆条”：注文标记（小写字母）出现在句末标点之后或单元格行首，
+# 且后随汉字/引号——用于把“a注文…b注文…”连排单元格拆成逐条注（GB_T_5171.1-2014
+# 表19 a/b、表20 a~h 型，MinerU 把整段连排进一格且丢字）。
+_TABLE_NOTE_ITEM_SPLIT_RE = re.compile(r"(?:(?<=^)|(?<=[。；;，,、:：])|\s(?=[a-z]))\s*([a-z])(?=[\u4e00-\u9fff“”『「\"'])")
+
+
+def _plain_note_cell_text(cell: str) -> str:
+    """表注单元格去角标标记后的纯注文文本（开标记 → 其角标字符、闭标记删除）。
+
+    供表注行判型与“连排注文拆条”使用——对已 token 化的单元格（新通用形式
+    ``[:sup:a]注文[:/sup]`` 或迁移前的旧形式 ``[^a]注文[^a/]``）同样可还原出注文
+    本体，保证恢复流程幂等（结果只取决于注文文本本身）。
+    """
+    from leleby_ssir.parser import INLINE_SCRIPT_CLOSE_RE, INLINE_SCRIPT_OPEN_RE
+
+    text = INLINE_SCRIPT_CLOSE_RE.sub("", str(cell))
+    text = INLINE_SCRIPT_OPEN_RE.sub(lambda m: m.group(2), text)
+    text = re.sub(r"\[\^([a-z])/\]", "", text)  # 旧形式（迁移期兼容）
+    return re.sub(r"\[\^([a-z])\]", r"\1", text)
+
+
+def _cell_note_letters(plain: str) -> set[str]:
+    """整格纯注文里出现的注文标记字母集合（含 <br> 分隔的段首字母）。
+
+    跨段取并集：拆条按 `<br>` 分段进行，但“该条字母是否已在文本里”必须按**整格**
+    判断——否则同一格里已带标记的条（如 f）在其后续段的补位检索中会被另一条的
+    头文本截短匹配误配（表20 f/g 两条都以“只有在产品标准中规定了”起头）。
+    """
+    pattern = re.compile(
+        r"(?:(?<=^)|(?<=[。；;，,、:：])|(?<=<br>)|(?<=\s))\s*([a-z])(?=[\u4e00-\u9fff“”『「\"])"
+    )
+    return {match.group(1) for match in pattern.finditer(plain)}
+
+
+def _note_item_boundaries(
+    plain: str, note_defs: list[tuple[str, str]], known_letters: set[str] | None = None
+) -> list[tuple[str, int, int]]:
+    """连排注文 → 逐条注的 (字母, 标记位, 注文本体起点) 列表。
+
+    两类证据（任一命中即定界，都不命中则不拆）：
+    - md 文本自身的注文标记：句末标点/行首之后的“小写字母 + 汉字/引号”——标记
+      字母就在正文里（标记位 = 字母位置，正文起点 = 其后一位）；
+    - 源 PDF 表注定义行的 (字母, 注文头)：md 把注文标记字母读丢时（GB_T_5171.1-2014
+      表20 的 d/e/f 即如此，MinerU 只留下注文文字），用注文头文本在**上一条之后**
+      定位该条起点（标记位 = 正文起点）；头文本按 12→10→8→6 字逐级缩短匹配，仍
+      找不到就不拆（不猜）。游标按注文顺序推进（md 标记与 PDF 补位共用同一游标），
+      避免“上一条之后”被排在后文的 md 标记带偏（否则 d/e 会被后面的 g 挡住）。
+      已由 ``known_letters``（整格已出现的字母）覆盖的条不补位：该条在别处已有
+      标记，在本段里检索只会撞上相邻条的头文本。
+    """
+    ordered = sorted((match.start(1), match.group(1)) for match in _TABLE_NOTE_ITEM_SPLIT_RE.finditer(plain))
+    positions = {letter: offset for offset, letter in ordered}
+    marks: list[tuple[int, int, str]] = [(offset, offset + 1, letter) for offset, letter in ordered]
+    claimed = {start for _mark, start, _letter in marks}
+    cursor = 0
+    for letter, head in note_defs:
+        if letter in positions or (known_letters and letter in known_letters):
+            cursor = max(cursor, positions.get(letter, 0))
+            continue
+        probe = re.sub(r"\s+", "", head)
+        for length in (12, 10, 8, 6):
+            candidate = probe[:length]
+            if len(candidate) < 6:
+                continue
+            # 从游标处（含）开始找：注文头可能正好落在本段起点（<br> 分段后
+            # 每条注文自成一段时即如此），cursor+1 会漏掉起点命中。
+            found = plain.find(candidate, cursor)
+            if found >= 0 and found not in claimed:
+                marks.append((found, found, letter))
+                claimed.add(found)
+                cursor = found
+                break
+    marks.sort()
+    return [(letter, mark, start) for mark, start, letter in marks]
+
+
+def _wrap_note_items(plain: str, marks: list[tuple[str, int, int]]) -> str:
+    """逐条注包装为通用角标标记 ``[:sup:x]注文[:/sup]``（连排，不写 ``<br>``）。
+
+    ``marks`` 的元组是 (字母, 标记位, 注文本体起点)：注文区间取到**下一条标记位**
+    为止，md 里残存的字面标记字母因此不会混进上一条注文（PDF 补位条的标记位与正文
+    起点相同，无字面字母可留）。多条注在同一单元格内**连排**——标记成对自定界，
+    渲染端在相邻两对之间自动换行（2026-09-11 用户裁定，docs/07 §6.7）。
+    规则对应: GBT-X04 / GBT-C18 执行侧。
+    """
+    if not marks:
+        return plain
+    parts: list[str] = []
+    residue = plain[: marks[0][1]].strip()
+    if residue:
+        parts.append(residue)  # 首条标记之前的残留文本（罕见）原样保留
+    for index, (letter, _mark, start) in enumerate(marks):
+        end = marks[index + 1][1] if index + 1 < len(marks) else len(plain)
+        text = plain[start:end].strip()
+        parts.append(f"[:sup:{letter}]{text}[:/sup]" if text else f"[:sup:{letter}/]")
+    return "".join(parts)
+
+
+def _cluster_visual_lines(spans: list[dict], tolerance: float = 5.0) -> list[list[dict]]:
+    """按**基线**（origin[1]）聚类视觉行，容差 5pt。
+
+    不能按 bbox 顶（bbox[1]）聚类：同一表格行里中文字体（CJK ascender ≈0.89）与
+    西文字体（≈1.33）的字框顶差可达 size×0.45 ≈ 4pt，按 bbox 顶聚类会把锚文本与
+    紧随它的上标角标拆成两行——GB_T_5171.1-2014 表20 第 7/10 行的 d/e 即因此漏检。
+    表格行间距 ≈15pt，5pt 容差不会把相邻行并成一行。
+    （回归测试: tests/test_mineru_table_note_markers.py::VisualLineClusteringTests）
+    """
+    ordered = sorted(spans, key=lambda s: (s["origin"][1], s["origin"][0]))
+    lines: list[list[dict]] = []
+    for span in ordered:
+        if lines and abs(span["origin"][1] - lines[-1][0]["origin"][1]) <= tolerance:
+            lines[-1].append(span)
+        else:
+            lines.append([span])
+    return lines
 
 
 def _recover_table_note_markers(markdown: str, pdf: Path) -> tuple[str, int]:
@@ -2412,11 +2527,11 @@ def _recover_table_note_markers(markdown: str, pdf: Path) -> tuple[str, int]:
       + 汉字，如表头两列同以“要素”开头）不猜——几何-列边界对齐留待后续；
     - 找不到唯一匹配/定义行缺失/字母已存在 → 不改。幂等：已恢复的单元格以
       字母结尾（尾部）或锚文本后已跟该字母（词中），再次运行不重复补。
-    2026-09-07（语法定案，docs/07 §6.7）输出改为**显式标记**：锚点补回一律写
-    “[:x]”（引用点 token，渲染端不再做字形猜测）；表注定义行逐段改写为
-    “[^x]注文[^x/]”（<br> 分段各自包装，段首字母可后随引号/汉字）。已 token 化
-    的内容幂等（段首 “[^” 不再重复包装；锚点命中检查对 “[:x]” 结尾单元格
-    天然不再匹配）。
+    2026-09-07（语法定案）输出改为**显式标记**；2026-09-11 起标记通用化为
+    “行内角标标记”（docs/07 §6.7）：锚点补回写自闭合引用点 ``[:sup:x/]``，
+    表注定义行逐条改写为 ``[:sup:x]注文[:/sup]``（多条以 <br> 分隔同格排布；
+    段首字母可后随引号/汉字）。已 token 化的内容幂等（先还原纯注文再重新拆条，
+    结果只取决于注文文本；锚点命中检查对已带标记的单元格天然不再匹配）。
     规则对应: GBT-X04（表注由标记与解释成对组成）/ GBT-C18（表脚注上标）；
     执行侧工程规则，与 GFM 脚注回收 CSM-OCR-014 同族；渲染端按显式标记还原
     上角标（pdf_renderer._table_cell_superscripts）。
@@ -2451,19 +2566,26 @@ def _recover_table_note_markers(markdown: str, pdf: Path) -> tuple[str, int]:
             return []
         return [part.strip() for part in stripped[1:-1].split("|")]
 
-    def group_def_letters(row_indexes: list[int]) -> set[str]:
-        letters: set[str] = set()
-        for i in row_indexes:
-            cells = [c for c in row_cells(lines[i]) if c]
-            if len(cells) != 1:
-                continue
-            match = _TABLE_NOTE_DEF_CELL_RE.match(cells[0])
-            if match:
-                letters.add(match.group(1).lower())
-        return letters
+    def note_cell_slots(row_indexes: list[int]) -> list[tuple[int, int]]:
+        """表注定义行：分组内**单个非空单元格**且以“注文标记 + 汉字/引号”开头的行。
 
-    # —— 2) 源 PDF 文本层：正文行内的上标小写字母 span → (锚文本, 字母) ——
+        返回 (行号, 单元格序号)。判型在去显式标记后的纯注文上进行（已 token 化的
+        注文行同样识别，保证幂等）。
+        """
+        slots: list[tuple[int, int]] = []
+        for i in row_indexes:
+            raw_cells = row_cells(lines[i])
+            filled = [k for k, cell in enumerate(raw_cells) if cell]
+            if len(filled) != 1:
+                continue
+            if _TABLE_NOTE_DEF_CELL_RE.match(_plain_note_cell_text(raw_cells[filled[0]])):
+                slots.append((i, filled[0]))
+        return slots
+
+    # —— 2) 源 PDF 文本层：正文行内的上标小写字母 span → (锚文本, 字母)；
+    #         行首（其前无紧邻正文 span）的上标小写字母 → 表注定义行的 (字母, 注文头) ——
     candidates: list[tuple[str, str]] = []
+    note_defs: list[tuple[str, str]] = []
     with pymupdf.open(pdf) as document:
         for page in document:
             spans: list[dict] = []
@@ -2477,21 +2599,11 @@ def _recover_table_note_markers(markdown: str, pdf: Path) -> tuple[str, int]:
             sizes = sorted(s["size"] for s in spans)
             body_median = sizes[len(sizes) // 2]
             sup_threshold = min(body_median * 0.72, 7.8)
-            spans.sort(key=lambda s: (s["bbox"][1], s["bbox"][0]))
-            # 视觉行聚类（y 容差 4pt，与 _recover_pdf_footnotes 的 band 判定同量级）。
-            visual_lines: list[list[dict]] = []
-            for span in spans:
-                if visual_lines and abs(span["bbox"][1] - visual_lines[-1][0]["bbox"][1]) <= 4:
-                    visual_lines[-1].append(span)
-                else:
-                    visual_lines.append([span])
-            for vline in visual_lines:
-                vline.sort(key=lambda s: s["bbox"][0])
+            for vline in _cluster_visual_lines(spans):
+                vline.sort(key=lambda s: s["origin"][0])
                 for idx, sup in enumerate(vline):
                     letter = sup["text"].strip()
                     if sup["size"] > sup_threshold or not re.fullmatch(r"[a-z]", letter):
-                        continue
-                    if letter not in _RECOVER_MARKER_LETTERS:
                         continue
                     anchor: dict | None = None
                     for j in range(idx - 1, -1, -1):
@@ -2502,15 +2614,26 @@ def _recover_table_note_markers(markdown: str, pdf: Path) -> tuple[str, int]:
                         if -2 <= dx <= 6:
                             anchor = prev
                         break  # 只看紧邻（可含中间上标）的最近正文 span
-                    if anchor is None:
+                    if anchor is not None:
+                        anchor_text = anchor["text"].strip()
+                        if not anchor_text or not re.search(r"[\u4e00-\u9fff]$", anchor_text):
+                            continue  # 渲染端只上标汉字后的字母，非汉字收尾锚不补
+                        pair = (anchor_text, letter)
+                        if pair not in candidates:
+                            candidates.append(pair)
                         continue
-                    anchor_text = anchor["text"].strip()
-                    if not anchor_text or not re.search(r"[\u4e00-\u9fff]$", anchor_text):
-                        continue  # 渲染端只上标汉字后的字母，非汉字收尾锚不补
-                    pair = (anchor_text, letter)
-                    if pair not in candidates:
-                        candidates.append(pair)
-    if not candidates:
+                    # 其上没有紧邻正文 span → 这是**表注定义行**的行首注文标记
+                    # （“a 注文…”）；同视觉行紧随其后的正文 span 文本即该条注文头，
+                    # 供 md 丢掉注文标记字母时定位该条注文的起点。
+                    following = next((s for s in vline[idx + 1:] if s["size"] > sup_threshold), None)
+                    if following is None:
+                        continue
+                    head = re.sub(r"\s+", "", following["text"].strip())
+                    if len(head) >= 6 and sup["bbox"][2] <= following["bbox"][0] + 8:
+                        item = (letter, head)
+                        if item not in note_defs:
+                            note_defs.append(item)
+    if not candidates and not note_defs:
         return markdown, 0
 
     # —— 3) 锚文本在含对应字母定义行的分组里命中单元格 → 补字母 ——
@@ -2522,46 +2645,45 @@ def _recover_table_note_markers(markdown: str, pdf: Path) -> tuple[str, int]:
     #      “要素”开头）时不猜——需单元格几何对齐列边界，留待后续。
     recovered = 0
     for group in groups:
-        def_letters = group_def_letters(group)
-        if not def_letters:
+        note_slots = note_cell_slots(group)
+        if not note_slots:
             continue
-        # 定义行 token 化（2026-09-07 语法定案）：把“a注文…<br>b注文…”字面
-        # 行首字母逐段改写为 “[^x]注文[^x/]”；段首字母可后随汉字或引号
-        # （“b“程序指示”…”型，GB_T_20001.6-2017 表1 实测）。幂等：段首已是
-        # “[^” 不再改。
-        for i in group:
-            pipes = [k for k, ch in enumerate(lines[i]) if ch == "|"]
-            if len(pipes) < 2:
+        # 表注定义行 token 化：把“a注文…b注文…”连排注文逐条改写为通用角标标记
+        # “[:sup:x]注文[:/sup]”（多条以 <br> 分隔同格排布）；md 丢掉的注文
+        # 标记字母用源 PDF 的注文头文本定位后补回。幂等：先去掉既有标记还原纯注文
+        # 再重新拆条，结果只取决于注文文本本身。
+        group_letters: set[str] = set()
+        for line_index, cell_index in note_slots:
+            pipes = [k for k, ch in enumerate(lines[line_index]) if ch == "|"]
+            if len(pipes) < cell_index + 2:
                 continue
-            raw_cells = [lines[i][pipes[k] + 1:pipes[k + 1]] for k in range(len(pipes) - 1)]
-            filled_idx = [k for k, c in enumerate(raw_cells) if c.strip()]
-            if len(filled_idx) != 1:
-                continue
-            cell_raw = raw_cells[filled_idx[0]]
-
-            def _wrap_seg(seg: str) -> str:
-                if seg.lstrip().startswith("[^"):
-                    return seg  # 幂等
-                lead = seg[: len(seg) - len(seg.lstrip())]
-                trail = seg[len(seg.rstrip()):]
-                core = seg.strip()
-                m = re.match(r"^([a-z])(?:[ \u3000]+)?(?=[\u4e00-\u9fff“”『「\"'])", core)
-                if not m:
-                    return seg
-                return f"{lead}[^{m.group(1)}]{core[m.end():].rstrip()}[^{m.group(1)}/]{trail}"
-
-            wrapped = "<br>".join(_wrap_seg(s) for s in cell_raw.split("<br>"))
-            if wrapped != cell_raw:
-                start, end = pipes[filled_idx[0]] + 1, pipes[filled_idx[0] + 1]
-                lines[i] = lines[i][:start] + wrapped + lines[i][end:]
+            start, end = pipes[cell_index] + 1, pipes[cell_index + 1]
+            raw_cell = lines[line_index][start:end]
+            plain = _plain_note_cell_text(raw_cell)
+            cell_letters = _cell_note_letters(plain)
+            tagged: list[str] = []
+            # 兼容既有 canonical 的 <br> 分格写法（新格式连排，无需 <br>）。
+            for segment in re.split(r"<br>", plain):
+                boundaries = _note_item_boundaries(segment, note_defs, cell_letters)
+                group_letters.update(letter for letter, _mark, _start in boundaries)
+                tagged.append(_wrap_note_items(segment, boundaries))
+            wrapped = "".join(tagged)
+            if wrapped.strip() != raw_cell.strip():
+                lead = raw_cell[: len(raw_cell) - len(raw_cell.lstrip())]
+                trail = raw_cell[len(raw_cell.rstrip()):]
+                lines[line_index] = lines[line_index][:start] + lead + wrapped + trail + lines[line_index][end:]
                 recovered += 1
+        if not group_letters:
+            continue
         for anchor_text, letter in candidates:
-            if letter not in def_letters:
+            if letter not in group_letters:
                 continue
             # 形态 a：尾部。目标行以锚文本结尾 → 补 [:x]；已带字面字母时仅在
-            # “锚文本+该字母”同尾（几何确认为上标）时把字面字母改写为 [:x]。
+            # “锚文本+该字母”同尾（几何确认为上标）时把字面字母改写为 [:x]；
+            # 末位是单个数字（OCR 把上标标记读成数字，'g'→'8' 型）时同样改写。
             tail_targets: list[tuple[int, int]] = []
             literal_tail_targets: list[tuple[int, int]] = []
+            mangled_tail_targets: list[tuple[int, int]] = []
             for i in group:
                 for cell_index, cell in enumerate(row_cells(lines[i])):
                     latin_tail = re.search(r"[A-Za-z]$", cell)
@@ -2571,6 +2693,11 @@ def _recover_table_note_markers(markdown: str, pdf: Path) -> tuple[str, int]:
                         continue
                     if cell.endswith(anchor_text):
                         tail_targets.append((i, cell_index))
+                        continue
+                    # 锚文本 + 单个数字收尾且数字前不是数字（排除多位数值尾部），
+                    # 几何上该数字正是源 PDF 里锚文本之后的上标标记位（CSM-OCR-015）。
+                    if re.search(r"(?<![0-9])[0-9]$", cell) and cell[:-1].rstrip().endswith(anchor_text):
+                        mangled_tail_targets.append((i, cell_index))
             if len(tail_targets) == 1:
                 line_index, cell_index = tail_targets[0]
                 patched = _insert_table_cell_marker(lines[line_index], cell_index, letter)
@@ -2578,17 +2705,17 @@ def _recover_table_note_markers(markdown: str, pdf: Path) -> tuple[str, int]:
                     lines[line_index] = patched
                     recovered += 1
                 continue
-            if len(tail_targets) == 0 and len(literal_tail_targets) == 1:
+            if len(tail_targets) == 0 and len(literal_tail_targets) + len(mangled_tail_targets) == 1:
                 # OCR 保留了字面锚点字母（如 20001.5 表1 “表述形式a”）：渲染端
                 # 不再做字形猜测，此处把字面字母改写为显式 [:x] 引用点。
-                line_index, cell_index = literal_tail_targets[0]
+                line_index, cell_index = (literal_tail_targets or mangled_tail_targets)[0]
                 line = lines[line_index]
                 pipes = [k for k, ch in enumerate(line) if ch == "|"]
                 if len(pipes) > cell_index + 1:
                     start, end = pipes[cell_index] + 1, pipes[cell_index + 1]
                     raw = line[start:end]
                     replace_at = start + len(raw.rstrip()) - 1  # 末尾字母（去行尾空白定位）
-                    lines[line_index] = line[:replace_at] + f"[:^{letter}]" + line[replace_at + 1:]
+                    lines[line_index] = line[:replace_at] + f"[:sup:{letter}/]" + line[replace_at + 1:]
                     recovered += 1
                 continue
             # 形态 b：词中。锚文本在单元格中部出现、后随汉字、该处尚未有该字母。
@@ -2630,7 +2757,7 @@ def _insert_table_cell_marker(line: str, cell_index: int, letter: str) -> str:
     start, end = pipes[cell_index] + 1, pipes[cell_index + 1]
     text = line[start:end]
     insert_at = start + len(text.rstrip())
-    return line[:insert_at] + f"[:^{letter}]" + line[insert_at:]
+    return line[:insert_at] + f"[:sup:{letter}/]" + line[insert_at:]
 
 
 def _insert_table_cell_marker_at(line: str, cell_index: int, letter: str, offset_in_cell: int) -> str:
@@ -2649,7 +2776,7 @@ def _insert_table_cell_marker_at(line: str, cell_index: int, letter: str, offset
     insert_at = start + lead + offset_in_cell
     if insert_at < start or insert_at > pipes[cell_index + 1]:
         return line
-    return line[:insert_at] + f"[:^{letter}]" + line[insert_at:]
+    return line[:insert_at] + f"[:sup:{letter}/]" + line[insert_at:]
 
 
 def _recover_pdf_footnotes(md_path: Path, pdf: Path) -> int:

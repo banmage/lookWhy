@@ -95,7 +95,9 @@ class CSMToSSIRTests(unittest.TestCase):
     def test_template_formula_and_turtle_export(self) -> None:
         ssir = parse_csm(ROOT / "corpus/golden/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md")
         self.assertEqual(len(ssir["formulas"]), 1)
-        self.assertEqual(ssir["formulas"][0]["number"], "式（1）")
+        # CSM 编号行「式（1）」解析为纯编号标签「1」，渲染端补圆括号并按
+        # GB/T 1.1-2020 10.4.3 右端对齐（GBT-X06；CSM-OCR-017）。
+        self.assertEqual(ssir["formulas"][0]["number"], "1")
         turtle = turtle_text(ssir)
         self.assertIn("ssir:jsonSha256", turtle)
         self.assertIn("https://leleby.io/resource/ssir%3AQ-EXAMPLE-001-2026", turtle)

@@ -3,7 +3,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from leleby_ssir.pdf_renderer import _TABLE_NOTE_CELL_RE, _BODY_MEASURE, _append_nodes, _cell_text_natural_width, _clause_leading_number, _example_box, _example_box_inner_width, _footnote_superscripts, _heading_depth, _heading_parts, _latex_to_text, _list_marker, _markup, _ocr_l_one, _split_table_note_parts, _starts_new_page, _strip_pagebreaks, _table_cell_superscripts, _table_column_widths, _toc_label
+import yaml
+
+# GBT-B12 数值-单位固定字隙（正文五号 10.5pt 的 1/4 汉字）：_markup 输出的白字哨兵。
+_UNIT_GAP = '<font size="2.625" color="white">中</font>'
+
+from leleby_ssir.pdf_renderer import _TABLE_NOTE_CELL_RE, _BODY_MEASURE, _EXAMPLE_FRAME_WIDTH, _append_nodes, _cell_text_natural_width, _clause_leading_number, _example_box, _example_box_inner_width, _footnote_superscripts, _heading_depth, _heading_parts, _label_markup, _latex_to_text, _list_marker, _list_marker_gap, _mark_note_example_labels, _markup, _note_example_label, _note_example_label_span, _ocr_l_one, _split_table_note_parts, _starts_new_page, _strip_pagebreaks, _table_cell_superscripts, _table_column_widths, _toc_label
 
 TABLE_FIXTURE = {
     "id": "t1", "number": "1", "caption": "系统性能要求",
@@ -31,6 +36,17 @@ class PdfRendererHeadingTests(unittest.TestCase):
     def test_heading_number_is_split_from_compact_title(self):
         node = {"nodeType": "documentBlock", "title": "9.4.3全称、简称和缩略语"}
         self.assertEqual(_heading_parts(node), ("9.4.3", "全称、简称和缩略语", False))
+
+    def test_annex_toc_entry_keeps_normative_status(self):
+        # GB/T 1.1-2020 10.3.2：附录的目次应给出附录编号，后跟“(规范性)”或
+        # “(资料性)”，空一个汉字的间隙后给出附录标题。
+        node = {"nodeType": "annex", "number": "A", "title": "（资料性） 层次编号示例"}
+        self.assertEqual(_heading_parts(node), ("A", "层次编号示例", True))
+        self.assertEqual(_toc_label(node), "附录 A（资料性）\u3000层次编号示例")
+
+    def test_annex_toc_entry_without_status_stays_bare(self):
+        node = {"nodeType": "annex", "number": "C", "title": "条款类型"}
+        self.assertEqual(_toc_label(node), "附录 C\u3000条款类型")
 
     def test_annex_and_front_matter_start_new_pages(self):
         self.assertTrue(_starts_new_page({"nodeType": "annex"}, "文件格式", True))
@@ -95,32 +111,353 @@ class MarkupNormalisationTests(unittest.TestCase):
         self.assertIn("2000", out2)
         self.assertIn("2200", out2)
 
-    def test_markup_uses_nbsp_between_number_and_unit(self):
+    def test_markup_uses_fixed_quarter_han_gap_between_number_and_unit(self):
+        # GBT-B12：单位符号前空四分之一汉字间隙。用按 1/4 字号绘制的白字实现——
+        # 推进宽度恒为 1/4 汉字，且非空格字节，两端对齐不会把它拉宽。
         out = _markup("额定频率为50 Hz。")
-        self.assertIn("50\u00A0Hz", out)
+        self.assertIn('50<font size="2.625" color="white">中</font>Hz', out)
+        self.assertNotIn("\u00A0", out)
 
-    def test_markup_unit_gap_unifies_tight_and_spaced_units(self):
+    def test_markup_formula_variable_item_gap(self) -> None:
+        # GBT-X06（GB/T 1.1-2020 9.9.3、10.4.3；CSM-OCR-018）：公式变量解释项
+        # 「变量——解释」中，变量与破折号之间、破折号与解释之间各空四分之一汉字；
+        # 用固定字隙哨兵（白字），不是空格——两端对齐拉伸不到它。
+        gap = '<font size="2.625" color="white">中</font>'
+        self.assertEqual(_markup(r"$\Delta t$——绕组温升，单位为开尔文(K)；"), f"Δt{gap}——{gap}绕组温升，单位为开尔文(K)；")
+        self.assertEqual(_markup(r"$R _ { 2 }$——试验结束时的绕组电阻，单位为欧姆(Ω)；"),
+                         f"R<sub>2</sub>{gap}——{gap}试验结束时的绕组电阻，单位为欧姆(Ω)；")
+        self.assertEqual(_markup("k ——常数，对铜绕组为234.5；"), f"k{gap}——{gap}常数，对铜绕组为234.5；")
+        # 列项 marker「——」不是变量解释项；无破折号的正文段落不受影响。
+        self.assertEqual(_markup("——增加了第3章“术语和定义”；"), "——增加了第3章“术语和定义”；")
+        self.assertEqual(_markup("GB/T 1.1—2020 规定如下："), "GB/T 1.1—2020 规定如下：")
+
+    def test_markup_unit_gap_unifies_tight_and_spaced_units(self) -> None:
         # GBT-B12 执行侧（GB/T 1.1-2020 10.4.6）：单位符号前空四分之一汉字间隙。
-        # 紧贴（OCR/源文 "210mm"）与已有空格（"50 Hz"）统一成 \u00A0，消除同文档
-        # 不一致；% 前不留间隙（GB/T 15835-2011 示例 "34.05%"、"63%~68%"）。
-        self.assertEqual(
-            _markup("外形尺寸为210mm×150mm"),
-            "外形尺寸为210\xa0mm×150\xa0mm",
-        )
-        self.assertEqual(_markup("0.2℃时测得"), "0.2\xa0℃时测得")
-        self.assertEqual(_markup("电压为85K与15N的试样"), "电压为85\xa0K与15\xa0N的试样")
-        self.assertEqual(_markup("持续2h 30min"), "持续2\xa0h 30\xa0min")
+        # 紧贴（OCR/源文 "210mm"）与已有空格（"50 Hz"）统一成同一种固定字隙，消除同
+        # 文档不一致；% 前不留间隙（GB/T 15835-2011 示例 "34.05%"、"63%~68%"）。
+        gap = '<font size="2.625" color="white">中</font>'
+        self.assertEqual(_markup("外形尺寸为210mm×150mm"), f"外形尺寸为210{gap}mm×150{gap}mm")
+        self.assertEqual(_markup("0.2℃时测得"), f"0.2{gap}℃时测得")
+        self.assertEqual(_markup("电压为85K与15N的试样"), f"电压为85{gap}K与15{gap}N的试样")
+        self.assertEqual(_markup("持续2h 30min"), f"持续2{gap}h 30{gap}min")
         self.assertEqual(_markup("偏差应在±10 %范围内"), "偏差应在±10%范围内")
         self.assertEqual(_markup("34.05% 63%~68%"), "34.05% 63%~68%")
-        self.assertEqual(_markup("525 μm"), "525\xa0μm")
+        self.assertEqual(_markup("525 μm"), f"525{gap}μm")
         # 分表/分图代号（GB/T 1.1 9.8.1.3 引用的 “表2a”）不是单位，不插间隙；
         # 列项引用（“4.2b)”）按排版惯例留间隙；表/图前的量值不受排除影响。
         self.assertEqual(
             _markup("将“表2”分为“表2a”和“表2b”"),
             "将“表2”分为“表2a”和“表2b”",
         )
-        self.assertEqual(_markup("见4.2b)的规定"), "见4.2\xa0b)的规定")
-        self.assertEqual(_markup("在5℃～40℃下"), "在5\xa0℃～40\xa0℃下")
+        self.assertEqual(_markup("见4.2b)的规定"), f"见4.2{gap}b)的规定")
+        self.assertEqual(_markup("在5℃～40℃下"), f"在5{gap}℃～40{gap}℃下")
+        # 表/图编号后紧跟的字母是标识符或公式变量，不是单位：分表代号 "表2a"、"图2b"、
+        # 附录表编号 "表A.1" 后的公式变量（表题 "表A.1C_p 等级评定" 型）都不插间隙。
+        self.assertEqual(_markup("见表A.1C_p 等级评定及处理原则"), "见表A.1C_p 等级评定及处理原则")
+        self.assertEqual(_markup("图2b所示"), "图2b所示")
+        self.assertEqual(_markup("见附录表B.1a"), "见附录表B.1a")
+        # 幂次数量值（"10³ m"）与紧贴形态（"10³m"）同样归一为固定字隙；上下标内的记号
+        # （"D_{1max}"）不是量值-单位，不插字隙。
+        self.assertEqual(_markup("l = 2.5×10<sup>3</sup> m"), f"l = 2.5×10<super>3</super>{gap}m")
+        self.assertEqual(_markup("10<sup>3</sup>m"), f"10<super>3</super>{gap}m")
+        self.assertEqual(_markup(_latex_to_text(r"$D _ { \mathrm { 1 m a x } }$")), "D<sub>1max</sub>")
+        # 间隙随容器字号（四分之一汉字，非固定点数）。
+        self.assertEqual(_markup("1000 m", em_size=9), '1000<font size="2.25" color="white">中</font>m')
+
+
+class FormulaNumberLineTests(unittest.TestCase):
+    """GBT-X06（GB/T 1.1-2020 9.9.2、10.4.3）：公式编号右端对齐、与公式以“……”连接。
+
+    以真实 PDF 的字符/图形坐标断言（GEN-090/091 同口径，非视觉比对）：公式另行
+    居中、公式与引导线之间恰为两个汉字间隔、引导线填满到右端编号、编号右缘贴
+    版心右缘；公式过宽时先收到「留得下引导线」的宽度（只缩小不放大）。
+    """
+
+    FONT_ASSET = Path(__file__).resolve().parents[1] / "config" / "rendering" / "fonts" / "NotoSerifCJKsc-Regular.ttf"
+
+    def _render(self, image_width: int, frame_width: float = 441.5):
+        try:
+            import pymupdf
+        except ImportError:  # pragma: no cover
+            self.skipTest("pymupdf unavailable")
+        from PIL import Image as PILImage
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        from reportlab.platypus import Image, SimpleDocTemplate
+
+        from leleby_ssir.pdf_renderer import _FormulaLeaderLine
+
+        if not self.FONT_ASSET.is_file():
+            self.skipTest("body font asset missing")
+        name = "FormulaLineBody"
+        if name not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(TTFont(name, str(self.FONT_ASSET)))
+        directory = tempfile.mkdtemp()
+        image_path = Path(directory) / "formula.png"
+        PILImage.new("RGB", (image_width, 40), (255, 255, 255)).save(image_path)
+        image = Image(str(image_path))
+        line = _FormulaLeaderLine(image, "(1)", name, 10.5)
+        target = Path(directory) / "formula.pdf"
+        page_size = (frame_width + 12, 200)  # Frame 默认 6pt 内衬 → 可用宽 = frame_width
+        SimpleDocTemplate(str(target), pagesize=page_size, leftMargin=0, rightMargin=0,
+                          topMargin=0, bottomMargin=0).build([line])
+        document = pymupdf.open(str(target))
+        page = document[0]
+        chars: list[tuple[str, float, float]] = []
+        for block in page.get_text("rawdict")["blocks"]:
+            for line_ in block.get("lines", []):
+                for span in line_["spans"]:
+                    for char in span["chars"]:
+                        chars.append((char["c"], char["bbox"][0], char["bbox"][2]))
+        images = page.get_image_info()
+        return line, chars, images
+
+    def test_number_is_right_aligned_and_leader_fills_the_gap(self) -> None:
+        line, chars, images = self._render(image_width=220)
+        dots = [c for c in chars if c[0] == "…"]
+        number = [c for c in chars if c[0] in "()1"]
+        self.assertEqual(len(images), 1)
+        self.assertTrue(dots, f"leader dots missing: {[c[0] for c in chars]!r}")
+        self.assertTrue(number)
+        image_box = images[0]["bbox"]
+        # 公式居中：图像中心 ≈ 版心中心。
+        self.assertAlmostEqual((image_box[0] + image_box[2]) / 2, 6 + line.avail / 2, places=1)
+        # 公式与引导线之间恰为两个汉字间隔（2em = 21pt）。
+        self.assertAlmostEqual(dots[0][1] - image_box[2], 2 * 10.5, places=1)
+        # 引导线紧跟右端编号：省略号最后一个字形与「(」之间的余量不足一个字位。
+        self.assertLessEqual(number[0][1] - dots[-1][2], 10.5)
+        # 编号右缘贴版心右缘（「)」字形墨迹可略超推进宽，容差 1.5pt）。
+        self.assertAlmostEqual(number[-1][2], 6 + line.avail, delta=1.5)
+
+    def test_wide_formula_is_shrunk_to_leave_room_for_the_leader(self) -> None:
+        # 443px 宽的 MinerU 公式裁剪图（GB_T_5171.1-2014 式(1) 实测）远超版心：
+        # 收窄到「留得下 2 汉字间隔 + 引导线 + 编号」，只缩小不放大。
+        line, chars, images = self._render(image_width=600)
+        dots = [c for c in chars if c[0] == "…"]
+        number = [c for c in chars if c[0] in "()1"]
+        self.assertTrue(dots and number)
+        self.assertGreaterEqual(len(dots), 4, "至少留出四个汉字位的引导线")
+        image_box = images[0]["bbox"]
+        self.assertLess(image_box[2] - image_box[0], 600)
+        self.assertLessEqual(image_box[2], number[0][1] - 2 * 10.5)
+        self.assertAlmostEqual(number[-1][2], 6 + line.avail, delta=1.5)
+
+
+class UnitGapRenderingTests(unittest.TestCase):
+    """GBT-B12 数值-单位间隙：渲染实测恒为 1/4 汉字宽，两端对齐不拉伸。
+
+    以 PDF 内部对象（字形坐标/字号）验证，不做视觉比对：reportlab 的两端对齐通过
+    PDF 字间距（Tw）实现，只作用于空格字节，曾把 U+00A0 间隙拉到 1.0–1.6 个汉字
+    宽；本用例强制长行换行+两端对齐，断言每个数值-单位间隙仍恰为 1/4 汉字。
+    """
+
+    FONT_ASSET = Path(__file__).resolve().parents[1] / "config" / "rendering" / "fonts" / "NotoSerifCJKsc-Regular.ttf"
+
+    def _measure(self, em: float) -> tuple[list[float], list[float]]:
+        try:
+            import pymupdf
+        except ImportError:  # pragma: no cover - 环境缺 pymupdf 时跳过
+            self.skipTest("pymupdf unavailable")
+        from reportlab.lib.styles import ParagraphStyle
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        from reportlab.platypus import Paragraph, SimpleDocTemplate
+
+        if not self.FONT_ASSET.is_file():
+            self.skipTest("body font asset missing")
+        name = "UnitGapRenderingBody"
+        if name not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(TTFont(name, str(self.FONT_ASSET)))
+        style = ParagraphStyle("unit-gap", fontName=name, fontSize=em, leading=em * 1.7, alignment=4, wordWrap="CJK")
+        sentence = "电动机温升限值的修正按GB755的规定，本部分适用于折算至1500r/min时最大连续额定功率不超过1.1kW的电动机。"
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "unit-gap.pdf"
+            SimpleDocTemplate(str(target)).build([Paragraph(_markup(sentence * 3, em_size=em), style)])
+            document = pymupdf.open(str(target))
+            page = document[0]
+        chars: list[tuple[str, float, float]] = []
+        lines: list[list[tuple[str, float, float]]] = []
+        for block in page.get_text("rawdict")["blocks"]:
+            for line in block.get("lines", []):
+                current: list[tuple[str, float, float]] = []
+                for span in line["spans"]:
+                    for char in span["chars"]:
+                        current.append((char["c"], char["origin"][0], span["size"]))
+                if current:
+                    lines.append(current)
+                    chars.extend(current)
+        digit_width = {char: pdfmetrics.stringWidth(char, name, em) for char in "0123456789"}
+        gaps, sizes = [], []
+        for current in lines:  # 同一行内比较，跨行/跨页不算间隙
+            for index in range(len(current) - 2):
+                before, filler, after = current[index], current[index + 1], current[index + 2]
+                if before[0].isdigit() and filler[0] == "中" and after[0] in "mkr":
+                    gaps.append(after[1] - before[1] - digit_width[before[0]])
+                    sizes.append(filler[2])
+        return gaps, sizes
+
+    def test_gap_is_quarter_han_and_immune_to_justification(self) -> None:
+        em = 10.5
+        gaps, sizes = self._measure(em)
+        self.assertGreaterEqual(len(gaps), 3, "fixture must produce several number-unit gaps")
+        for size in sizes:
+            self.assertAlmostEqual(size, em / 4, places=2)
+        for gap in gaps:
+            self.assertAlmostEqual(gap, em / 4, places=2)
+
+    def test_gap_follows_container_font_size(self) -> None:
+        em = 9.0
+        gaps, _ = self._measure(em)
+        self.assertGreaterEqual(len(gaps), 3)
+        for gap in gaps:
+            self.assertAlmostEqual(gap, em / 4, places=2)
+
+
+class ListMarkerGapTests(unittest.TestCase):
+    """GBT-B04：列项 marker 与文字之间是固定字隙，文字起点与回行同位置。
+
+    4.1.1 b) 条目曾比 a) 条目的 marker 后空隙宽得多：两者 canonical 相同（一个空格），
+    但 b) 首行触发了 reportlab 的字间距（同行有旧实现数值-单位用的 U+00A0），整行空格
+    被一起拉开。修因：marker 后改用「回行位 − marker 宽」的固定白字字隙，不再是空格。
+    """
+
+    FONT_ASSET = Path(__file__).resolve().parents[1] / "config" / "rendering" / "fonts" / "NotoSerifCJKsc-Regular.ttf"
+
+    def _style(self, em: float = 10.5):
+        from reportlab.lib.styles import ParagraphStyle
+
+        return ParagraphStyle(
+            "list-gap", fontName="ListGapBody", fontSize=em, leading=em * 1.7,
+            alignment=4, wordWrap="CJK", leftIndent=4 * em, firstLineIndent=-2 * em,
+        )
+
+    def _register(self) -> str:
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+
+        if not self.FONT_ASSET.is_file():
+            self.skipTest("body font asset missing")
+        name = "ListGapBody"
+        if name not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(TTFont(name, str(self.FONT_ASSET)))
+        return name
+
+    def test_gap_is_fixed_width_filler_not_space(self) -> None:
+        from reportlab.pdfbase import pdfmetrics
+
+        name = self._register()
+        style = self._style()
+        gap = _list_marker_gap(style, "b）", style.fontSize)
+        markup = _markup(f"b）{gap}当运行地点的海拔")
+        expected = 2 * style.fontSize - pdfmetrics.stringWidth("b）", name, style.fontSize)
+        # marker 与文字之间只有固定字隙（白字），没有任何空格字符。
+        self.assertIn(f'b）<font size="{expected:.3f}" color="white">中</font>当运行地点的海拔', markup)
+        self.assertNotIn("b） ", markup)
+        # marker 宽于目标位时不后推文字（三段破折号已超过两个汉字位）。
+        from reportlab.pdfbase import pdfmetrics as metrics
+
+        wide = metrics.stringWidth("———", name, style.fontSize)
+        self.assertGreater(wide, 2 * style.fontSize)
+        self.assertEqual(_list_marker_gap(style, "———", style.fontSize), "")
+
+    def test_marker_text_gap_matches_wrapped_line(self) -> None:
+        try:
+            import pymupdf
+        except ImportError:  # pragma: no cover
+            self.skipTest("pymupdf unavailable")
+        from reportlab.platypus import Paragraph, SimpleDocTemplate
+
+        name = self._register()
+        style = self._style()
+        gap = _list_marker_gap(style, "b）", style.fontSize)
+        # 源文残留的 U+00A0 正是旧实现触发整行字间距拉伸的字符，仍须保持固定字隙。
+        item = "当运行地点的海拔超过1000\u00a0m或运行地点的环境空气温度随海拔升高而下降时，电动机温升限值的修正按GB 755的规定。"
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "list-gap.pdf"
+            SimpleDocTemplate(str(target)).build([Paragraph(_markup(f"b）{gap}{item}"), style)])
+            page = pymupdf.open(str(target))[0]
+        lines = []
+        for block in page.get_text("rawdict")["blocks"]:
+            for line in block.get("lines", []):
+                chars = [(char["c"], char["origin"][0]) for span in line["spans"] for char in span["chars"]]
+                if chars:
+                    lines.append(chars)
+        self.assertGreaterEqual(len(lines), 2, "fixture must wrap into two lines")
+        first, second = lines[0], lines[1]
+        self.assertEqual([char[0] for char in first[:3]], ["b", "）", "中"], first[:3])
+        text_start = first[3][1]  # 固定字隙之后的第一个正文字形
+        self.assertAlmostEqual(text_start, second[0][1], delta=0.2)
+        self.assertAlmostEqual(text_start - first[0][1], 2 * style.fontSize, delta=0.2)
+
+    def test_second_level_gap_uses_two_han_not_four(self) -> None:
+        """第二层次列项（10.2.2：marker 空四汉字、文字列第七个汉字位）字隙 = 2 汉字 − 宽。
+
+        旧实现把「目标位」错取成 ``leftIndent + firstLineIndent``（= 4 汉字位）当字隙
+        宽度，第二层次因此得到 4 汉字 − marker 宽 ≈ 26pt 的白字占位符：文字被推到第八个
+        汉字位，行框被撑高到 26pt 并与相邻行框重叠（2026-09-11 用户报 7.5.1 示例1 a) 下的
+        1)/2) 列项）。反证：旧公式的值比字隙大一个汉字位以上。
+        """
+        from reportlab.pdfbase import pdfmetrics
+
+        name = self._register()
+        style = self._style().clone("list-sub", leftIndent=6 * 10.5, firstLineIndent=-2 * 10.5)
+        marker_width = pdfmetrics.stringWidth("1）", name, style.fontSize)
+        gap = _list_marker_gap(style, "1）", style.fontSize)
+        expected = 2 * style.fontSize - marker_width
+        self.assertAlmostEqual(float(gap.removeprefix("\x00WSP").removesuffix("\x00")), expected, places=3)
+        self.assertIn(f'<font size="{expected:.3f}" color="white">中</font>', _markup(f"1）{gap}左向(含左上、左下)"))
+        # 旧公式（leftIndent + firstLineIndent − marker 宽）= 4 汉字 − marker 宽。
+        old = style.leftIndent + style.firstLineIndent - marker_width
+        self.assertGreater(old - expected, 10.0)  # ≈ 2 汉字位 21pt 与 marker 宽之差
+
+    def test_level_deepest_items_share_text_column_without_boxes_overlapping(self) -> None:
+        """7.5.1 示例1 形态：a) 下挂 1)/2) —— 文字列 6 汉字、行框不重叠（真实 PDF 内部对象）。
+
+        用户可见症状（间距过大、行框重叠）只在真实排版里出现：字隙哨兵是白字，其**字号
+        即字隙宽**，26pt 的占位字把该行行框撑到 26pt（正文 leading 18pt）→ 与相邻行重叠。
+        """
+        import pymupdf
+        from reportlab.lib.styles import ParagraphStyle
+        from reportlab.platypus import Paragraph, SimpleDocTemplate
+
+        name = self._register()
+        em = 10.5
+        base = dict(fontName=name, fontSize=em, leading=em * 1.7, alignment=4, wordWrap="CJK")
+        flush = ParagraphStyle("flush-test", **base, leftIndent=0, firstLineIndent=0)
+        lvl1 = ParagraphStyle("lvl1-test", **base, leftIndent=4 * em, firstLineIndent=-2 * em)
+        lvl2 = ParagraphStyle("lvl2-test", **base, leftIndent=6 * em, firstLineIndent=-2 * em)
+        story = [
+            Paragraph(_markup("导向要素中图形符号与箭头的位置关系需要符合下列规则。"), flush),
+            Paragraph(_markup(f"a）{_list_marker_gap(lvl1, 'a）', em)}当导向信息元素横向排列，并且箭头指："), lvl1),
+            Paragraph(_markup(f"1）{_list_marker_gap(lvl2, '1）', em)}左向(含左上、左下)，图形符号应位于右侧；"), lvl2),
+            Paragraph(_markup(f"2）{_list_marker_gap(lvl2, '2）', em)}右向(含右上、右下)，图形符号应位于左侧；"), lvl2),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "list-columns.pdf"
+            SimpleDocTemplate(str(target)).build(story)
+            page = pymupdf.open(str(target))[0]
+        lines: list[tuple[list[tuple[str, float]], tuple[float, ...]]] = []
+        for block in page.get_text("rawdict")["blocks"]:
+            for line in block.get("lines", []):
+                chars = [(char["c"], char["origin"][0]) for span in line["spans"] for char in span["chars"]]
+                if chars:
+                    lines.append((chars, line["bbox"]))
+        self.assertEqual(len(lines), 4, [line[0][:3] for line in lines])
+        origin = lines[0][0][0][1]  # 正文段首 x（版心左）
+        # a) 项：marker 空两汉字起排，文字（白字字隙之后）落在第五个汉字位。
+        self.assertAlmostEqual(lines[1][0][0][1] - origin, 2 * em, delta=0.3)
+        self.assertAlmostEqual(lines[1][0][3][1] - origin, 4 * em, delta=0.3)
+        # 1)/2) 项：marker 空四汉字起排，文字落在第七个汉字位（旧实现为第八个）。
+        for index in (2, 3):
+            chars = lines[index][0]
+            self.assertEqual([char[0] for char in chars[:3]], [str(index - 1), "）", "中"], chars[:3])
+            self.assertAlmostEqual(chars[0][1] - origin, 4 * em, delta=0.3)
+            self.assertAlmostEqual(chars[3][1] - origin, 6 * em, delta=0.3)
+        # 行框高度不超过 leading（白字占位符不再撑高行框），相邻行框不重叠。
+        for index, (chars, bbox) in enumerate(lines):
+            self.assertLessEqual(bbox[3] - bbox[1], em * 1.7 + 0.5, f"line {index} box inflated: {bbox}")
+            if index:
+                self.assertGreaterEqual(bbox[1], lines[index - 1][1][3] - 0.5, f"line {index} overlaps the previous one")
 
 
 class UntitledClauseFlushTests(unittest.TestCase):
@@ -148,31 +485,48 @@ class UntitledClauseFlushTests(unittest.TestCase):
         self.assertEqual(_list_marker("·"), "·")
         self.assertEqual(_list_marker("●"), "●")
 
-    def test_table_cell_superscripts_explicit_markers(self) -> None:
-        # 2026-09-07 语法定案（docs/07 §6.7，GBT-X04 执行侧）：表注引用点
-        # [:^a] 与注文段开始 [^a] → 上标裸小写字母；注文段结束 [^a/] → 删除
-        # 不渲染。哨兵经 _markup 的 XML 转义后恢复为真实 <super> 标签。
+    def test_table_cell_superscripts_generic_tokens(self) -> None:
+        # 通用行内角标标记（docs/07 §6.7，2026-09-11 通用化，GBT-X04 执行侧）：
+        #   [:sup:a] … [:/sup]  上标注解区（角标字符 + 注解文字，闭标记不渲染）
+        #   [:sub:2] … [:/sub]  下标注解区
+        #   [:sup:a/]           自闭合 = 空注解区（引用点）
+        # 哨兵经 _markup 的 XML 转义后恢复为真实 <super>/<sub> 标签。
         def rendered(text: str) -> str:
             return _markup(_table_cell_superscripts(text))
 
-        # 词中引用点（20001.10 表1 表头型）与词尾引用点
-        self.assertEqual(rendered("要素[:^a]的编排"), "要素<super>a</super>的编排")
-        self.assertEqual(rendered("表述形式[:^a]"), "表述形式<super>a</super>")
+        # 引用点：词中（20001.10 表1 表头型）与词尾
+        self.assertEqual(rendered("要素[:sup:a/]的编排"), "要素<super>a</super>的编排")
+        self.assertEqual(rendered("表述形式[:sup:a/]"), "表述形式<super>a</super>")
         self.assertEqual(
-            rendered("程序指示[:^b]\x00BR\x00追溯/证实方法[:^c]"),
+            rendered("程序指示[:sup:b/]\x00BR\x00追溯/证实方法[:sup:c/]"),
             "程序指示<super>b</super>\x00BR\x00追溯/证实方法<super>c</super>",
         )
-        # 注文段开始/结束（单段）
-        self.assertEqual(rendered("[^a]黑体表示“必备的”。[^a/]"), "<super>a</super>黑体表示“必备的”。")
-        # 多注文段同格（<br> 上层先转哨兵；此处直给哨兵形态）
+        # 注解区（单条）
         self.assertEqual(
-            rendered("[^a]黑体表示“必备的”。[^a/]\x00BR\x00[^b]“程序指示”中的指示型条款…。[^b/]"),
+            rendered("[:sup:a]黑体表示“必备的”。[:/sup]"), "<super>a</super>黑体表示“必备的”。"
+        )
+        # 注解区（多注连排）：相邻两对之间自动换行，canonical 不写 <br>
+        self.assertEqual(
+            rendered("[:sup:a]黑体表示“必备的”。[:/sup][:sup:b]“程序指示”中的指示型条款…。[:/sup]"),
             "<super>a</super>黑体表示“必备的”。\x00BR\x00<super>b</super>“程序指示”中的指示型条款…。",
         )
-        # 注文以引号开头（GB_T_20001.6-2017 表1 实测形态）不再依赖字形猜测
-        self.assertEqual(rendered("[^b]“程序指示”中的指示型条款。[^b/]"), "<super>b</super>“程序指示”中的指示型条款。")
-        # 结束标记无字面残留、结束/开始互不误食
-        self.assertNotIn("[^", rendered("[^c]追溯/证实方法中的…。[^c/]"))
+        # 注解区（旧 canonical 的 <br> 分格写法在调用点先转哨兵，仍按换行处理）
+        self.assertEqual(
+            rendered("[:sup:a]黑体表示“必备的”。[:/sup]\x00BR\x00[:sup:b]“程序指示”中的指示型条款…。[:/sup]"),
+            "<super>a</super>黑体表示“必备的”。\x00BR\x00<super>b</super>“程序指示”中的指示型条款…。",
+        )
+        # 注文以引号开头（GB_T_20001.6-2017 表1 实测形态）不依赖字形猜测
+        self.assertEqual(
+            rendered("[:sup:b]“程序指示”中的指示型条款。[:/sup]"), "<super>b</super>“程序指示”中的指示型条款。"
+        )
+        # 下标注解区；角标字符可为多字符（1)、†、a) 等）
+        self.assertEqual(rendered("[:sub:2]注解文字。[:/sub]"), "<sub>2</sub>注解文字。")
+        self.assertEqual(rendered("匝间绝缘[:sup:a)/]"), "匝间绝缘<super>a)</super>")
+        # 闭标记无字面残留
+        self.assertNotIn("[:", rendered("[:sup:c]追溯/证实方法中的…。[:/sup]"))
+        # 旧形式（按字母成对定义，迁移期兼容）仍按同一语义渲染
+        self.assertEqual(rendered("要素[:^a]的编排"), "要素<super>a</super>的编排")
+        self.assertEqual(rendered("[^a]黑体表示“必备的”。[^a/]"), "<super>a</super>黑体表示“必备的”。")
         # GFM 条文脚注引用（表内）仍为 “N)”（脚注规则不变）
         self.assertEqual(rendered("见注[^1]"), "见注<super>1)</super>")
 
@@ -192,13 +546,13 @@ class UntitledClauseFlushTests(unittest.TestCase):
         # 单位/大写/列项引用不误伤（原负例保留）
         self.assertEqual(rendered("规格mm"), "规格mm")
         self.assertEqual(rendered("输入功率W"), "输入功率W")
-        self.assertEqual(rendered("250V"), "250\xa0V")
-        self.assertEqual(rendered("≤55 dB(A)"), "≤55\xa0dB(A)")
+        self.assertEqual(rendered("250V"), f"250{_UNIT_GAP}V")
+        self.assertEqual(rendered("≤55 dB(A)"), f"≤55{_UNIT_GAP}dB(A)")
         self.assertEqual(rendered("A 相"), "A 相")
         self.assertEqual(rendered("B相"), "B相")
         self.assertEqual(rendered("编写a)中所述"), "编写a)中所述")
         # 词尾引用点经显式标记还原（20001.10/20001.5 表1 表头型）
-        self.assertEqual(rendered("要素所允许的表述形式[:^a]"), "要素所允许的表述形式<super>a</super>")
+        self.assertEqual(rendered("要素所允许的表述形式[:sup:a/]"), "要素所允许的表述形式<super>a</super>")
 
 
     def test_body_footnote_explanation_marker_superscript(self) -> None:
@@ -216,8 +570,10 @@ class UntitledClauseFlushTests(unittest.TestCase):
             rendered("a 填写行业标准代号。\nb行业标准发布部门按照有关规定填写。"),
             "<super>a</super> 填写行业标准代号。 <super>b</super>行业标准发布部门按照有关规定填写。",
         )
-        # 公式变量行（字母后破折号）不触发
-        self.assertEqual(rendered("n —转速，单位为转每分"), "n —转速，单位为转每分")
+        # 公式变量行（字母后破折号）：不触发脚注上标；破折号两侧补四分之一汉字
+        # 固定字隙（GBT-X06 / CSM-OCR-018 的变量解释形态，_markup 执行侧）。
+        gap = '<font size="2.625" color="white">中</font>'
+        self.assertEqual(rendered("n —转速，单位为转每分"), f"n{gap}—{gap}转速，单位为转每分")
         # 大写是内容不是标记；正文变量/列项引用不误伤
         self.assertEqual(rendered("A 相为红色。"), "A 相为红色。")
         self.assertEqual(rendered("驱动稳速转台至转速n，测量各相绕组"), "驱动稳速转台至转速n，测量各相绕组")
@@ -432,17 +788,18 @@ class Gb3100SuperscriptTableNoteTests(unittest.TestCase):
         self.assertEqual(_markup(_table_cell_superscripts("1030")), "10<super>30</super>")
         self.assertEqual(_markup(_table_cell_superscripts("10-2")), "10<super>−2</super>")
         self.assertEqual(_markup(_table_cell_superscripts("10²4")), "10<super>24</super>")
-        self.assertEqual(_markup(_table_cell_superscripts("1 Hz = 1 s−1")), "1\xa0Hz = 1\xa0s<super>−1</super>")
-        self.assertEqual(_markup(_table_cell_superscripts("1 Pa = 1 N/m2")), "1\xa0Pa = 1\xa0N/m<super>2</super>")
+        self.assertEqual(_markup(_table_cell_superscripts("1 Hz = 1 s−1")), f"1{_UNIT_GAP}Hz = 1{_UNIT_GAP}s<super>−1</super>")
+        self.assertEqual(_markup(_table_cell_superscripts("1 Pa = 1 N/m2")), f"1{_UNIT_GAP}Pa = 1{_UNIT_GAP}N/m<super>2</super>")
         self.assertEqual(_markup(_table_cell_superscripts("100")), "100")
         self.assertEqual(_markup(_table_cell_superscripts("centi")), "centi")
 
     def test_latex_emits_sentinels_and_markup_restores_tags(self) -> None:
         # Fix F：4.2 常量行 LaTeX → 可读文本 + 上标哨兵；数字逐字空格收紧；
-        # \Delta V 命令终止空格折叠（ΔV 同一量符号），J s 拉丁乘积空格保留。
+        # \Delta V 命令终止空格折叠（ΔV 同一量符号），单位内部拉丁乘积空格保留。
+        # GBT-B12：量值以幂次收尾时（10⁻³⁴ J）单位前同样是固定字隙。
         self.assertEqual(
             _markup("$6 . 6 2 6 0 7 0 1 5 \\times 1 0 ^ { - 3 4 } \\mathrm { J } \\mathrm { s } ;$"),
-            "6.62607015×10<super>−34</super> J s ;",
+            f"6.62607015×10<super>−34</super>{_UNIT_GAP}J s ;",
         )
         self.assertEqual(_markup("$\\cdot \\Delta V _ { \\mathrm { c s } }$"), "·ΔV<sub>cs</sub>")
         self.assertEqual(_markup("$K _ { \\mathrm { c d } }$"), "K<sub>cd</sub>")
@@ -659,17 +1016,19 @@ class ExampleBoxWidthTests(unittest.TestCase):
 
 
 class RenderPdfExampleBoxGeometryTests(unittest.TestCase):
-    """渲染几何回归（2026-09-07 穿框修复）：示例线框内表格不得穿出黑色框线。
+    """渲染几何回归（2026-09-07 穿框修复）：示例线框内表格不得穿出框线。
 
     夹具 tests/fixtures/render_example_box.ssir.json 由 GB_T_20001.5-2017
     附录 A 示例 1/2 区裁剪而来（三张表全部位于示例线框内，schema 校验通过）。
-    断言基于 PDF 内部矢量对象（GEN-090/091 同口径，非视觉比对）：
-    0.75pt 黑竖线 = 示例线框边（_example_box BOX），0.5pt 竖线 = 表格 GRID 竖线。
+    断言基于 PDF 内部矢量对象（GEN-090/091 同口径，非视觉比对）：示例框是页面上最外
+    的一对通高竖线（横跨版心 ≈441.5pt），框内表格竖线（≤ 框宽 − 2×10pt 示例框 padding）
+    必须落在框内；框线线宽必须是 _EXAMPLE_FRAME_WIDTH —— GB/T 1.1-2020 10.4.5
+    「区分示例的线框应为细实线」，与表网格线同宽（2026-09-11 用户裁定：默认细框线，
+    此前 0.75pt 比表线还粗，且与表线同宽后无法再按线宽区分框/表，故按“最外一对”识别）。
     """
 
-    def _geometry(self) -> tuple[int, int, list[str]]:
+    def _geometry(self) -> tuple[int, int, list[str], list[float]]:
         import pymupdf
-        from reportlab.pdfbase.ttfonts import TTFont
 
         font = Path(__file__).resolve().parents[1] / "config" / "rendering" / "fonts" / "NotoSerifCJKsc-Regular.ttf"
         if not font.is_file():
@@ -679,38 +1038,250 @@ class RenderPdfExampleBoxGeometryTests(unittest.TestCase):
         fixture = Path(__file__).resolve().parent / "fixtures" / "render_example_box.ssir.json"
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "render.pdf"
-            report = render_pdf_file(str(fixture), str(out))
+            render_pdf_file(str(fixture), str(out))
             doc = pymupdf.open(str(out))
             boxes = tables = 0
             violations: list[str] = []
+            frame_widths: list[float] = []
             for pno in range(doc.page_count):
-                verticals_75 = []
-                verticals_05 = []
+                verticals: list[tuple[float, float]] = []  # (x, 线宽)
                 for d in doc[pno].get_drawings():
                     if d["type"] != "s" or d.get("color") != (0.0, 0.0, 0.0):
                         continue
                     rb = d["rect"]
                     if rb.height > 40:  # 竖线
-                        if abs(d.get("width", 0) - 0.75) < 0.01:
-                            verticals_75.append(rb.x0)
-                        elif abs(d.get("width", 0) - 0.5) < 0.01:
-                            verticals_05.append(rb.x0)
-                if verticals_75:
-                    boxes += 1
-                    left, right = min(verticals_75), max(verticals_75)
-                    for x in verticals_05:
-                        tables += 1
-                        if x < left - 0.5 or x > right + 0.5:
-                            violations.append(
-                                f"page {pno + 1}: table vertical x={x:.1f} outside example box [{left:.1f},{right:.1f}]"
-                            )
-            return boxes, tables, violations
+                        verticals.append((rb.x0, float(d.get("width") or 0.0)))
+                if len(verticals) < 2:
+                    continue
+                xs = [item[0] for item in verticals]
+                left, right = min(xs), max(xs)
+                if right - left < _BODY_MEASURE - 20:
+                    continue  # 非示例框页（框横跨版心，框内表格 ≤ 框宽−20pt）
+                boxes += 1
+                for x, width in verticals:
+                    if abs(x - left) <= 0.5 or abs(x - right) <= 0.5:
+                        frame_widths.append(width)
+                        continue
+                    tables += 1
+                    if x < left - 0.5 or x > right + 0.5:
+                        violations.append(
+                            f"page {pno + 1}: table vertical x={x:.1f} outside example box [{left:.1f},{right:.1f}]"
+                        )
+            return boxes, tables, violations, frame_widths
 
-    def test_example_box_tables_stay_inside_black_frame(self) -> None:
-        boxes, tables, violations = self._geometry()
+    def test_example_box_tables_stay_inside_thin_frame(self) -> None:
+        boxes, tables, violations, frame_widths = self._geometry()
         self.assertGreater(boxes, 0, "fixture should contain example-box pages")
         self.assertGreater(tables, 0, "fixture should contain tables inside the box")
         self.assertEqual(violations, [])
+        self.assertTrue(frame_widths, "fixture should contain example-box frame edges")
+        self.assertEqual(frame_widths, [_EXAMPLE_FRAME_WIDTH] * len(frame_widths))
+
+
+class NoteExampleLabelBoldTests(unittest.TestCase):
+    """注/示例标记加黑（2026-09-11，GB/T 1.1-2020 10.4.4.1/10.4.5、附录 F 表 F.1
+    序号 42/44；GBT-B10/GBT-B11 执行侧）。
+
+    标记（"注："/"注1："/"示例："/"示例1："）用黑体字形，内容仍是宋体；标记的冒号
+    属于标记（"注1："整段加黑），"示例1示出了…"这类无冒号行内引用不是标记。集成
+    用例按 PDF 内部文本层字形（rawdict span 字体名）断言，不做视觉比对。
+    """
+
+    ROOT = Path(__file__).resolve().parents[1]
+
+    def setUp(self) -> None:
+        # _label_markup 的标记字体来自模块级 _LABEL_FONT（render_pdf 依 profile 设置）；
+        # 本类的前两个用例校验"未配置标记字体时退回传入字体"的路径，故先钉住它。
+        import leleby_ssir.pdf_renderer as renderer
+
+        self._renderer = renderer
+        self._saved_label_font = renderer._LABEL_FONT
+        renderer._LABEL_FONT = ""
+
+    def tearDown(self) -> None:
+        self._renderer._LABEL_FONT = self._saved_label_font
+
+    CANON = """---
+csm-version: 1.0
+document-type: standard
+document-identifier: T_LABEL_001-2026
+standard-number: T/LABEL 001-2026
+title: 注示例标记测试文档
+language: zh-CN
+---
+# 注示例标记测试文档
+## 1 范围
+本文件规定了注与示例标记的渲染测试。
+
+> 注：标记应为黑体，内容应为宋体。
+
+> 注1：多个注编号从 1 起。
+## 2 示例
+示例1：正文中的示例标记也应加黑。
+示例1示出了行内引用形态。
+注意：此处的“注意”不是注标记。
+"""
+
+    def test_label_span_split(self) -> None:
+        for text, expected in (
+            ("注：内容", "注："),
+            ("注1：内容", "注1："),
+            ("示例：内容", "示例："),
+            ("示例 1：内容", "示例 1："),
+            ("示例1:半角冒号", "示例1:"),
+            ("  注2：前导空白不进黑体区", "注2："),
+        ):
+            with self.subTest(text=text):
+                lead, label, rest = _note_example_label_span(text)
+                self.assertEqual(label, expected)
+                self.assertEqual(lead + label + rest, text)
+                self.assertEqual(_note_example_label(text), expected)
+        for text in ("注意：不是注标记", "示例1示出了行内引用", "注解：不是标记",
+                     "见表注：不在行首", "示例内容"):
+            with self.subTest(text=text):
+                self.assertEqual(_note_example_label(text), "", text)
+
+    def test_label_markup_only_wraps_the_label(self) -> None:
+        self.assertEqual(
+            _label_markup("注：标记应为黑体，内容应为宋体。", "WenQuanYiZenHei", 9.0),
+            '<font name="WenQuanYiZenHei">注：</font>标记应为黑体，内容应为宋体。',
+        )
+        self.assertEqual(
+            _label_markup("示例1：正文示例标记。", "WenQuanYiZenHei", 10.5),
+            '<font name="WenQuanYiZenHei">示例1：</font>正文示例标记。',
+        )
+        # 无标记 / 无黑体字形时是 _markup 的恒等路径（不产生字体标签）。
+        for text in ("注意：不是注标记。", "示例1示出了行内引用形态。"):
+            with self.subTest(text=text):
+                out = _label_markup(text, "WenQuanYiZenHei", 10.5)
+                self.assertNotIn("<font name=", out)
+                self.assertEqual(out, _markup(text, em_size=10.5))
+        self.assertEqual(_label_markup("注：内容", "", 9.0), _markup("注：内容", em_size=9.0))
+
+    def test_label_markup_covers_br_separated_lines(self) -> None:
+        # 单元格多行内容（canonical 写作 <br> 分隔）：行首不等于串首，<br> 之后的
+        # 注标记同样加黑（GB_T_1.1-2020 表 F.1 单元格实测）。
+        marked = _mark_note_example_labels("段(可包含要求型条款) <br> 注1：表中的注的内容 <br>注2：表中的注的内容")
+        self.assertEqual(marked.count("\x00HEI\x00"), 2)
+        out = _label_markup("段(可包含要求型条款) <br> 注1：表中的注的内容 <br>注2：表中的注的内容", "Hei", 9.0)
+        self.assertEqual(out.count('<font name="Hei">注1：</font>'), 1)
+        self.assertEqual(out.count('<font name="Hei">注2：</font>'), 1)
+        self.assertIn("段(可包含要求型条款)", out)
+
+    def test_render_bolds_label_and_keeps_body_font(self) -> None:
+        try:
+            import pymupdf
+        except ImportError:  # pragma: no cover - 环境缺 pymupdf 时跳过
+            self.skipTest("pymupdf unavailable")
+        font = self.ROOT / "config" / "rendering" / "fonts" / "NotoSerifCJKsc-Regular.ttf"
+        if not font.is_file():
+            self.skipTest("body font asset missing")
+        from leleby_ssir.builder import SSIRBuilder
+        from leleby_ssir.parser import CSMParser
+        from leleby_ssir.pdf_renderer import render_pdf_file
+        import json
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "t.canonical.md"
+            source.write_text(self.CANON, encoding="utf-8")
+            ssir = Path(directory) / "t.ssir.json"
+            ssir.write_text(json.dumps(SSIRBuilder().build(CSMParser().read(str(source))), ensure_ascii=False), encoding="utf-8")
+            target = Path(directory) / "t.pdf"
+            render_pdf_file(str(ssir), str(target), toc_depth=None)
+            document = pymupdf.open(str(target))
+            spans: list[tuple[str, str]] = []
+            for page in document:
+                for block in page.get_text("dict")["blocks"]:
+                    for line in block.get("lines", []):
+                        for span in line["spans"]:
+                            spans.append((span["text"].strip(), span["font"]))
+            document.close()
+        labelled = [span for span in spans if span[0] in {"注：", "注1：", "示例1："}]
+        self.assertTrue(labelled, spans)
+        # 标记字体取 profile 的 fonts.label（黑体粗）；未配置时才退回 primary 黑体。
+        profile = yaml.safe_load((self.ROOT / "config" / "rendering" / "GB_T_1.1-2020.yaml").read_text(encoding="utf-8"))
+        label_font_name = str((profile.get("fonts") or {}).get("label") or "")
+        for text, name in labelled:
+            if label_font_name:
+                self.assertEqual(name, label_font_name, f"{text!r} 未用标记字体: {name}")
+            else:  # pragma: no cover - profile 未配置标记字体时的旧行为
+                self.assertTrue(name.startswith("WenQuanYiZenHei"), f"{text!r} 未加黑: {name}")
+        content = [span for span in spans if span[0].startswith(("标记应为黑体", "多个注编号", "正文中的示例标记"))]
+        self.assertTrue(content, spans)
+        for text, name in content:
+            self.assertTrue(name.startswith("NotoSerifCJKsc"), f"{text!r} 内容字体被改动: {name}")
+        # 反例：无冒号行内引用与"注意"都不是标记，保持内容字体、不产生黑体 run。
+        for text, name in spans:
+            if text.startswith("示例1示出了") or text.startswith("注意："):
+                self.assertTrue(name.startswith("NotoSerifCJKsc"), f"{text!r} 被误加黑: {name}")
+
+    def test_label_is_visibly_heavier_than_content(self) -> None:
+        """标记必须**看得出**比正文重（用户报告「注：仍没有加粗」的真正判据）。
+
+        细黑（primary 文泉驿正黑）9pt 的笔画密度与宋体正文相当（实测 0.209 vs
+        0.232），换字体不换字重看不出加黑；本用例用同一字形比对——注内容
+        「注：注注注注」里两侧都是「注」，标记侧墨度必须显著高于内容侧。
+        """
+        try:
+            import pymupdf
+        except ImportError:  # pragma: no cover
+            self.skipTest("pymupdf unavailable")
+        font = self.ROOT / "config" / "rendering" / "fonts" / "NotoSerifCJKsc-Regular.ttf"
+        label_font = self.ROOT / "config" / "rendering" / "fonts" / "NotoSansCJKsc-Bold.ttf"
+        if not font.is_file() or not label_font.is_file():
+            self.skipTest("font assets missing")
+        from leleby_ssir.builder import SSIRBuilder
+        from leleby_ssir.parser import CSMParser
+        from leleby_ssir.pdf_renderer import render_pdf_file
+        import json
+
+        canon = (
+            "---\n"
+            "csm-version: 1.0\n"
+            "document-type: standard\n"
+            "document-identifier: T_LABEL_002-2026\n"
+            "standard-number: T/LABEL 002-2026\n"
+            "title: 标记字重测试\n"
+            "language: zh-CN\n"
+            "---\n\n"
+            "# 标记字重测试\n\n"
+            "## 1 范围\n\n"
+            "> 注：注注注注注注注注\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "t.canonical.md"
+            source.write_text(canon, encoding="utf-8")
+            ssir = Path(directory) / "t.ssir.json"
+            ssir.write_text(json.dumps(SSIRBuilder().build(CSMParser().read(str(source))), ensure_ascii=False), encoding="utf-8")
+            target = Path(directory) / "t.pdf"
+            render_pdf_file(str(ssir), str(target), toc_depth=None)
+            document = pymupdf.open(str(target))
+            glyphs: list[tuple[str, str, tuple, int]] = []
+            for page in document:
+                for block in page.get_text("rawdict")["blocks"]:
+                    for line in block.get("lines", []):
+                        for span in line["spans"]:
+                            for char in span["chars"]:
+                                glyphs.append((char["c"], span["font"], tuple(char["bbox"]), page.number))
+
+            def ink(bbox: tuple, page) -> float:
+                rectangle = pymupdf.Rect(bbox[:4])
+                pixmap = page.get_pixmap(clip=rectangle, dpi=900, colorspace=pymupdf.csGRAY)
+                samples = pixmap.samples
+                return sum(1 for value in samples if value < 128) / len(samples)
+
+            notes = [glyph for glyph in glyphs if glyph[0] == "注"]
+            self.assertGreaterEqual(len(notes), 9, [glyph[0] for glyph in glyphs][:80])
+            pages = {glyph[3] for glyph in notes}
+            self.assertEqual(len(pages), 1, pages)
+            page = document[pages.pop()]
+            label_glyph = notes[0]
+            content_glyphs = notes[1:9]
+            self.assertIn("Noto", label_glyph[1])
+            label_ink = ink(label_glyph[2], page)
+            content_ink = sum(ink(glyph[2], page) for glyph in content_glyphs) / len(content_glyphs)
+            document.close()
+            self.assertGreater(label_ink, content_ink * 1.3, (label_ink, content_ink))
 
 
 if __name__ == "__main__":

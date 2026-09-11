@@ -245,11 +245,13 @@ class _RenderState:
         self.lines.append("")
 
     def _render_formula(self, formula: dict[str, Any]) -> None:
-        # 规则对应: GBT-X06（数学公式另行编排、编号圆括号阿拉伯数字）。
+        # 规则对应: GBT-X06（数学公式另行编排、编号圆括号阿拉伯数字右端对齐）。
+        # 编号以 CSM 语法的独立行「式(N)」写回（docs/07 §6.7；编号本身是纯标签，
+        # 渲染端按 GB/T 1.1-2020 10.4.3 补圆括号并右端对齐连接）。
         formula_id = self._next_id("fm")
         self.lines.extend([f'<!-- ssir:formula id="{formula_id}" -->', "$$", formula["rawText"], "$$"])
-        if formula.get("number"):
-            self.lines.append(formula["number"])
+        if str(formula.get("number") or "").strip():
+            self.lines.append(f"式({formula['number']})")
         self.lines.append("")
 
     def _render_unknown(self, unknown: dict[str, Any]) -> None:

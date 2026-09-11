@@ -7,12 +7,13 @@
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 from docx import Document
 from docx.oxml.ns import qn
 
 from leleby_ssir.docx_importer import docx_metadata, docx_to_csm_markdown
-from leleby_ssir.docx_renderer import _DocxBuilder, render_docx_file, render_ssir_docx
+from leleby_ssir.docx_renderer import HAN_PT, _DocxBuilder, render_docx_file, render_ssir_docx
 from leleby_ssir.service import normalize_csm, parse_csm, round_trip_csm
 
 
@@ -131,6 +132,37 @@ class DocxRenderStructureTests(unittest.TestCase):
         # 注释与正文
         self.assertTrue(any("注：表中数值为示例。" in text for text in paragraphs))
         self.assertTrue(any("本文件规定了测试要求" in text for text in paragraphs))
+
+    def test_list_marker_uses_tab_stop_not_space(self) -> None:
+        # GBT-B04：列项 marker 与文字之间用制表符 + 显式制表位（文字恰在回行位置），
+        # 不用空格——Word 两端对齐会拉伸空格，marker 后空隙忽宽忽窄（PDF 侧同因，
+        # 见 pdf_renderer._list_marker_gap）。汉字位按 GB/T 1.1-2020 10.2.2：
+        # 第一层次 marker 空两个汉字起排、文字列第四个（回行同）汉字位；第二层次
+        # marker 空四个汉字、文字列第六个汉字位（旧实现两级共用 0.85cm）。
+        document = _mini_document()
+        document["structuralRoot"]["children"].append({
+            "id": "n-list", "nodeType": "section", "level": 1, "title": "列项", "number": "9", "sortOrder": 9,
+            "contentElements": [
+                {"id": "c-list", "presentationType": "list", "sortOrder": 0,
+                 "listItems": [
+                     {"id": "li-a", "marker": "a）", "text": "海拔不超过1000m；", "sortOrder": 0},
+                     {"id": "li-b", "marker": "b）", "text": "当运行地点的海拔超过1000m或运行地点的环境空气温度随海拔升高而下降时，电动机温升限值的修正按GB 755的规定。", "sortOrder": 1},
+                     {"id": "li-1", "marker": "1）", "text": "左向(含左上、左下)，图形符号应位于右侧。", "sortOrder": 2},
+                 ]},
+            ],
+        })
+        self.render(document)
+        doc = self.read()
+        paragraphs = [p for p in doc.paragraphs if p.style.name == "SSIR List Item"]
+        self.assertEqual(len(paragraphs), 3)
+        self.assertEqual(paragraphs[0].text, "a）\t海拔不超过1000m；")
+        self.assertIn("<w:tab/>", paragraphs[0]._p.xml)
+        self.assertIn("<w:tabs>", paragraphs[0]._p.xml)
+        self.assertAlmostEqual(paragraphs[0].paragraph_format.left_indent.pt, 4 * HAN_PT, places=1)
+        self.assertAlmostEqual(paragraphs[0].paragraph_format.first_line_indent.pt, -2 * HAN_PT, places=1)
+        # 第二层次（数字编号 1)）：文字列 6 汉字、marker 起排 4 汉字。
+        self.assertAlmostEqual(paragraphs[2].paragraph_format.left_indent.pt, 6 * HAN_PT, places=1)
+        self.assertAlmostEqual(paragraphs[2].paragraph_format.first_line_indent.pt, -2 * HAN_PT, places=1)
 
     def test_table_merges_and_superscripts(self) -> None:
         self.render(_mini_document())
@@ -283,6 +315,146 @@ class DocxRenderFileApiTests(unittest.TestCase):
             source = Path(temp) / "missing.ssir.json"
             with self.assertRaises(OSError):
                 render_docx_file(str(source), str(Path(temp) / "x.docx"))
+
+
+class DocxFormulaNumberLineTests(unittest.TestCase):
+    """GBT-X06（GB/T 1.1-2020 9.9.2、10.4.3）：公式编号右端对齐、与公式以“……”连接。
+
+    Word 侧用制表位实现：居中制表位（按「公式 + 两个汉字间隔 + 引导线」整段居中
+    补偿）+ 右端制表位；省略号个数按版心宽度计算（与 PDF 同规）。docx 回灌
+    （docx_importer）时制表符/引导线作为版式噪声剥离，编号还原为「式(N)」行。
+    """
+
+    def _render(self, directory: str) -> Path:
+        from PIL import Image as PILImage
+
+        root = Path(directory)
+        asset_dir = root / "assets" / "images"
+        asset_dir.mkdir(parents=True, exist_ok=True)
+        PILImage.new("RGB", (443, 74), (255, 255, 255)).save(asset_dir / "eq1.jpg")
+        ssir = _mini_document()
+        ssir["formulas"] = [
+            {"id": "fm-1", "rawText": "\\Delta t = x", "latex": "\\Delta t = x",
+             "number": "1", "assetRef": "assets/images/eq1.jpg"},
+        ]
+        ssir["structuralRoot"]["children"][1]["contentElements"].append(
+            {"id": "c-f1", "presentationType": "formula", "formulaRef": "fm-1", "sortOrder": 1}
+        )
+        ssir_path = root / "doc.ssir.json"
+        ssir_path.write_text("{}", encoding="utf-8")
+        output = root / "doc.docx"
+        # 结构最小的合成文档不满足完整 schema（validate 路径由真实 canonical 冒烟覆盖）。
+        warnings = _DocxBuilder(ssir, input_file=str(ssir_path)).render(str(output))
+        self.assertEqual(warnings, [])
+        return output
+
+    def test_number_uses_center_and_right_tab_stops_with_leader_dots(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            output = self._render(temp)
+            document = Document(str(output))
+            paragraph = next(
+                p for p in document.paragraphs if "…" in p.text and p.text.rstrip().endswith("(1)")
+            )
+            stops = list(paragraph.paragraph_format.tab_stops)
+            self.assertEqual(len(stops), 2)
+            self.assertEqual(str(stops[0].alignment), "CENTER (1)")
+            self.assertEqual(str(stops[1].alignment), "RIGHT (2)")
+            self.assertAlmostEqual(stops[1].position.cm, 16.0, places=2)
+            # 公式图被收到「留得下引导线」的宽度（只缩小不放大）并居中于制表位。
+            self.assertIn("<w:drawing>", paragraph._p.xml)
+            self.assertGreaterEqual(paragraph.text.count("…"), 4)
+            self.assertLessEqual(len(paragraph.text), 30)
+
+    def test_import_strips_leader_and_restores_number_line(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            output = self._render(temp)
+            _metadata, markdown, warnings = docx_to_csm_markdown(output, assets_root=Path(temp))
+            self.assertEqual(warnings, [])
+            self.assertIn("式(1)", markdown)
+            self.assertNotIn("…", markdown)
+
+
+class DocxNoteExampleLabelFontTests(unittest.TestCase):
+    """注/示例标记黑体（2026-09-11，GB/T 1.1-2020 10.4.4.1/10.4.5、附录 F 表 F.1
+    序号 42/44；GBT-B10/GBT-B11 执行侧）。
+
+    与 PDF 侧 ``pdf_renderer._label_markup`` 同一规则：标记（"注："/"注1："/"示例1："）
+    的 run 用黑体、内容 run 保持宋体；"注意：…"与无冒号的"示例1示出了…"不是标记。
+    """
+
+    @staticmethod
+    def _document() -> dict:
+        document = _mini_document()
+        document["structuralRoot"]["children"].append({
+            "id": "n-labels", "nodeType": "section", "level": 1, "title": "标记", "number": "3", "sortOrder": 4,
+            "contentElements": [
+                {"id": "c-note1", "presentationType": "note", "textContent": "注1：注标记应为黑体。", "sortOrder": 0},
+                {"id": "c-ex", "presentationType": "example", "textContent": "示例1：正文示例标记也应加黑。", "sortOrder": 1},
+                {"id": "c-neg1", "presentationType": "paragraph", "textContent": "注意：此处的“注意”不是注标记。", "sortOrder": 2},
+                {"id": "c-neg2", "presentationType": "paragraph", "textContent": "示例1示出了行内引用形态。", "sortOrder": 3},
+                {"id": "c-table", "presentationType": "table", "tableRef": "t-note", "sortOrder": 4},
+            ],
+        })
+        document["tables"].append({
+            "id": "t-note", "number": "9", "caption": "表注标记", "unit": "",
+            "rows": [
+                {"rowIndex": 0, "isHeader": True, "cells": [
+                    {"colIndex": 0, "text": "项目"},
+                    {"colIndex": 1, "text": "取值"},
+                ]},
+                {"rowIndex": 1, "isHeader": False, "cells": [
+                    {"colIndex": 0, "text": "a"},
+                    {"colIndex": 1, "text": "1.0"},
+                ]},
+                {"rowIndex": 2, "isHeader": False, "cells": [
+                    {"colIndex": 0, "text": "注2：表内注标记应为黑体。", "colspan": 2},
+                ]},
+            ],
+        })
+        return document
+
+    @staticmethod
+    def _run_fonts(run: Any) -> tuple[str | None, bool | None]:
+        rpr = run._element.rPr
+        east_asian = None
+        if rpr is not None:
+            fonts = rpr.find(qn("w:rFonts"))
+            if fonts is not None:
+                east_asian = fonts.get(qn("w:eastAsia"))
+        return east_asian, run.font.bold
+
+    def test_note_and_example_labels_use_hei_and_content_stays_song(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "labels.docx"
+            warnings = _DocxBuilder(self._document()).render(str(output))
+            self.assertEqual(warnings, [])
+            document = Document(str(output))
+            paragraphs = {p.text.strip(): p for p in document.paragraphs}
+            for text, label in (("注1：注标记应为黑体。", "注1："), ("示例1：正文示例标记也应加黑。", "示例1：")):
+                with self.subTest(text=text):
+                    paragraph = paragraphs[text]
+                    self.assertEqual(paragraph.runs[0].text, label)
+                    self.assertEqual(self._run_fonts(paragraph.runs[0]), ("黑体", True))
+                    self.assertEqual(self._run_fonts(paragraph.runs[1])[0], "宋体")
+                    self.assertFalse(paragraph.runs[1].font.bold)
+            # 反例：无冒号引用与"注意"都不加黑。
+            for text in ("注意：此处的“注意”不是注标记。", "示例1示出了行内引用形态。"):
+                with self.subTest(text=text):
+                    paragraph = paragraphs[text]
+                    for run in paragraph.runs:
+                        self.assertNotEqual(self._run_fonts(run), ("黑体", True))
+
+    def test_table_note_cell_label_uses_hei(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "labels.docx"
+            _DocxBuilder(self._document()).render(str(output))
+            document = Document(str(output))
+            table = next(t for t in document.tables if any("注2：" in c.text for row in t.rows for c in row.cells))
+            cell = next(c for row in table.rows for c in row.cells if "注2：" in c.text)
+            paragraph = next(p for p in cell.paragraphs if p.text.strip().startswith("注2："))
+            self.assertEqual(paragraph.runs[0].text, "注2：")
+            self.assertEqual(self._run_fonts(paragraph.runs[0]), ("黑体", True))
+            self.assertEqual(self._run_fonts(paragraph.runs[1])[0], "宋体")
 
 
 if __name__ == "__main__":

@@ -640,6 +640,55 @@ def _check_numeric_requirements_have_units(document: dict[str, Any], report: Com
         )
 
 
+def _check_formula_numbering(document: dict[str, Any], report: ComplianceReport) -> None:
+    """GBT-X06: 公式编号的全文档管理（GB/T 1.1-2020 9.9.2、9.6.3）。
+
+    - 编号只在需要引用或提示时要求（9.9.2），但一旦给出就应唯一、连续：正文自
+      引言起 1..n，附录内重新从 1 起并加附录字母前缀（9.6.3）；
+    - 正文以「式(N)」引用公式时，该编号必须存在（引用不落空）。
+    """
+    numbers = [str(formula.get("number") or "").strip() for formula in document.get("formulas", [])]
+    labelled = [number for number in numbers if number]
+    duplicates = sorted({number for number in labelled if labelled.count(number) > 1})
+    if duplicates:
+        report.findings.append(
+            ComplianceFinding(
+                "GBT-X06", "GB_T_1.1-2020", "should", "formula-numbers-unique",
+                f"公式编号应唯一，发现重复编号：{', '.join(duplicates)}",
+            )
+        )
+    groups: dict[str, list[int]] = {}
+    for label in labelled:
+        match = re.fullmatch(r"(?:([A-Z])\.)?(\d+)", label)
+        if match:
+            groups.setdefault(match.group(1) or "", []).append(int(match.group(2)))
+    for prefix, sequence in groups.items():
+        if sorted(sequence) != list(range(1, len(sequence) + 1)):
+            where = "正文" if not prefix else f"附录 {prefix} "
+            report.findings.append(
+                ComplianceFinding(
+                    "GBT-X06", "GB_T_1.1-2020", "should", "formula-numbers-continuous",
+                    f"{where}公式编号应自 1 起连续，实际为 {sorted(sequence)}",
+                )
+            )
+    referenced: set[str] = set()
+    for node in _walk_nodes(document.get("structuralRoot", {}).get("children", [])):
+        for content in node.get("contentElements", []):
+            for match in re.finditer(
+                r"式\s*[（(]\s*(\d+(?:\.\d+)*|[A-Z]\.\d+)\s*[）)]",
+                str(content.get("textContent") or ""),
+            ):
+                referenced.add(match.group(1))
+    missing = sorted(reference for reference in referenced if reference not in set(labelled))
+    if missing:
+        report.findings.append(
+            ComplianceFinding(
+                "GBT-X06", "GB_T_1.1-2020", "should", "formula-references-resolve",
+                f"正文引用了不存在的公式编号：{'、'.join(f'式({m})' for m in missing)}",
+            )
+        )
+
+
 def _check_standard_name(metadata: dict[str, Any], report: ComplianceReport) -> None:
     """GBT-N01/N02: 标准名称与功能类型一致性 + 标准化主对象识别。
 
@@ -714,6 +763,7 @@ def verify_compliance(document: dict[str, Any], metadata: dict[str, Any] | None 
     _check_footnote_numbering(document, report)
     registries = {"tables": document.get("tables", []), "figures": document.get("figures", [])}
     _check_table_figure_numbers(document, registries, report)
+    _check_formula_numbering(document, report)
     _check_standard_name(flat_metadata, report)
 
     # Layer 3: GB/T 20001.10 product-standard requirements.

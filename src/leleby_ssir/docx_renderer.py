@@ -13,7 +13,9 @@
 
 规则对应: GEN-070（SSIR→渲染）、GBT-B02/B03（章条标题黑体/正文宋体）、
 GBT-B07（表编号表题居中、表头框线）、GBT-X02（转页重复表头、合并单元格）、
-GBT-X01/B06（图与图题）、GBT-X06（公式另行编排）、GBT-B11（示例框）。
+GBT-X01/B06（图与图题）、GBT-X06（公式另行编排）、GBT-B11（示例框）、
+GBT-B10/B11（注/示例标记黑体、内容宋体——`_add_label_markup`，与 PDF 侧
+`_label_markup` 同规则）。
 """
 
 from __future__ import annotations
@@ -32,7 +34,9 @@ from .pdf_renderer import (
     _heading_text,
     _is_toc_node,
     _latex_to_text,
+    _list_is_sub_level,
     _list_marker,
+    _note_example_label_span,
     _order,
     _protect_literal_stars,
     _resolve_asset,
@@ -40,8 +44,10 @@ from .pdf_renderer import (
     _split_table_note_parts,
     _table_cell_superscripts,
     _toc_indent_level,
+    _toc_caption_rows,
     _toc_label,
     _toc_nodes,
+    _term_entry_text,
 )
 from .validation import validate_ssir
 
@@ -63,8 +69,15 @@ LATIN = "Times New Roman"
 STYLE_TABLE_CAPTION = "SSIR Table Caption"    # 表N 题名（黑体居中）
 STYLE_FIGURE_CAPTION = "SSIR Figure Caption"   # 图N 题名（黑体居中）
 STYLE_UNIT = "SSIR Unit"                       # 单位为毫米（小五右对齐贴表上）
-STYLE_NOTE = "SSIR Note"                       # 注：…（小五宋体）
+STYLE_NOTE = "SSIR Note"                       # 注：…（标记黑体、内容小五宋体）
 STYLE_LIST = "SSIR List Item"                  # 列项（原样 marker + 悬挂缩进）
+# 列项版式（GB/T 1.1-2020 10.2.2，与 pdf_renderer 的 list/list-sub 同一汉字位）：
+# 第一层次 marker 空两个汉字起排、文字与回行同置版心左边第五个汉字位（缩进 4 汉字）；
+# 第二层次 marker 空四个汉字、文字置第七个汉字位（缩进 6 汉字）。列项细分不超过
+# 两个层次，故只需两级。1 汉字 = 正文字号（10.5pt）——Word 里 210 twips。
+_LIST_TEXT_HAN = {False: 4, True: 6}           # 层次 → 文字列（汉字位）
+_LIST_MARKER_HAN = 2                           # marker 距上一层次文字列 = 2 汉字
+HAN_PT = 10.5                                  # 正文字号 = 一汉字宽（pt）
 STYLE_CODE = "SSIR Code"                       # 未知内容（等宽灰底）
 STYLE_FORMULA = "SSIR Formula"                 # 公式（居中）
 STYLE_TOC = "SSIR TOC"                         # 目次条目
@@ -72,6 +85,10 @@ STYLE_EXAMPLE = "SSIR Example"                 # 示例框内容（浅灰底）
 STYLE_EXAMPLE_TITLE = "SSIR Example Title"     # 「示例N：」黑体居中
 STYLE_TABLE_TEXT = "SSIR Table Text"           # 表内文字（小五）
 STYLE_TABLE_NOTE = "SSIR Table Note"           # 表注行（居左首行空两格）
+# 术语条目（GB/T 1.1-2020 8.7.3.1、10.3.5、附录F 表F.1 序号22/23）：条目编号单独
+# 占一行顶格、术语与英文对应词另起一行空两个汉字，均五号黑体、上下无空行。
+STYLE_TERM_NUMBER = "SSIR Term Number"         # 条目编号行（黑体五号顶格）
+STYLE_TERM_TITLE = "SSIR Term Title"           # 术语 + 英文对应词行（黑体五号，空两个汉字）
 
 _SUP_OPEN, _SUP_CLOSE = "\x00SUP\x00", "\x00/SUP\x00"
 _SUB_OPEN, _SUB_CLOSE = "\x00SUB\x00", "\x00/SUB\x00"
@@ -83,12 +100,21 @@ _CLAUSE_SPACE_RE = re.compile(
     r"(?m)^((?:\d+\.){1,3}\d+|[A-Z]\.\d+(?:\.\d+)*)[ \u3000]*([\u4e00-\u9fff（(])"
 )
 
+# 版心宽（cm）：A4 21cm − 左右页边距各 2.5cm（见 _setup_page）。
+CONTENT_WIDTH_CM = 16.0
+# 公式变量解释项头部（行内 LaTeX 或 1—4 位半角/希腊字母，可带下标）+ 破折号：
+# 「变量——解释」固定形态（GBT-X06；CSM-OCR-018），渲染时补四分之一汉字字隙。
+FORMULA_ITEM_HEAD_RE = re.compile(
+    r"(?m)^(\$[^$\n]+\$|[\u0370-\u03ffA-Za-z][\u0370-\u03ffA-Za-z0-9]{0,3}"
+    r"(?:[ \u3000]*[_^][ \u3000]*\{[^{}\n]{1,12}\})?)[ \u3000]*(—+)(?=[\u4e00-\u9fff])"
+)
+
 
 def _docx_ns() -> dict[str, Any]:
     try:
         from docx import Document  # noqa: F401
         from docx.enum.style import WD_STYLE_TYPE
-        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
         from docx.oxml import OxmlElement
         from docx.oxml.ns import qn
         from docx.shared import Cm, Pt, RGBColor
@@ -98,6 +124,7 @@ def _docx_ns() -> dict[str, Any]:
         "Document": Document,
         "WD_STYLE_TYPE": WD_STYLE_TYPE,
         "ALIGN": WD_ALIGN_PARAGRAPH,
+        "TAB_ALIGN": WD_TAB_ALIGNMENT,
         "OxmlElement": OxmlElement,
         "qn": qn,
         "Cm": Cm,
@@ -160,6 +187,39 @@ def _run_fonts(paragraph: Any, text: str, docx: dict[str, Any], *, ea: str = EA_
         run.font.subscript = True
     if size_pt is not None:
         run.font.size = docx["Pt"](size_pt)
+
+
+def _list_marker_run(paragraph: Any, marker: str, docx: dict[str, Any], tab_pt: float) -> None:
+    """写列项 marker，并用制表符把文字定位到回行位置（GB/T 1.1 10.2.2 / GBT-B04）。
+
+    ``tab_pt`` = 文字列相对版心左的 pt（第一层次 4 汉字、第二层次 6 汉字），与段落
+    ``left_indent`` 同值，故首行文字与回行同位。用制表符 + 显式制表位而不是空格：
+    空格会被两端对齐拉伸（Word 与 PDF 侧 reportlab 同理，同一分组里只要有一个可按
+    字间距调整的空格，整行空格一起变宽），marker 之后的空隙因此忽宽忽窄；制表符跳到
+    固定位置，与对齐方式无关（PDF 侧对应 pdf_renderer._list_marker_gap 的固定字隙）。
+    """
+    tab_stops = paragraph.paragraph_format.tab_stops
+    if not len(tab_stops):
+        tab_stops.add_tab_stop(docx["Pt"](tab_pt))
+    if marker in ("●", "○", "•"):
+        # 圆点列项符号缩小呈现（0.62×，与 PDF 渲染同裁定 2026-09-07）
+        _run_fonts(paragraph, marker, docx, ea=EA_SONG, size_pt=7)
+    else:
+        _run_fonts(paragraph, marker, docx, ea=EA_SONG)
+    paragraph.add_run().add_tab()
+
+
+def _list_indent(paragraph: Any, marker: str, docx: dict[str, Any], *, sub_level: bool) -> None:
+    """列项悬挂缩进 + marker 制表位（GB/T 1.1-2020 10.2.2）。
+
+    第一层次：marker 空 2 汉字起排、文字列（含回行）4 汉字；第二层次：marker 空 4 汉字
+    起排、文字列 6 汉字。缩进随层次变化——此前两级共用固定 0.85cm，第二层次因此既没
+    有 4 汉字 marker 位、文字也停在第 2.3 个汉字位（2026-09-11 用户报列项版式问题）。
+    """
+    text_pt = _LIST_TEXT_HAN[bool(sub_level)] * HAN_PT
+    paragraph.paragraph_format.left_indent = docx["Pt"](text_pt)
+    paragraph.paragraph_format.first_line_indent = docx["Pt"](-_LIST_MARKER_HAN * HAN_PT)
+    _list_marker_run(paragraph, marker, docx, text_pt)
 
 
 def _style_shading(style: Any, docx: dict[str, Any], fill: str) -> None:
@@ -236,6 +296,39 @@ def _picture_size(path: Path) -> tuple[float, float]:
     return width_cm * scale, height_cm * scale
 
 
+def _cm_from_px(path: Path) -> tuple[float, float]:
+    """图片固有尺寸（cm，96dpi 换算，与 _picture_size 同规但不设上限）。"""
+    try:
+        from PIL import Image
+
+        with Image.open(path) as image:
+            width_px, height_px = image.size
+    except Exception:
+        return 8.0, 6.0
+    if width_px <= 0 or height_px <= 0:
+        return 8.0, 6.0
+    return width_px * 2.54 / 96.0, height_px * 2.54 / 96.0
+
+
+def _em_text_width(text: str, size_pt: float) -> float:
+    """docx 侧文本宽度估算（cm）：汉字/全角（含「…」「——」）1em，半角 0.5em。
+
+    只用于公式引导线的取整估算——Word 自身的断行/定位不在这里复刻。
+    """
+    em_cm = size_pt * 2.54 / 72.0
+    return sum(0.5 if ord(char) < 0x2E80 else 1.0 for char in str(text)) * em_cm
+
+
+def _formula_item_spacing(text: str) -> str:
+    """公式变量解释项：变量与破折号之间、破折号与解释之间各空四分之一汉字。
+
+    规则对应: GBT-X06（GB/T 1.1-2020 9.9.3、10.4.3；CSM-OCR-018 归一后的固定
+    形态「变量——解释」）。与 PDF 渲染同规：PDF 用固定字隙哨兵（不被两端对齐
+    拉伸），Word 侧用半角空格——Times New Roman 的空格推进宽度正是 0.25em。
+    """
+    return FORMULA_ITEM_HEAD_RE.sub(lambda m: f"{m.group(1)} {m.group(2)} ", str(text))
+
+
 def _add_picture(paragraph: Any, image_path: Path, docx: dict[str, Any],
                  max_width_cm: float | None = None) -> None:
     width_cm, height_cm = _picture_size(image_path)
@@ -300,6 +393,26 @@ def _add_markup(paragraph: Any, text: str, docx: dict[str, Any], *,
         position = match.end()
     if position < len(text):
         _run_fonts(paragraph, text[position:].replace(_BR_SENTINEL, ""), docx, ea=ea, size_pt=size_pt)
+
+
+def _add_label_markup(paragraph: Any, text: str, docx: dict[str, Any], *,
+                      asset_dir: Path | None = None, ea: str = EA_SONG,
+                      size_pt: float | None = None) -> None:
+    """行首注/示例标记黑体、其余照常（GB/T 1.1-2020 10.4.4.1、10.4.5、附录 F 表 F.1
+    序号 42/44；GBT-B10/GBT-B11 执行侧，2026-09-11）。
+
+    与 PDF 侧 ``pdf_renderer._label_markup`` 同一规则：标记（"注："/"注1："/"示例："
+    /"示例1："）用黑体，内容用宋体；"示例1示出了…"这类无冒号的行内引用不是标记。
+    """
+    lead, label, rest = _note_example_label_span(text)
+    if not label:
+        _add_markup(paragraph, text, docx, asset_dir=asset_dir, ea=ea, size_pt=size_pt)
+        return
+    # 标记前导空白不进黑体区（"…<br> 注1：…" 的空格是 OCR 噪声，非标记的一部分）。
+    if lead:
+        _run_fonts(paragraph, lead, docx, ea=ea, size_pt=size_pt)
+    _run_fonts(paragraph, label, docx, ea=EA_HEI, bold=True, size_pt=size_pt)
+    _add_markup(paragraph, rest, docx, asset_dir=asset_dir, ea=ea, size_pt=size_pt)
 
 
 def _plain(text: str) -> str:
@@ -445,6 +558,10 @@ class _DocxBuilder:
         cell = custom(STYLE_TABLE_TEXT, size=9.0, align=align.CENTER, space_after=0)
         cell.paragraph_format.alignment = None  # 单元格内由段落自行控制
         table_note = custom(STYLE_TABLE_NOTE, size=9.0, align=align.LEFT, first_indent_pt=18.0, space_after=0)
+        # 术语条目两行（10.3.5）：编号行顶格、术语行空两个汉字，均五号黑体、上下无空行。
+        custom(STYLE_TERM_NUMBER, ea=EA_HEI, align=align.LEFT, space_after=0)
+        custom(STYLE_TERM_TITLE, ea=EA_HEI, align=align.LEFT,
+               indent_cm=2 * HAN_PT / 72 * 2.54, space_after=0)
         # 2026-09-07 用户裁定：表内文字行距适度放宽（PDF leading 15pt/9pt 字 ≈ 1.67×，
         # docx 用 1.5 倍行距近似，双胞胎一致观感）。
         cell.paragraph_format.line_spacing = 1.5
@@ -560,6 +677,15 @@ class _DocxBuilder:
             paragraph = self.doc.add_paragraph(style=STYLE_TOC)
             paragraph.paragraph_format.left_indent = docx["Cm"](0.55 * min(level, 6))
             _run_fonts(paragraph, label, docx, ea=EA_SONG)
+        # 图/表行（GB/T 1.1-2020 8.2.2 i)/j)）：接在条/附录/参考文献/索引之后，顶格，
+        # 与前面内容之间空一行（10.3.2）。
+        for group in _toc_caption_rows(self._root_nodes(), self.registries):
+            if not group:
+                continue
+            self.doc.add_paragraph(style=STYLE_TOC)
+            for label, _reference in group:
+                paragraph = self.doc.add_paragraph(style=STYLE_TOC)
+                _run_fonts(paragraph, label, docx, ea=EA_SONG)
         # 目次块内非行内容（目录页装饰图等）保留
         toc_node = next((node for node in self._root_nodes() if _is_toc_node(node)), None)
         if toc_node:
@@ -692,13 +818,15 @@ class _DocxBuilder:
         观感与旧 docx 一致；非示例节点照常使用 Heading 层级。
         """
         self._box_cell(node.get("box"), node.get("boxStyle"))
-        heading_text = self._word_heading(node)
-        if heading_text:
-            if node.get("exampleContent"):
+        if node.get("exampleContent"):
+            heading_text = self._word_heading(node)
+            if heading_text:
                 paragraph = self._container_paragraph()
                 paragraph.paragraph_format.alignment = self.docx["ALIGN"].CENTER if not node.get("number") else self.docx["ALIGN"].LEFT
                 _run_fonts(paragraph, heading_text, self.docx, ea=EA_HEI, bold=True, size_pt=12)
-            else:
+        elif not self._term_entry(node):
+            heading_text = self._word_heading(node)
+            if heading_text:
                 level = self._heading_level(node)
                 paragraph = self._container_paragraph(style=f"Heading {level}")
                 _run_fonts(paragraph, heading_text, self.docx, ea=EA_HEI, bold=True)
@@ -738,12 +866,29 @@ class _DocxBuilder:
             depth = 1
         return min(max(depth, 1), 6)
 
+    def _term_entry(self, node: dict[str, Any]) -> bool:
+        """术语条目两行版式（GB/T 1.1-2020 10.3.5）：编号行 + 术语行。
+
+        不是术语条目（`_term_entry_text` 返回 None）时不写任何段落并返回 False，
+        调用方照常走标题路径。
+        """
+        number, title, _ = _heading_parts(node)
+        term = _term_entry_text(node, number, title)
+        if term is None:
+            return False
+        number_paragraph = self._container_paragraph(style=STYLE_TERM_NUMBER)
+        _run_fonts(number_paragraph, number, self.docx, ea=EA_HEI, bold=True)
+        term_paragraph = self._container_paragraph(style=STYLE_TERM_TITLE)
+        _run_fonts(term_paragraph, _flatten_latex(term), self.docx, ea=EA_HEI, bold=True)
+        return True
+
     def _node(self, node: dict[str, Any]) -> None:
-        heading_text = self._word_heading(node)
-        if heading_text:
-            level = self._heading_level(node)
-            paragraph = self.doc.add_paragraph(style=f"Heading {level}")
-            _run_fonts(paragraph, heading_text, self.docx, ea=EA_HEI, bold=True)
+        if not self._term_entry(node):
+            heading_text = self._word_heading(node)
+            if heading_text:
+                level = self._heading_level(node)
+                paragraph = self.doc.add_paragraph(style=f"Heading {level}")
+                _run_fonts(paragraph, heading_text, self.docx, ea=EA_HEI, bold=True)
         for content in sorted(node.get("contentElements", []), key=_order):
             self._content(content)
         for child in sorted(node.get("children", []), key=_order):
@@ -763,20 +908,17 @@ class _DocxBuilder:
             if not text.strip():
                 return
             paragraph = self._container_paragraph(style=STYLE_NOTE)
-            _add_markup(paragraph, _flatten_latex(text), self.docx, asset_dir=self.asset_dir, size_pt=9)
+            # 注标记黑体、注内容小五号宋体（GBT-B10；附录F 表F.1 序号44/45）。
+            _add_label_markup(paragraph, _flatten_latex(text), self.docx, asset_dir=self.asset_dir, size_pt=9)
         elif kind == "list":
             items = sorted(content.get("listItems", []), key=_order)
-            for item in items:
-                marker = _list_marker(str(item.get("marker", "-")))
+            markers = [_list_marker(str(item.get("marker", "-"))) for item in items]
+            uniform_bullets = bool(markers) and all(m in ("●", "○", "•") for m in markers)
+            for item, marker in zip(items, markers):
                 text = _flatten_latex(str(item.get("text") or ""))
                 paragraph = self._container_paragraph(style=STYLE_LIST)
-                paragraph.paragraph_format.left_indent = self.docx["Cm"](0.85)
-                paragraph.paragraph_format.first_line_indent = self.docx["Cm"](-0.85)
-                if marker in ("●", "○", "•"):
-                    # 圆点列项符号缩小呈现（0.62×，与 PDF 渲染同裁定 2026-09-07）
-                    _run_fonts(paragraph, f"{marker} ", self.docx, ea=EA_SONG, size_pt=7)
-                else:
-                    _run_fonts(paragraph, f"{marker} ", self.docx, ea=EA_SONG)
+                _list_indent(paragraph, marker, self.docx,
+                             sub_level=_list_is_sub_level(marker, uniform_bullets))
                 _add_markup(paragraph, text, self.docx, asset_dir=self.asset_dir)
         elif kind == "table":
             table = self.registries["tables"].get(content.get("tableRef", ""))
@@ -816,7 +958,11 @@ class _DocxBuilder:
         paragraph.paragraph_format.alignment = docx["ALIGN"].JUSTIFY
         # 平排条号后空一字（PDF _markup 同款：5.3.1泵→5.3.1 泵）
         display = _CLAUSE_SPACE_RE.sub(lambda m: f"{m.group(1)}\u3000{m.group(2)}", stripped)
-        _add_markup(paragraph, _flatten_latex(display), docx, asset_dir=self.asset_dir)
+        # 公式变量解释项：变量与破折号、破折号与解释之间各空四分之一汉字（GBT-X06）。
+        display = _formula_item_spacing(display)
+        # 注/示例标记黑体、内容宋体（GBT-B10/B11；附录F 序号42—45）：正文里以
+        # "示例1：…"/"注2：…"起始的段落与注块、示例块同规则。
+        _add_label_markup(paragraph, _flatten_latex(display), docx, asset_dir=self.asset_dir)
 
     # -- 表格 ----------------------------------------------------------------
     def _table(self, table: dict[str, Any]) -> None:
@@ -900,20 +1046,21 @@ class _DocxBuilder:
             self._cell_markup(paragraph, part)
 
     def _cell_markup(self, paragraph: Any, text: str) -> None:
-        """单元格内分段处理：图片拆分 + 行内标记。"""
+        """单元格内分段处理：图片拆分 + 行内标记 + 行首注/示例标记黑体。"""
         docx = self.docx
         position = 0
         for match in _IMG_MD_RE.finditer(text):
             if match.start() > position:
-                _add_markup(paragraph, text[position:match.start()], docx,
-                            asset_dir=self.asset_dir, size_pt=9)
+                _add_label_markup(paragraph, text[position:match.start()], docx,
+                                  asset_dir=self.asset_dir, size_pt=9)
             image_path = _resolve_asset(self.asset_dir, match.group(2)) if self.asset_dir else Path(match.group(2))
             if image_path.is_file():
                 _add_picture(paragraph, image_path, docx, max_width_cm=4.0)
             position = match.end()
         tail = text[position:]
         if tail.strip() or position == 0:
-            _add_markup(paragraph, tail, docx, asset_dir=self.asset_dir, size_pt=9)
+            # 表内注标记黑体、注内容小五号宋体（GBT-B10；附录F 表F.1 序号44/45）。
+            _add_label_markup(paragraph, tail, docx, asset_dir=self.asset_dir, size_pt=9)
 
     def _merge_cells(self, table: Any, merges: list[tuple[int, int, int, int]],
                      grid: list[list[str]]) -> None:
@@ -950,20 +1097,72 @@ class _DocxBuilder:
 
     def _formula(self, content: dict[str, Any]) -> None:
         formula = self.registries["formulas"].get(content.get("formulaRef", ""), {})
+        number_label = str(formula.get("number") or "").strip()
         asset = formula.get("assetRef")
         image_path = _resolve_asset(self.asset_dir, asset) if asset else Path("")
+        has_image = bool(asset and image_path.is_file())
+        raw = formula.get("latex") or formula.get("rawText") or ""
+        text_formula = _latex_to_text(str(raw)) if str(raw).strip() else ""
+        if number_label:
+            # 规则对应: GBT-X06（公式编号右端对齐、与公式之间以“……”连接）。
+            self._formula_number_line(
+                image_path if has_image else None, text_formula, f"({number_label})"
+            )
+            if not has_image:
+                self.warnings.append(f"Formula typeset as text: {formula.get('id', '?')}")
+            return
         paragraph = self._container_paragraph()
         paragraph.alignment = self.docx["ALIGN"].CENTER
-        if asset and image_path.is_file():
+        if has_image:
             _add_picture(paragraph, image_path, self.docx)
         else:
-            raw = formula.get("latex") or formula.get("rawText") or ""
-            if str(raw).strip():
-                _add_markup(paragraph, _latex_to_text(str(raw)), self.docx, asset_dir=self.asset_dir)
+            if text_formula.strip():
+                _add_markup(paragraph, text_formula, self.docx, asset_dir=self.asset_dir)
                 self.warnings.append(f"Formula typeset as text: {formula.get('id', '?')}")
-        if formula.get("number"):
-            number_paragraph = self._container_paragraph(style=STYLE_TABLE_CAPTION)
-            _run_fonts(number_paragraph, str(formula["number"]), self.docx, ea=EA_HEI)
+
+    def _formula_number_line(self, image_path: Path | None, formula_text: str, number: str) -> None:
+        """公式行（GBT-X06；GB/T 1.1-2020 10.4.3）：公式另行居中，编号右端对齐，
+        公式与编号之间由「……」连接，公式与省略号之间留两个汉字间隔（与 PDF
+        渲染同规，Word 侧用制表位实现）。
+
+        居中制表位按「公式 + 两个汉字间隔 + 引导线」整段居中补偿（Word 的居中
+        制表位把制表位后的内容整体居中于刻度处）；编号用右端制表位贴版心右缘。
+        省略号个数按版心宽度计算（与 PDF 同一几何：公式居中后左右各
+        (版心−公式)/2），公式图超宽时先收到「留够引导线」的宽度（只缩小不放大）。
+        """
+        docx = self.docx
+        size_pt = 10.5
+        em_cm = size_pt * 2.54 / 72.0
+        number_w = _em_text_width(number, size_pt)
+        gap_cm = 2 * em_cm
+        min_leader_cm = 4 * em_cm
+        limit_cm = CONTENT_WIDTH_CM - 2 * (gap_cm + number_w + min_leader_cm)
+        if image_path is not None:
+            width_cm, height_cm = _cm_from_px(image_path)
+            if width_cm > limit_cm > 0:
+                height_cm *= limit_cm / width_cm
+                width_cm = limit_cm
+        else:
+            width_cm = min(_em_text_width(formula_text, size_pt), max(limit_cm, 0.0))
+            height_cm = 0.0
+        leader_cm = CONTENT_WIDTH_CM / 2 - number_w - gap_cm - width_cm / 2
+        dot_cm = em_cm
+        dots = "…" * max(0, int(leader_cm / dot_cm + 1e-9))
+        paragraph = self._container_paragraph(style=STYLE_FORMULA)
+        stops = paragraph.paragraph_format.tab_stops
+        center_stop_cm = CONTENT_WIDTH_CM / 2 + (gap_cm + len(dots) * dot_cm) / 2
+        stops.add_tab_stop(docx["Pt"](center_stop_cm * 72 / 2.54), docx["TAB_ALIGN"].CENTER)
+        stops.add_tab_stop(docx["Pt"](CONTENT_WIDTH_CM * 72 / 2.54), docx["TAB_ALIGN"].RIGHT)
+        paragraph.add_run().add_tab()
+        if image_path is not None:
+            paragraph.add_run().add_picture(
+                str(image_path), width=docx["Cm"](width_cm), height=docx["Cm"](height_cm)
+            )
+        else:
+            _run_fonts(paragraph, formula_text, docx, size_pt=size_pt)
+        _run_fonts(paragraph, "　　" + dots, docx, size_pt=size_pt)
+        paragraph.add_run().add_tab()
+        _run_fonts(paragraph, number, docx, size_pt=size_pt)
 
     def _example_group(self, nodes: list[dict[str, Any]]) -> None:
         for node in nodes:
@@ -992,15 +1191,13 @@ class _DocxBuilder:
             _add_markup(paragraph, _flatten_latex(_footnote_superscripts(text)), self.docx,
                         asset_dir=self.asset_dir)
         elif kind == "list":
-            for item in sorted(content.get("listItems", []), key=_order):
+            items = sorted(content.get("listItems", []), key=_order)
+            markers = [_list_marker(str(item.get("marker", "-"))) for item in items]
+            uniform_bullets = bool(markers) and all(m in ("●", "○", "•") for m in markers)
+            for item, marker in zip(items, markers):
                 paragraph = self.doc.add_paragraph(style=STYLE_EXAMPLE)
-                paragraph.paragraph_format.left_indent = self.docx["Cm"](0.85)
-                paragraph.paragraph_format.first_line_indent = self.docx["Cm"](-0.85)
-                marker = _list_marker(str(item.get("marker", "-")))
-                if marker in ("●", "○", "•"):
-                    _run_fonts(paragraph, f"{marker} ", self.docx, ea=EA_SONG, size_pt=7)
-                else:
-                    _run_fonts(paragraph, f"{marker} ", self.docx, ea=EA_SONG)
+                _list_indent(paragraph, marker, self.docx,
+                             sub_level=_list_is_sub_level(marker, uniform_bullets))
                 _add_markup(paragraph, _flatten_latex(str(item.get("text") or "")), self.docx,
                             asset_dir=self.asset_dir)
         elif kind == "table":

@@ -107,6 +107,66 @@ _FOOTNOTE_DEF_END_RE = re.compile(r"[。！？…；][」』）)】》]*$")
 _REFERENCE_STD_PREFIX_RE = re.compile(
     r"^(?:GB/T|GB/Z|GB|JB/T|JB|DB\d{1,2}/T|QB/T|QB|SJ/T|SJ|DL/T|NY/T|HG/T|FZ/T|WS/T|YD/T|GA/T|CJ/T|JG/T|TB/T|SH/T|JC/T|EJ/T|MT/T|YY/T|YY|HJ/T|HJ|T/|Q/|ISO|IEC)\s"
 )
+# 标准号「文件代号 + 顺序号」之间的间隔（CSM-OCR-004）：正文中的标准号应写作
+# “GB/T 20001”，OCR 常把空格丢掉（“GB/T20001”）。只认**已知文件代号**——
+# 无斜杠的白名单代号（GB、GJB、ISO、IEC…）、斜杠后为 T/Z 的推荐性/指导性代号
+# （GB/T、JB/T、DB11/T、GB/Z…）、斜杠后为组织字母的团体/企业代号（T/ZZB、Q/XKBZ）。
+# 判据刻意不写成 `[A-Z]{2,4}(?=\d)`：那会把 RS485、AC1 500 V 之类**非标准号**的
+# 字母数字串也拆开（2026-09-11 修复落在列项/表格载体后暴露）。代号清单与
+# compliance._STANDARD_NUMBER_RE 同族（那是“是否为标准号”的检测式，本式是
+# “代号与顺序号贴在一起”的间隔式）。
+_STANDARD_GAP_DESIGNATOR = (
+    r"(?:[A-Z]{1,4}\d{0,2}/[TZ]"          # GB/T  JB/T  DB11/T  GB/Z
+    r"|(?:T|Q)/[A-Z]{1,8}"                # T/ZZB  Q/XKBZ（团体/企业）
+    r"|(?:GJB|GB|ISO|IEC|ITU|EN|ANSI|ASTM|JIS|DIN|BS|NF|GOST|CIE|CISPR|IEEE|UL))"
+)
+_STANDARD_NUMBER_GAP_RE = re.compile(rf"(?<![A-Za-z0-9/])({_STANDARD_GAP_DESIGNATOR})(?=\d)")
+
+
+def restore_standard_number_spacing(text: str) -> str:
+    """在标准号的「文件代号」与「顺序号」之间补一个空格（GB/T20001 → GB/T 20001）。
+
+    规则对应: CSM-OCR-004。幂等（已有空格的形态不匹配）。解析层修复与 canonical
+    回放工具共用本实现，保证「规则实例回放」是同一规则的确定性应用。
+    """
+    return _STANDARD_NUMBER_GAP_RE.sub(lambda m: f"{m.group(1)} ", text)
+
+
+# 术语条目行（CSM-OCR-003）：术语「中文」与英文对应词之间空一个汉字（10.3.5）。
+# 接受两种形态——裸术语行「标准化文件 standardizing document」与带条目编号的术语
+# 条目标题行「3.1.2 标准 standard」（条目编号在 SSIR 里是独立字段，术语行只承载
+# 术语与英文对应词）。英文对应词段沿用原判据（以拉丁字母开头、其余不限），中文
+# 术语限定 1~24 个汉字；行内出现中文标点即不认（定义/正文不是术语行）。
+_TERM_ENTRY_GAP_RE = re.compile(
+    r"^(?P<lead>\s*)"
+    r"(?:(?P<number>\d+(?:\.\d+)*)(?P<number_gap>[ \u3000]+))?"
+    r"(?P<term>[\u4e00-\u9fff]{1,24})"
+    r"(?P<gap>[ \u3000\u200b]*)"
+    r"(?P<english>[A-Za-z].*)$"
+)
+_TERM_LINE_PUNCT_RE = re.compile(r"[，。；：？！、”“‘’《》【】（）…]")
+
+
+def restore_term_entry_gap(line: str) -> str:
+    """把术语条目行「术语 英文对应词」之间的间隙归一为 U+3000（CSM-OCR-003）。
+
+    规则对应: CSM-OCR-003、GB/T 1.1-2020 8.7.3.1/10.3.5（英文对应词与术语之间空
+    一个汉字）。行首空白、条目编号与术语之间原有的空白、行尾换行原样保留，只重写
+    中英文间隙；不是术语行（含中文标点、无英文对应词、汉字串超长）时原样返回。
+    是否属于「术语和定义」要素由调用方判定（parser 用 in_terms 跟踪、回放工具用
+    行级章跟踪）。
+    """
+    if not line.strip() or _TERM_LINE_PUNCT_RE.search(line):
+        return line
+    body = line.rstrip("\r\n")
+    ending = line[len(body):]
+    match = _TERM_ENTRY_GAP_RE.match(body)
+    if not match:
+        return line
+    number = match.group("number") or ""
+    number_gap = match.group("number_gap") or ""
+    return f"{match.group('lead')}{number}{number_gap}{match.group('term')}\u3000{match.group('english')}{ending}"
+
 # 句末/停顿标点（词中断段合并的“前段必须无此标点收尾”判别用）。
 _SENTENCE_END_PUNCT = "。！？；：，、…"
 # GB/T 1.1 列项符号为破折号（——）或间隔号（·）；OCR 常把 "——" 压成
@@ -144,6 +204,136 @@ _BARE_HEADING_TERMINAL_PUNCT = "。；，,、！？"
 # 表注行：表格最后一行合并单元格以「注N：」开头（GB_3100-2026 表1/表4 型，
 # MinerU 把表注整进表内最后一行）。
 _TABLE_NOTE_CELL_RE = re.compile(r"^注\s*\d*\s*[:：]")
+
+# ---------------------------------------------------------------------------
+# 公式编号与公式变量解释（GBT-X06 / GB/T 1.1-2020 9.9.2、9.9.3、10.4.3）
+# ---------------------------------------------------------------------------
+# 「式中：」引导行（空两个汉字起排，10.4.3）：变量解释组的锚点。
+FORMULA_VAR_INTRO_RE = re.compile(r"^式中\s*[:：]\s*$")
+# 变量解释项固定形态：变量（行内 LaTeX，或裸字母/希腊字母可带下标）+ 破折号
+# （OCR 常压成单个「—」甚至整段丢失）+ 解释文字 + 终止符（；，末项 。）。
+# 头部限短（1—4 个半角字母）以防把以英文单词开头的正文误判为解释项。
+FORMULA_VAR_ITEM_RE = re.compile(
+    r"^(?P<head>\$[^$\n]+\$|[\u0370-\u03ffA-Za-z][\u0370-\u03ffA-Za-z0-9]{0,3}"
+    r"(?:[ \u3000]*[_^][ \u3000]*\{[^{}\n]{1,12}\})?)"
+    r"(?P<dash>[ \u3000]*[-—–―－]{1,8}[ \u3000]*|[ \u3000]*[:：][ \u3000]*|[ \u3000]+|)"
+    r"(?P<text>[\u4e00-\u9fff].*)$"
+)
+# 解释项终止符：分号（末项句号）。
+_FORMULA_ITEM_END_RE = re.compile(r"[。；;.．]$")
+# 变量与破折号之间、破折号与解释之间各空四分之一汉字（10.4.3 版式）；
+# 规范化后的 CSM 形态不含空格，字隙由渲染层按固定字隙实现（同 GBT-B12）。
+# 「式(N)」编号行（CSM 语法，docs/07 §6.7；式（1）全角半角、附录 A.1 均可）。
+_FORMULA_NUMBER_LINE_RE = re.compile(r"^式\s*[（(]\s*(.+?)\s*[）)]\s*$")
+# MinerU 把整条公式行（公式 + 「…………」引导线 + 编号）识别为一个 equation 块，
+# 引导线与编号被写进 LaTeX 的 \tag{...}，且经常缺右花括号（\tag{……………………(1}）。
+FORMULA_TAG_RE = re.compile(r"\\tag\s*\{([^{}]*)\}?")
+# \tag 内容里的编号：引导线（…/⋯）清掉后取括号内（可缺右括号）或行尾的编号。
+_FORMULA_TAG_LABEL_RE = re.compile(r"[（(]\s*([A-Za-z]?\d+(?:\.\d+)*)\s*[）)]?\s*$")
+_FORMULA_NUMBER_LABEL_RE = re.compile(r"([A-Za-z]?\d+(?:\.\d+)*)\s*$")
+# 附录标题（「附录 A（资料性）…」）：编号在附录内重新从 1 开始并加前缀字母。
+ANNEX_HEADING_RE = re.compile(r"^附\s*录\s*([A-Z])(?![A-Za-z])")
+
+# ---------------------------------------------------------------------------
+# 行内角标标记（角标 = 上/下标字符 + 注解区；脚注/表注标记的统一语法）
+# ---------------------------------------------------------------------------
+# 通用形式（docs/07 §6.7；2026-09-11 通用化，取代按角标字符逐个定义标记对的
+# 旧形式 [:^a] / [^a]…[^a/]——那种写法 a~z 就是 26 对记号）：
+#   开标记 [:sup:a] / [:sub:2]  —— script = sup（上角标）/ sub（下角标），
+#                                  char = 角标所表示的字符（1—4 字，如 a、1)、*）；
+#   闭标记 [:/sup] / [:/sub]    —— 与最近未闭合的开标记配对，本身不渲染；
+#   自闭合 [:sup:a/]            —— 空注解区 = “引用点”（角标插在此处）。
+# 开闭之间的文本是该角标的**注解区**（表注注文、图表注、脚注解释文字），按普通
+# 文本渲染。配对校验与旧形式迁移见 _repair_inline_script_tokens（CSM-STRUCT-007）。
+# 角标字符不含 [/]：否则贪婪字符组会把自闭合的 "/" 吞进字符里（[:sup:a/] 变成
+# 字符 "a/" 且误判为未闭合的开标记）。
+INLINE_SCRIPT_TOKEN_RE = re.compile(
+    r"\[:(?P<script>sup|sub):(?P<char>[^\[\]/\s]{1,4})(?P<self>/)?\]|\[:/(?P<close>sup|sub)\]"
+)
+INLINE_SCRIPT_OPEN_RE = re.compile(r"\[:(sup|sub):([^\[\]/\s]{1,4})/?\]")
+INLINE_SCRIPT_CLOSE_RE = re.compile(r"\[:/(sup|sub)\]")
+# 旧形式（2026-09-07 语法定案版）：[:^a] 引用点、[^a]…[^a/] 注文段。parser 迁移。
+# 相邻的成对角标标记（同一单元格内的表注列项）之间**自动换行**：canonical 连排
+# 不写 <br>，渲染端在上一对的闭标记与下一对的开标记之间断行（docs/07 §6.7）。
+INLINE_SCRIPT_ITEM_BREAK_RE = re.compile(r"(\[:/(?:sup|sub)\])(?=\[:(?:sup|sub):)")
+LEGACY_SCRIPT_CITE_RE = re.compile(r"\[\:\^([a-z])\]")
+LEGACY_SCRIPT_OPEN_RE = re.compile(r"\[\^([a-z])\]")
+LEGACY_SCRIPT_CLOSE_RE = re.compile(r"\[\^([a-z])\/\]")
+
+
+def _migrate_legacy_script_tokens(text: str) -> tuple[str, int]:
+    """旧形式角标标记 → 通用行内角标标记（CSM-STRUCT-007；docs/07 §6.7）。
+
+    旧（2026-09-07 语法定案版，按角标字符逐对定义）：``[:^a]`` 引用点、
+    ``[^a]注文[^a/]`` 注文段；新（通用，一种形式覆盖任意字符）：
+    ``[:sup:a/]`` 引用点、``[:sup:a]注文[:/sup]`` 注解区。语义一一对应，
+    确定性迁移；返回 (迁移后文本, 迁移条数)。
+    """
+    migrated = 0
+
+    def _close(match: "re.Match[str]") -> str:
+        nonlocal migrated
+        migrated += 1
+        return "[:/sup]"
+
+    def _open(match: "re.Match[str]") -> str:
+        nonlocal migrated
+        migrated += 1
+        return f"[:sup:{match.group(1)}]"
+
+    def _cite(match: "re.Match[str]") -> str:
+        nonlocal migrated
+        migrated += 1
+        return f"[:sup:{match.group(1)}/]"
+
+    text = LEGACY_SCRIPT_CLOSE_RE.sub(_close, text)
+    text = LEGACY_SCRIPT_OPEN_RE.sub(_open, text)
+    return LEGACY_SCRIPT_CITE_RE.sub(_cite, text), migrated
+
+
+def _normalise_script_token_pairs(text: str) -> tuple[str, int]:
+    """行内角标标记配对校验与修复（CSM-STRUCT-007；docs/07 §6.7）。
+
+    成对规则：闭标记与**最近未闭合的开标记**配对；自闭合（``[:sup:a/]``）不参与
+    配对。修复（确定性，宽容模式继续）：
+    - 未闭合的开标记 → 文本末尾补配对闭标记（注解区延伸到文本末尾）；
+    - 孤立闭标记 → 删除；
+    - 闭标记 script 与配对的开标记不符 → 按开标记的 script 改写。
+    返回 (修复后文本, 修复条数)。
+    """
+    edits: list[tuple[int, int, str]] = []
+    stack: list[tuple[str, int, int]] = []  # (script, 开标记起始, 开标记结束)
+    for match in INLINE_SCRIPT_TOKEN_RE.finditer(text):
+        if match.group("close"):
+            script = match.group("close")
+            if not stack:
+                edits.append((match.start(), match.end(), ""))  # 孤立闭标记 → 删除
+                continue
+            open_script, _start, _end = stack.pop()
+            if open_script != script:
+                edits.append((match.start(), match.end(), f"[:/{open_script}]"))
+        elif not match.group("self"):
+            stack.append((match.group("script"), match.start(), match.end()))
+    trailing = ""
+    for script, _start, _end in stack:
+        trailing += f"[:/{script}]"
+    if trailing:
+        edits.append((len(text), len(text), trailing))
+    if not edits:
+        return text, 0
+    for start, end, replacement in sorted(edits, key=lambda item: item[0], reverse=True):
+        text = text[:start] + replacement + text[end:]
+    return text, len(edits)
+
+
+def inline_script_item_breaks(text: str) -> str:
+    """表注列项之间插入换行哨兵（渲染端专用；canonical 连排不写 <br>）。
+
+    ``[:sup:a]注文a[:/sup][:sup:b]注文b[:/sup]`` → 两对之间插 ``\x00BR\x00``
+    （pdf/docx 渲染端共用的换行哨兵）。只认“闭标记紧接开标记”的相邻对，故
+    单元格里的自闭合引用点不受影响。
+    """
+    return INLINE_SCRIPT_ITEM_BREAK_RE.sub(lambda m: m.group(1) + "\x00BR\x00", str(text))
 
 
 def _is_bare_enumeration(enum_lines: list[str]) -> bool:
@@ -480,14 +670,17 @@ class CSMParser:
         fatal_errors.extend(self._repair_tables(blocks, issues))
         self._repair_stray_table_images(blocks, issues)
         self._repair_table_image_layout(blocks, issues)
+        self._repair_inline_script_tokens(blocks, issues)
         self._repair_list_markers(blocks, issues)
         self._repair_clause_numbers(blocks, issues)
         self._repair_term_entry_headings(blocks, issues)
         self._repair_split_multipart_title(blocks, issues)
         self._repair_heading_levels(blocks, issues)
         self._repair_example_heading_levels(blocks, issues)
-        self._repair_lost_list_markers(blocks, issues)
         self._repair_colon_led_lists(blocks, issues)
+        self._repair_lost_list_markers(blocks, issues)
+        self._repair_formula_numbers(blocks, issues)
+        self._repair_formula_variable_lines(blocks, issues)
         self._repair_text_spacing(blocks, issues)
         self._repair_ocr_guide_phrase(blocks, issues)
         self._repair_reference_entry_brackets(blocks, issues)
@@ -1585,22 +1778,31 @@ class CSMParser:
 
     @staticmethod
     def _repair_term_entry_headings(blocks: list[Block], issues: list[CSMIssue]) -> None:
-        """Merge flattened term-entry headings into one numbered heading (CSM-OCR-007).
+        """Normalize flattened term entries into one numbered heading (CSM-OCR-007).
 
-        术语和定义章的术语条目常被 MinerU 抽成两条同级标题：
-            ## 3.1.2
-            ## 标准　standard
-        两条都是 ##（与章同级）时，编号标题会脱离 3.1 组提升到文档根级，
-        标准层级被破坏（3.1.2/3.1.3/3.2.x 全变成章 3 的兄弟）。术语条目的
-        正确形态是单条子条标题「3.1.2 标准　standard」：
-        - 编号标题是纯编号（2+ 段）且紧跟一条无编号的术语行标题（中文 + 间隙
-          + 英文对应词）时合并：文本并入编号标题，删除术语行标题；
-        - 合并后的标题交给 _repair_heading_levels 按编号段数提升层级
-          （3.1.2 → ####），编号修复后自然嵌套回 3.1 组下；
-        - 术语行标题原先承载的定义/注等后续块不受影响，仍接在合并标题之后，
-          从而随术语节点一起入树。
+        术语和定义要素里的术语条目被 MinerU 抽成两种形态，都必须归一为单条编号
+        标题「3.1.2 标准　standard」（GB/T 1.1-2020 8.7.3.1、10.3.5：条目编号
+        单独占一行顶格、术语与英文对应词在下一行、中英文之间空一个汉字）：
+
+        - **标题形态**：``## 3.1.2`` + ``## 标准　standard``。两条都是 ##（与章
+          同级）时，编号标题会脱离 3.1 组提升到文档根级，标准层级被破坏
+          （3.1.2/3.1.3/3.2.x 全变成章 3 的兄弟）；
+        - **段落形态**：``3.1.1`` + ``标准化文件　standardizing document``。两条
+          都是普通段落（GB_T_1.1-2020 第 3 章 3.1.1 即此形态）：编号与术语被抽成
+          正文，条目在 SSIR 里没有结构节点，标题跟着正文缩进两字排版，渲染出的
+          条目编号不再顶格、术语也不单独占行。
+
+        合并后交给 _repair_heading_levels 按编号段数提升层级（3.1.2 → #### 或
+        level 4），编号修复后自然嵌套回 3.1 组下；术语行原先承载的定义/注等后续
+        块不受影响，仍接在合并标题之后，从而随术语节点一起入树。
+
+        段落形态是更强的改写（把正文段落提升为结构标题），故只在**术语和定义要素
+        内部**生效（8.7：该要素应设置为第 3 章，以章标题含“术语”判定）；标题形态
+        维持原判据（两条同级标题，编号为 3 段以上）。术语行的中英文间隙一律归一到
+        U+3000（与 CSM-OCR-003 同规），使两种形态渲染出的“空一个汉字”一致。
         """
         pure_number = re.compile(r"^(\d+(?:\.\d+){2,})$")
+        bare_number = re.compile(r"^(\d+(?:\.\d+)*)$")
         # 术语行标题：中文（可含括注/连接号）+ 间隙（全角/半角空格）+ 英文对应词。
         # 刻意要求英文部分以拉丁字母开头，避免把「概述」「示例」等无编号标题误并。
         term_title = re.compile(
@@ -1608,31 +1810,71 @@ class CSMParser:
             r"[\u3000 ]{1,4}"
             r"([A-Za-z][A-Za-z0-9 &/（）()\-.,，。]{1,90})$"
         )
-        merges: list[tuple[int, str]] = []  # (index_of_pure_number_heading, merged_text)
+        term_gap = "\u3000"
+        chapter_re = re.compile(r"^\d+\s+\S")
+        # 「术语和定义」要素内的块下标（供段落形态判据用；与 _repair_text_spacing
+        # 的 in_terms 跟踪同源）。
+        in_terms_indexes: set[int] = set()
+        in_terms = False
+        for index, block in enumerate(blocks):
+            if block.kind == "heading":
+                text = block.text.strip()
+                if chapter_re.match(text):
+                    in_terms = "术语" in text
+            if in_terms:
+                in_terms_indexes.add(index)
+
+        merges: list[tuple[int, str, bool]] = []  # (编号块下标, 合并文本, 是否需提升为标题)
         i = 0
         while i < len(blocks) - 1:
             first = blocks[i]
             second = blocks[i + 1]
+            number_match = None
+            promote = False
             if first.kind == "heading" and second.kind == "heading":
                 number_match = pure_number.match(first.text.strip())
-                title_match = term_title.match(second.text.strip()) if not pure_number.match(second.text.strip()) else None
-                if number_match and title_match:
-                    merges.append((i, f"{number_match.group(1)} {title_match.group(1)}{second.text.strip()[len(title_match.group(1)):]}"))
+            elif (
+                first.kind == "paragraph"
+                and second.kind == "paragraph"
+                and i in in_terms_indexes
+            ):
+                number_match = bare_number.match(first.text.strip())
+                promote = number_match is not None
+            if number_match:
+                second_text = second.text.strip()
+                title_match = term_title.match(second_text) if not pure_number.match(second_text) else None
+                if title_match:
+                    merged = f"{number_match.group(1)} {title_match.group(1)}{term_gap}{title_match.group(2)}"
+                    merges.append((i, merged, promote))
                     i += 2
                     continue
             i += 1
-        for index, merged_text in merges:
+        for index, merged_text, promote in merges:
             blocks[index].text = merged_text
-        for index, _merged_text in reversed(merges):
+            if promote:
+                # 段落形态：先变成标题块（层级交给 _repair_heading_levels 按编号
+                # 段数提升到 ####），使条目成为结构节点。
+                blocks[index].kind = "heading"
+                blocks[index].level = 2
+        for index, _merged_text, promote in reversed(merges):
             second = blocks[index + 1]
             CSMParser._issue(
                 issues,
                 "CSM-OCR-007",
-                f"Flattened term-entry headings merged into one heading: {blocks[index].text!r} "
-                f"(removed duplicate heading {second.text!r} at line {second.start_line}).",
+                (
+                    f"Term entry split across paragraph and term line merged into one heading: "
+                    f"{blocks[index].text!r} (removed term line {second.text!r} at line {second.start_line})."
+                    if promote
+                    else f"Flattened term-entry headings merged into one heading: {blocks[index].text!r} "
+                    f"(removed duplicate heading {second.text!r} at line {second.start_line})."
+                ),
                 line=blocks[index].start_line,
                 repaired=True,
-                repair_action="Merged the term-title heading into the numbered heading so the term nests under its numbered group.",
+                repair_action=(
+                    "Promoted the term-entry number paragraph to a title and merged the term line into it."
+                    if promote
+                    else "Merged the term-title heading into the numbered heading so the term nests under its numbered group."
+                ),
             )
             del blocks[index + 1]
 
@@ -2041,18 +2283,27 @@ class CSMParser:
     def _repair_colon_led_lists(cls, blocks: list[Block], issues: list[CSMIssue]) -> None:
         """冒号引导完整列项组的缺失 marker 补齐（CSM-OCR-016）。
 
-        现象（GB_T_20001.10-2014 6.7.1.1/6.4.3/6.4.4/A.1 等）：引导句以「：」收尾、
-        条目逐段排布、条目以「；」收尾且仅末条以「。」收尾的列项组，OCR 常丢若干
-        条目的 marker（破折号/间隔号/a）/1) 均可），只个别条目幸存——幸存条目成
-        孤立列表、丢 marker 条目沦为普通段落（如 6.7.1.1 末条「形成标准的单独
-        部分。」）。完整性机制（非个例判定）：
+        现象（GB_T_20001.10-2014 6.7.1.1/6.4.3/6.4.4/A.1、GB_T_5171.1-2014 前言
+        40 条清单等）：引导句以「：」收尾、条目逐段排布、条目以「；」收尾且仅末条
+        以「。」收尾的列项组，OCR 常丢若干条目的 marker（破折号/间隔号/a）/1) 均
+        可），只个别条目幸存——幸存条目成孤立列表、丢 marker 条目沦为普通段落
+        （如 6.7.1.1 末条「形成标准的单独部分。」）。完整性机制（非个例判定）：
         - 整组按「：引导 + 『；』条目序列 + 『。』末条」判型；组内 ≥1 幸存 marker
           决定 marker 族，缺 marker 条目补同族 marker（破折号/间隔号沿用幸存
           marker 原样，字母/数字按组序重排 a）/1) 序号）；
+        - 组尾判定不只看「。」：标记列表块末条即使以「。」收尾，只要紧随其后的仍是
+          「强条目」（以「；」收尾的标记列表块或无标记段落），说明该「。」是源文组
+          中偶发（GB_T_5171.1-2014 前言第 7 条「增加了第9章“结构要求”。」即 PDF
+          文本层真值），组继续；直到末条「。」之后不再有强条目才收尾。如此整组
+          （中间丢 marker 的普通段落一并）一次重建，不会被中间「。」截成碎组；
+        - 条目末「；」被 OCR 读成「：」（GB_T_5171.1-2014 前言 2 处，PDF 文本层为
+          「;」）时，仅当其后仍是强条目才按条目吸收，并把该终止符归一为「；」
+          （列项各项以分号分列、末条以句号结束，GBT-H06/GB/T 1.1 7.5）；其后非强
+          条目则视为新引语，截断不猜；
         - 6.4.4 型首条与引导句粘连（「…包括下述内容：分类原则与方法；」）按最后
           一个「：」拆出首条；
         - 保守不猜：组内无幸存 marker、幸存 marker 族不一致、条目数 <2、末条非
-          「。」收尾、中间出现非条目块/新冒号引导/编号条文/注示例表图 起始。
+          「。」收尾、中途出现非条目块/编号条文/注示例表图 起始。
         命中后整组收敛为一个 list 块（条目保序），记 CSM-OCR-016。
         """
         clause_prefix = re.compile(r"^(?:\d+(?:\.\d+)+|[A-Z]\.\d+(?:\.\d+)*)\s*\S|^[A-Z](?:\.\d+)?\s")
@@ -2071,6 +2322,19 @@ class CSMParser:
             if clause_prefix.match(text) or lead_prefix.match(text) or colon_intro.match(text):
                 return None
             return text
+
+        def strong_item(block: Block | None) -> bool:
+            """「强条目」：以「；」收尾的标记列表块，或以「；」收尾的无标记段落。
+
+            两种形态都不可能是组尾——列项末条必须以「。」结束（GBT-H06）——故其后
+            必属同组。组尾判定只依赖这一无歧义证据，不猜「。」/「：」的歧义。
+            """
+            if block is None:
+                return False
+            if block.kind == "list":
+                items = block.data.get("items") or []
+                return bool(items) and all(str(item.get("text") or "").strip().endswith("；") for item in items)
+            return (unmarked_item(block) or "").endswith("；")
 
         index = 0
         while index < len(blocks) - 1:
@@ -2096,10 +2360,11 @@ class CSMParser:
                 index += 1
                 continue
 
-            entries: list[tuple[str | None, str, int, Block | None]] = []  # (marker, text, line, src)
+            entries: list[tuple[str | None, str, int, Block | None, bool]] = []  # (marker, text, line, src, 无标记推断)
             consumed_blocks: list[Block] = []
+            normalized_terminators = 0
             if glued is not None:
-                entries.append((None, glued, intro.start_line or 0, None))
+                entries.append((None, glued, intro.start_line or 0, None, True))
             scan = index + 1
             while scan < len(blocks):
                 block = blocks[scan]
@@ -2107,26 +2372,46 @@ class CSMParser:
                     items = block.data.get("items") or []
                     if not items:
                         break
-                    more: list[tuple[str | None, str, int, Block | None]] = []
+                    more: list[tuple[str | None, str, int, Block | None, bool]] = []
                     ok = True
                     for item in items:
                         itext = str(item.get("text") or "").strip()
                         if not itext.endswith(("；", "。")):
                             ok = False
                             break
-                        more.append((str(item.get("marker") or ""), itext, int(item.get("line") or 0), None))
+                        more.append((str(item.get("marker") or ""), itext, int(item.get("line") or 0), None, False))
                     if not ok:
                         break
                     entries.extend(more)
                     consumed_blocks.append(block)
                     scan += 1
-                    if more[-1][1].endswith("。"):
-                        break  # list 内末条「。」收尾即组完整，不再吸收后续散文
+                    # 标记列表块末条「。」收尾：其后仍是强条目即说明该「。」是源文组中
+                    # 偶发（GB_T_5171.1-2014 前言第 7 条），组继续；否则组在此收尾。
+                    following = blocks[scan] if scan < len(blocks) else None
+                    if more[-1][1].endswith("。") and not strong_item(following):
+                        break
                     continue
                 item_text = unmarked_item(block)
                 if item_text is None:
+                    # 条目末「；」被 OCR 读成「：」：仅当其后仍续有强条目才按条目吸收
+                    # （否则视为新引语，截断不猜）；吸收时按列项结构归一终止符为「；」。
+                    tail_text = block.text.strip()
+                    following = blocks[scan + 1] if scan + 1 < len(blocks) else None
+                    if (
+                        block.kind == "paragraph"
+                        and tail_text.endswith("：")
+                        and "\n" not in tail_text
+                        and not clause_prefix.match(tail_text)
+                        and not lead_prefix.match(tail_text)
+                        and strong_item(following)
+                    ):
+                        entries.append((None, tail_text[:-1] + "；", block.start_line or 0, block, True))
+                        consumed_blocks.append(block)
+                        normalized_terminators += 1
+                        scan += 1
+                        continue
                     break
-                entries.append((None, item_text, block.start_line or 0, block))
+                entries.append((None, item_text, block.start_line or 0, block, True))
                 consumed_blocks.append(block)
                 scan += 1
                 # 完整性：末条以「。」收尾即列表完整；其后不再吸收（防把后续散文并入）。
@@ -2135,12 +2420,16 @@ class CSMParser:
             if len(entries) < 2 or not consumed_blocks:
                 index += 1
                 continue
-            # 末条必须「。」收尾、其前全部「；」收尾——完整性判定。
-            if not entries[-1][1].endswith("。") or any(not text.endswith("；") for _, text, _, _ in entries[:-1]):
+            # 末条必须「。」收尾；组内无标记（推断）条目必须「；」收尾——完整性判定。
+            # 标记列表块内条目的终止符由源文决定（组中偶发「。」不违规）。
+            if not entries[-1][1].endswith("。"):
+                index += 1
+                continue
+            if any(inferred and not text.endswith("；") for _, text, _, _, inferred in entries[:-1]):
                 index += 1
                 continue
             # 幸存 marker 族须 ≥1 且一致（首个幸存 marker 定族）。
-            marked = [marker for marker, _, _, _ in entries if marker]
+            marked = [marker for marker, _, _, _, _ in entries if marker]
             if not marked:
                 index += 1
                 continue
@@ -2148,14 +2437,19 @@ class CSMParser:
             if family is None or any(CSMParser._marker_family(m) != family for m in marked):
                 index += 1
                 continue
-            missing = [e for e in entries if e[0] is None]
-            if not missing:
+            missing = [entry for entry in entries if not entry[0]]
+            if not missing and not normalized_terminators:
                 index += 1
                 continue
-            # 补 marker：破折号/间隔号沿用幸存 marker；字母/数字按组序重排（缺号自然补齐）。
+            # 补 marker：破折号/间隔号沿用幸存 marker 族的多数派符号；字母/数字按组序重排
+            # （缺号自然补齐）。整组已判型为同一列表（引语 + 条目序列），符号按 GBT-B04/
+            # GB/T 1.1 7.5.3 取多数派形态，消除 OCR 长度变体（-/—/——）造成的组内不一致。
             if family in ("dash", "dot"):
-                restored = marked[0]
-                rebuilt = [(marker or restored, text, line) for marker, text, line, _ in entries]
+                surviving: dict[str, int] = {}
+                for marker in marked:
+                    surviving[marker] = surviving.get(marker, 0) + 1
+                restored = max(surviving, key=lambda marker: (surviving[marker], -marked.index(marker)))
+                rebuilt = [(marker or restored, text, line) for marker, text, line, _, _ in entries]
             else:
                 paren = "）" if marked[0].endswith("）") else ")"
                 start = marked[0][0]
@@ -2165,7 +2459,7 @@ class CSMParser:
                         letter = chr(ord(base) + i)
                         return letter.upper() if start.isupper() else letter
                     return str(i + 1)
-                rebuilt = [(seq(i) + paren, text, line) for i, (_, text, line, _) in enumerate(entries)]
+                rebuilt = [(seq(i) + paren, text, line) for i, (_, text, line, _, _) in enumerate(entries)]
             # 整组收敛为单个 list 块：引导句去粘连，组内首个源块改为 list，删除其余。
             if glued is not None:
                 intro.text = intro_text[:colon_at + 1]
@@ -2180,39 +2474,287 @@ class CSMParser:
                 issues,
                 "CSM-OCR-016",
                 f"Colon-led list rebuilt with a complete item sequence: restored {len(missing)} "
-                f"missing {family} marker(s) after {intro_text[:20]!r}.",
+                f"missing {family} marker(s)"
+                + (f" and normalised {normalized_terminators} item terminator(s) to '；'" if normalized_terminators else "")
+                + f" after {intro_text[:20]!r}.",
                 line=first_src.start_line,
                 repaired=True,
                 repair_action="Rebuilt the colon-led item run as one list with family markers on every item.",
             )
+            # 组内符号归一（CSM-OCR-001 同款判据：多数派 ≥2 且严格多于其余）：重建后整组为
+            # 单一 list，OCR 长度变体（-、—、——）在此按多数派统一；平手不猜，不动。
+            cls._repair_list_markers(blocks, issues)
             index += 2  # intro + 重建后的 list 块
+
+    @staticmethod
+    def _formula_number_label(raw: str) -> str | None:
+        """「式（1）」/「(1)」/「1」→ 纯编号标签「1」（编号行归一，CSM-OCR-017）。"""
+        text = str(raw).strip()
+        match = _FORMULA_NUMBER_LINE_RE.match(text)
+        if match:
+            text = match.group(1)
+        text = text.strip().strip("（）()").strip()
+        return text or None
+
+    @staticmethod
+    def _formula_tag_label(tag_content: str) -> str | None:
+        """从 \\tag 内容（引导线 + 编号）里取出编号：\tag{……………………(1} → 「1」。
+
+        引导线由「…/⋯」组成，编号是行尾括号内的阿拉伯数字或附录式（A.1），
+        OCR 常把右括号一起吞掉，故右括号可选。
+        """
+        cleaned = re.sub(r"[…⋯\u2024\u22ef\s]+", " ", str(tag_content)).strip()
+        match = _FORMULA_TAG_LABEL_RE.search(cleaned)
+        if match:
+            return match.group(1)
+        match = _FORMULA_NUMBER_LABEL_RE.search(cleaned)
+        return match.group(1) if match else None
+
+    @classmethod
+    def _repair_formula_numbers(cls, blocks: list[Block], issues: list[CSMIssue]) -> None:
+        """公式编号提取与全文档编号管理（CSM-OCR-017；GBT-X06）。
+
+        MinerU 把整条公式行（公式 + 「…………」引导线 + 编号）识别成一个 equation
+        块，引导线与编号被写进 LaTeX 的 ``\\tag{...}``（且常缺右花括号：
+        ``\\tag{……………………(1}``），编号因此从未进入 SSIR，渲染端也无从按
+        GB/T 1.1-2020 10.4.3「公式编号右端对齐，公式与编号之间由“……”连接」编排。
+
+        本修复只做抽取层的事：把编号从 ``\\tag`` 里读出来、清掉该残留，让编号回到
+        CSM 语法的独立行（``$$`` 块之后一行「式(N)」，docs/07），并把它归一为纯
+        编号标签（「式（1）」→「1」；渲染端补圆括号）。
+
+        编号本身**不猜测、不重排、不填补**：全文档编号序列（正文自引言起
+        1..n 连续，附录内重新从 1 开始并加附录字母前缀，GB/T 1.1-2020 9.6.3/9.9.2）
+        只用于一致性检查——抽取到的编号与序列位置不符时如实报出，缺编号的公式
+        保持无编号（9.9.2 只在需要引用或提示时才要求编号）。
+        """
+        annex: str | None = None
+        body_expected = 0
+        annex_expected = 0
+        for block in blocks:
+            if block.kind == "heading":
+                # 附录标题（「附录 A（资料性）…」）切换编号作用域：附录内公式重新编号。
+                match = ANNEX_HEADING_RE.match(block.text.strip())
+                if match:
+                    annex = match.group(1)
+                    annex_expected = 0
+                continue
+            if block.kind != "formula":
+                continue
+            tag = FORMULA_TAG_RE.search(block.text)
+            if tag:
+                label = cls._formula_tag_label(tag.group(1))
+                block.text = (block.text[: tag.start()] + block.text[tag.end():]).rstrip()
+                if label and not str(block.data.get("number") or "").strip():
+                    block.data["number"] = label
+                cls._issue(
+                    issues,
+                    "CSM-OCR-017",
+                    f"公式行残留 MinerU 编号引导线 {tag.group(0)[:40]!r}；编号提取为 {label or '（无法识别）'}。",
+                    line=block.start_line,
+                    repaired=True,
+                    repair_action="Extracted the formula number from the LaTeX \\tag residue and removed the leader-line noise from the formula text.",
+                )
+            raw_number = str(block.data.get("number") or "").strip()
+            if not raw_number:
+                continue
+            label = cls._formula_number_label(raw_number)
+            if label and label != raw_number:
+                block.data["number"] = label
+                if not _FORMULA_NUMBER_LINE_RE.match(raw_number):
+                    # 只有非「式(N)」形态（OCR 噪声）才记修复；标准 CSM 编号行与
+                    # 表题「**表N 题名**」同规——解析出编号标签属解析动作，不记 issue。
+                    cls._issue(
+                        issues,
+                        "CSM-OCR-017",
+                        f"公式编号行 {raw_number!r} 归一为编号 {label!r}。",
+                        line=block.start_line,
+                        repaired=True,
+                        repair_action="Normalised the formula number line to the bare number label.",
+                    )
+            if not label:
+                block.data.pop("number", None)
+                cls._issue(
+                    issues,
+                    "CSM-OCR-017",
+                    f"公式编号行 {raw_number!r} 无法识别为编号（未修正）。",
+                    line=block.start_line,
+                )
+                continue
+            # 全文档编号管理：期望编号 = 正文 1..n / 附录 <字母>.1..n。
+            if annex:
+                annex_expected += 1
+                expected = f"{annex}.{annex_expected}"
+            else:
+                body_expected += 1
+                expected = str(body_expected)
+            if label != expected:
+                cls._issue(
+                    issues,
+                    "CSM-OCR-017",
+                    f"公式编号与文档内连续编号不一致：抽取为 ({label})，按 GBT-X06 应为 ({expected})"
+                    f"（GB/T 1.1-2020 9.9.2/9.6.3；抽取值保留不改写）。",
+                    line=block.start_line,
+                )
+
+    @classmethod
+    def _repair_formula_variable_lines(cls, blocks: list[Block], issues: list[CSMIssue]) -> None:
+        """公式变量解释组的模式化归一（CSM-OCR-018；GBT-X06）。
+
+        GB/T 1.1-2020 9.9.3/10.4.3：变量由字母符号代表，公式后用「式中：」引出
+        解释（「式中：」空两个汉字起排）。解释项固定形态 = **变量 + 破折号 +
+        解释文字 + 分号（末项句号）**，变量与破折号之间、破折号与解释之间各空
+        四分之一汉字（字隙由渲染层实现）。
+
+        OCR 把这一组读坏的方式与列项同型（CSM-OCR-016/001）：破折号被压成单个
+        「—」或整段丢失（GB_T_5171.1-2014 式(1) 六项里三项丢、两项压短），末标点
+        被读成「：」或整段漏掉（式(2) 两项缺终止符）。
+
+        判型（保守，全部满足才动）：以独占一行的「式中：」为锚；其后连续若干
+        段落块逐项匹配「短变量头 + 可选破折号/冒号/空白 + 汉字解释」；组内至少
+        两项。修复只碰**破折号族与终止符**，不重排、不改解释文字：破折号族
+        （-、—、——、———、－…）统一为「——」，缺失的破折号补回，缺终止符的
+        补「；」（末项补「。」），以「：」等非句末标点收尾的改为应有的终止符；
+        **已有的「。」不强制改「；」**（组内句号可能是示例边界，如 GB/T 1.1-2020
+        9.9.3.2 的"正确/不正确"对照示例）。
+        """
+        index = 0
+        while index < len(blocks):
+            intro = blocks[index]
+            if intro.kind != "paragraph" or not FORMULA_VAR_INTRO_RE.match(intro.text.strip()):
+                index += 1
+                continue
+            group: list[Block] = []
+            cursor = index + 1
+            while cursor < len(blocks):
+                candidate = blocks[cursor]
+                if candidate.kind != "paragraph":
+                    break
+                if not FORMULA_VAR_ITEM_RE.match(candidate.text.strip()):
+                    break
+                group.append(candidate)
+                cursor += 1
+            if len(group) >= 2:
+                cls._normalise_formula_variable_group(group, issues)
+            index = cursor if group else index + 1
+
+    @classmethod
+    def _normalise_formula_variable_group(cls, group: list[Block], issues: list[CSMIssue]) -> None:
+        """把一组变量解释项归一为「变量——解释；/。」（CSM-OCR-018）。"""
+        for position, block in enumerate(group):
+            original = block.text
+            match = FORMULA_VAR_ITEM_RE.match(block.text.strip())
+            if not match:
+                continue
+            head = match.group("head").strip()
+            explanation = match.group("text").strip()
+            is_last = position == len(group) - 1
+            terminator = "。" if is_last else "；"
+            # 终止符：缺则补，非句末标点（：、,、等）改为应有终止符；
+            # 已有「；/。」保持（组内句号可能是示例边界，不强制改写）。
+            if explanation.endswith("；") or explanation.endswith("。"):
+                body = explanation
+            else:
+                body = re.sub(r"[:：，,、;；.．。]+$", "", explanation).rstrip()
+                body = f"{body}{terminator}"
+            normalised = f"{head}——{body}"
+            if normalised == original.strip():
+                continue
+            block.text = normalised
+            cls._issue(
+                issues,
+                "CSM-OCR-018",
+                f"公式变量解释项归一为固定形态（原 {original[:24]!r} → {normalised[:24]!r}）。",
+                line=block.start_line,
+                repaired=True,
+                repair_action="Normalised the variable-explanation item to the fixed 'symbol —— explanation；' pattern.",
+            )
+
+    @classmethod
+    def _repair_inline_script_tokens(cls, blocks: list[Block], issues: list[CSMIssue]) -> None:
+        """行内角标标记：旧形式迁移 + 配对校验（CSM-STRUCT-007；docs/07 §6.7）。
+
+        通用形式 = 开 ``[:sup:a]``/``[:sub:2]`` + 闭 ``[:/sup]``/``[:/sub]``
+        （成对；闭标记与最近未闭合的开标记配对、不渲染），或自闭合
+        ``[:sup:a/]``（引用点＝空注解区）。注解区文本（表注注文、图表注、脚注
+        解释文字）按普通文本渲染，与角标字符分离。
+
+        本修复做两件事（都确定性、幂等）：
+        - 旧形式迁移：``[:^a]`` → ``[:sup:a/]``、``[^a]X[^a/]`` → ``[:sup:a]X[:/sup]``；
+        - 配对校验：未闭合开标记 → 文本末尾补配对闭标记；孤立闭标记 → 删除；
+          闭标记 script 与开标记不符 → 按开标记改写。
+        作用范围：正文段落/注/示例/警示/引用/脚注、列项条目、表格单元格文本
+        （未知内容按 GEN-052 原样保留，不动）。
+        """
+        for block in blocks:
+            if block.kind in {"paragraph", "note", "example", "warning", "quote", "footnote"}:
+                fixed = cls._script_token_text(block.text, block.start_line, issues)
+                if fixed != block.text:
+                    block.text = fixed
+            elif block.kind == "list":
+                for item in block.data.get("items", []):
+                    original = str(item.get("text", ""))
+                    fixed = cls._script_token_text(original, block.start_line, issues)
+                    if fixed != original:
+                        item["text"] = fixed
+            elif block.kind == "table":
+                for row in block.data.get("rows", []):
+                    for index, cell in enumerate(row):
+                        fixed = cls._script_token_text(str(cell), block.start_line, issues)
+                        if fixed != str(cell):
+                            row[index] = fixed
+
+    @classmethod
+    def _script_token_text(cls, text: str, line: int | None, issues: list[CSMIssue]) -> str:
+        """单个文本片段的角标标记迁移 + 配对修复（返回修复后文本）。"""
+        fixed, migrated = _migrate_legacy_script_tokens(str(text))
+        if migrated:
+            cls._issue(
+                issues,
+                "CSM-STRUCT-007",
+                f"旧式角标标记迁移为通用形式（{migrated} 处）：[:^x] → [:sup:x/]、"
+                f"[^x]…[^x/] → [:sup:x]…[:/sup]。",
+                line=line,
+                repaired=True,
+                repair_action="Migrated the legacy per-character note tokens to the generic inline script tokens.",
+            )
+        fixed, repaired = _normalise_script_token_pairs(fixed)
+        if repaired:
+            cls._issue(
+                issues,
+                "CSM-STRUCT-007",
+                f"行内角标标记配对修复（{repaired} 处）：未闭合补闭标记 / 孤立闭标记删除 / "
+                f"script 不符按开标记改写。",
+                line=line,
+                repaired=True,
+                repair_action="Repaired unmatched inline script tokens (unclosed open, orphan close, script mismatch).",
+            )
+        return fixed
 
     @staticmethod
     def _repair_text_spacing(blocks: list[Block], issues: list[CSMIssue]) -> None:
         """Restore spacing OCR drops inside standard-document text (CSM-OCR-003/004).
 
         - CSM-OCR-003 术语间隔：术语条目「中文English」（或 OCR 留下半角空格的
-          「中文 English」）中英文之间应空一个汉字。用 U+3000（全角空格）实现：
-          reportlab 段落渲染把它当作普通空白折叠成窄空格仍可显示，且该字体
-          有 U+3000 字形（不会渲染成 .notdef 方框）；历史实现曾用 U+200B
+          「中文 English」）中英文之间应空一个汉字（GB/T 1.1-2020 10.3.5）。用
+          U+3000 表示：渲染端 `_markup` 把「汉字 + U+3000 + 拉丁」换成恰好 1em 的
+          不可见字隙（白色汉字填充），不会渲染成 .notdef 方框；历史实现曾用 U+200B
           （零宽空格）制造 1em 推进宽度，但 Noto Serif CJK SC 无 U+200B 字形，
           2026-08-29 起改用 U+3000（见 GB_T_20001.5 渲染回归）。
-          只在「术语和定义」章内、行首为汉字串后接拉丁字母、且不含中文标点的
-          行上修复，避免误伤正文。
-        - CSM-OCR-004 标准号间隔：正文中的标准号字母与数字之间应有一个空格
-          （GB/T20001 → GB/T 20001）。只匹配已知前缀形态（GB/T、JB/T、SJ/T、
-          DB11/T、GB/Z、GB 等），带斜杠前导被排除（SAC/TC286 不动），单字母
-          前缀排除（维生素B1 不动）。
+          只在「术语和定义」要素内、且行为术语行（汉字串 + 英文对应词）时修复——
+          裸术语行与带条目编号的术语条目标题行（「3.1.2 标准 standard」）同规，
+          行内出现中文标点即不认（定义/正文不是术语行），避免误伤正文。
+        - CSM-OCR-004 标准号间隔：正文中的标准号「文件代号 + 顺序号」之间应有一个
+          空格（GB/T20001 → GB/T 20001）。只匹配**已知文件代号**（带斜杠的
+          GB/T、JB/T、DB11/T、GB/Z…、团体/企业 T/ZZB、Q/XKBZ、无斜杠的
+          GB、GJB、ISO、IEC…），带斜杠前导被排除（SAC/TC286 不动），单字母
+          前缀排除（维生素B1 不动）。旧实现的第二分支是 `[A-Z]{2,4}(?=[0-9])`
+          —— 什么都吞，落到列项/单元格载体上会把 RS485、AC1 500 V 这类**非标准号**
+          也拆开，故收窄为白名单（2026-09-11）。
+          载体覆盖 块文本（段落/标题）、列项条目文本、表格单元格文本。
         """
-        term_re = re.compile(r"^([\u4e00-\u9fff]{1,24})[ \u3000\u200b]*([A-Za-z])")
-        no_cjk_punct = re.compile(r"[，。；：？！、”“‘’《》【】（）…]")
         chapter_re = re.compile(r"^\d+\s+\S")
         annex_re = re.compile(r"^附\s*录")
-        standard_re = re.compile(
-            r"(?<![A-Za-z0-9/])([A-Z]{1,4}\d{0,2}/[TZ])(?=\d)"
-            r"|(?<![A-Za-z0-9/])([A-Z]{2,4})(?=\d)"
-        )
-        term_gap = "\u3000"
 
         in_terms = False
         for block in blocks:
@@ -2222,41 +2764,46 @@ class CSMParser:
                     in_terms = False
                 elif chapter_re.match(text) and "术语" in text:
                     in_terms = True
-            if block.kind not in ("paragraph", "heading"):
-                continue
-            original = block.text
-            repaired = original
-            # 标准号间隔（对所有文本行统一修复，幂等：已有空格则不再插入）
-            repaired = standard_re.sub(lambda m: f"{m.group(1) or m.group(2)} ", repaired)
-            # 术语间隔（仅术语章内、行首中文串后接拉丁、无中文标点）
-            if in_terms:
-                for line in repaired.splitlines():
-                    stripped = line.strip()
-                    if not stripped or no_cjk_punct.search(stripped):
-                        continue
-                    if re.match(r"^\d", stripped):
-                        continue  # 术语章内的编号行（3.1 等）不动
-                    if term_re.match(stripped):
-                        repaired = re.sub(
-                            r"^([\u4e00-\u9fff]{1,24})[ \u3000\u200b]*([A-Za-z])",
-                            rf"\1{term_gap}\2",
-                            repaired,
-                            count=1,
-                        )
+            # 载体：块文本（段落/标题）、列项条目文本、表格单元格文本。标准号间隔
+            # 对三者一律适用——旧实现只修 block.text，列项分支写在不可达位置
+            # （`if block.kind not in ("paragraph","heading"): continue` 之后），
+            # 因此前言「GB/T1.2—2002」这类**列项里的**标准号从未被修复。
+            before = block.text
+            changed: list[tuple[str, str]] = []
+            fixed = restore_standard_number_spacing(block.text)
+            if fixed != block.text:
+                changed.append((block.text, fixed))
+                block.text = fixed
+            for item in block.data.get("items", []):
+                item_text = str(item.get("text", ""))
+                item_fixed = restore_standard_number_spacing(item_text)
+                if item_fixed != item_text:
+                    changed.append((item_text, item_fixed))
+                    item["text"] = item_fixed
+            for row in block.data.get("rows", []):
+                for cell_index, cell in enumerate(row):
+                    cell_fixed = restore_standard_number_spacing(str(cell))
+                    if cell_fixed != cell:
+                        changed.append((str(cell), cell_fixed))
+                        row[cell_index] = cell_fixed
+            # 术语间隔（仅术语和定义要素内；行首为术语行或术语条目标题行）
+            term_gap_applied = False
+            if in_terms and block.kind in ("paragraph", "heading"):
+                for line in block.text.splitlines():
+                    fixed_line = restore_term_entry_gap(line)
+                    if fixed_line != line:
+                        block.text = block.text.replace(line, fixed_line, 1)
+                        term_gap_applied = True
                         break
-            if repaired == original:
+            if not changed and not term_gap_applied:
                 continue
-            block.text = repaired
-            # 列表项文本同样修复（列表项的 text 在 data.items 里）
-            if block.kind == "list":
-                for item in block.data.get("items", []):
-                    item_text = str(item.get("text", ""))
-                    item_repaired = standard_re.sub(lambda m: f"{m.group(1) or m.group(2)} ", item_text)
-                    if item_repaired != item_text:
-                        item["text"] = item_repaired
+            if changed:
+                original, repaired = changed[0]
+            else:  # 术语行只补了中英文间隙
+                original, repaired = before, block.text
             CSMParser._issue(
                 issues,
-                "CSM-OCR-003" if term_gap in repaired else "CSM-OCR-004",
+                "CSM-OCR-003" if term_gap_applied else "CSM-OCR-004",
                 f"Restored spacing in {original[:40]!r} -> {repaired[:40]!r}.",
                 line=block.start_line,
                 repaired=True,

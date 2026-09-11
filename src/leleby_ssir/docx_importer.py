@@ -47,6 +47,12 @@ _SUBSCRIPT_MAP = {
     "-": "₋", "−": "₋", "+": "₊", "(": "₍", ")": "₎", "=": "₌",
 }
 _HEADING_STYLE_RE = re.compile(r"heading\s*(\d+)|标题\s*(\d+)", re.IGNORECASE)
+# docx_renderer 的公式行（GBT-X06；GB/T 1.1-2020 10.4.3）：制表位定位 + 公式图 +
+# 两个汉字间隔 + 「…」引导线 + 右端编号。制表符与引导线是**渲染版式**不是内容，
+# 回灌时剥离，编号还原为 CSM 语法的独立行「式(N)」（docs/07 §6.7）。
+_FORMULA_LEADER_RE = re.compile(
+    r"^[\s\u3000]*(?P<image>!\[\]\([^)]*\))[\s\u3000]*…+[\s\t]*(?P<number>[（(]\s*[A-Za-z]?\d+(?:\.\d+)*\s*[）)])[\s\u3000]*$"
+)
 
 
 def _qn() -> Any:
@@ -241,6 +247,11 @@ def _paragraph_items(paragraph: Any, source: Path, assets_root: Path,
 
     text = _paragraph_text_runs(paragraph, source, assets_root, docx_warnings)
     plain = text.strip()
+    # 公式行回灌（GBT-X06）：剥离渲染版式的制表符/引导线，编号还原为独立行。
+    formula = _FORMULA_LEADER_RE.match(text)
+    if formula:
+        label = formula.group("number").strip().strip("（）()").strip()
+        return "text", f"{formula.group('image')}\n式({label})"
     if style_name.endswith("Table Caption") and (plain.startswith("表") or plain.startswith("图")):
         return "caption", _strip_emphasis(plain)
     if style_name.endswith("Figure Caption"):

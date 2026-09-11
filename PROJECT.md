@@ -235,11 +235,57 @@ lookWhy/
    row 为 0-based 表格行、row=0 即表头行，表头跨列也正确合并）；两条抽取路径共用，
    改表格逻辑只改这一处。
 10. **报告断言**：对外声称的 pageCount/warnings 数量要以实际产物为准，不要凭
-    印象；改渲染后重跑 `--render` 对比 `*.pdf-comparison.json`。
+    印象；改渲染后重跑 `--render` 对比 `04_render/<stem>.render-comparison.json`。
+11. **版式间隙不得用空格表达**：reportlab 两端对齐按 PDF 字间距（Tw）分摊余量，
+    只作用于空格字节，且一行中只要有一个被它计作空格的字符（`_nbspCount` 认
+    U+00A0），该行**所有空格一起变宽**（实测数值-单位间隙 0.95–1.60 个汉字宽、
+    列项 marker 后 2.69→8.67pt）。GB/T 规定的是固定汉字位/四分之一汉字，一律用
+    **固定字隙**：PDF 用白字哨兵（`_markup` 的 `\x00QEM\x00`、`_fixed_gap` 的
+    `\x00WSP<pt>\x00`，按点数绘 1em 宽白字，故点数即宽度），docx 用制表符 +
+    显式制表位（Word 同样拉伸空格）。U+2009/U+202F 等窄空格 Noto Serif CJK SC
+    无字形（会成 .notdef 方框），不可用。
+12. **公式编号可能藏在 LaTeX `\tag` 里**：MinerU 把整条公式行（公式 + `…………(1)`）
+    识别成一个 equation 块，引导线连编号写进 `\tag{……………………(1}`（常缺右花括号），
+    所以 `formulas[].number` 为空**不代表**原文没有编号——按 CSM-OCR-017 从 `\tag`
+    提取（不要手改 canonical）；抽取确实没有编号的公式保持无编号（GB/T 1.1-2020
+    9.9.2 只在需要引用/提示时要求编号，**不填补、不重排**）。渲染端公式行是
+    `_FormulaLeaderLine`（PDF）/ 制表位实现（docx）：公式居中 + 两个汉字间隔 +
+    省略号（个数按可用宽度实算）+ 编号右端对齐，公式图会先收到留得下引导线的宽度。
+    「式中：」变量解释走 CSM-OCR-018 的固定形态「变量——解释；/。」，破折号两侧的
+    四分之一汉字字隙由渲染层补（陷阱 11 同技术），canonical 里不写空格。
+13. **表注角标 = 「行内角标标记」，只有一种形式**：canonical 写 `[:sup:a]…[:/sup]`
+    （角标 + 注解区）或自闭合 `[:sup:a/]`（引用点，空注解区），下角标用 `[:sub:2]`
+    （1–4 字的角标字符，如 a、1)、†）。旧写法 `[:^a]`／`[^a]…[^a/]` 由 parser 确定性
+    迁移并校验配对（CSM-STRUCT-007；docs/07 §6.7），不要再按角标字符设计新标记对。
+    **多条注在同一单元格里连排、不写 `<br>`**：渲染端（`inline_script_item_breaks`，
+    pdf/docx 同源）自动在相邻两对标记之间换行；旧 canonical 的 `<br>` 仍被接受。
+    回收端（CSM-OCR-015）有两个坑：① 视觉行聚类必须按**基线**（`_cluster_visual_lines`）
+    ——同一表格行里中文字体字框顶比西文低 ≈4pt，按 bbox 顶聚类会把锚文本与紧随的
+    上标拆成两行（表20 电容器端电压d、无线电干扰的测试e 就是这样漏检的）；② 连排
+    注文补位要按「整格已出现的字母集 + 命中位点独占」设门槛，否则共享长前缀的注文头
+    （表20 f/g 都以「只有在产品标准中规定了」起头）会把字母补到相邻注文的起点上。
+14. **显式框标记是精确语法，写错就静默失效，且框线必须是细线**：canonical 的框线起止
+    只能是 HTML 注释 `<!-- ssir:box -->`（可带 `style="frame|shaded"`）与
+    `<!-- ssir:/box -->`——**斜杠在 `ssir:` 之后**（不是 `/ssir:box`），`<`/`>` 一个都
+    不能少。形态不对的行会退化成普通段落：框直接消失，开标记笔误连 issue 都不报（只在
+    关标记近似指令行时给 CSM-STRUCT-001 提示）。手工加框后确认 SSIR 里真的出现 `"box"`
+    字段（`grep '"box"' <stem>.ssir.json`）或渲染图上真有框线，不要只看 canonical。
+    **框线默认细实线**（GB/T 1.1 10.4.5；`_EXAMPLE_FRAME_WIDTH = 0.5pt`，与表网格线
+    同宽、docx `w:sz=4` 同值；源 PDF 实测示例框 0.33pt、表外框线 0.76pt）——框线不得
+    粗于表线。线宽与表线同宽后，几何回归不再能按线宽区分框/表：框 = 页面上最外的一对
+    通高竖线（tests/test_pdf_renderer.py 的 RenderPdfExampleBoxGeometryTests 用这个口径）。
+15. **列项两个层次各有自己的汉字位，字隙不能按错基准算**（GB/T 1.1 10.2.2）：第一层次
+    marker 空 2 汉字起排、文字（含回行）在第 5 个汉字位；第二层次 marker 空 4 汉字、
+    文字在第 7 个汉字位。PDF 的字隙 = **`-firstLineIndent` − marker 宽**（marker 从
+    `leftIndent + firstLineIndent` 起排）——不能拿 `leftIndent + firstLineIndent` 当
+    「目标位」：那只在第一层次（4/2 汉字）凑巧相等，第二层次（6/2）会把文字推到第 8
+    个汉字位，而白字占位符的**字号就是字隙宽**（26pt 的行框会把该行撑高、与相邻行框
+    重叠）。docx 用 `_list_indent`（缩进随层次变，制表位 = 文字列），级别判定与 PDF
+    共用 `_list_is_sub_level`。
 
 ## 9. 测试与验证惯例
 
-- 改完代码跑 `./.venv/bin/python -m unittest discover`（41 个测试）。
+- 改完代码跑 `./.venv/bin/python -m unittest discover`（全量单测，当前 286 例）。
 - 全流程验证用金标准 PDF：`corpus/golden/Q_003.pdf`（企业标准 6 页，快）、
   `JB_T_14425-2023.pdf`（OCR 型 21 页）、`GB_T_25141-2022.pdf`（国标 18 页）。
 - 验证清单：roundtrip passed、渲染 warnings 数量合理（企业标准 ICS/CCS 缺失

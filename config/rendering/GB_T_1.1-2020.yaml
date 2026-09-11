@@ -22,6 +22,13 @@ fonts:
   # otf2ttf 转换后的 TrueType 版（tools/prepare_serif_font.py 一键生成）。
   body: NotoSerifSC
   body-file: config/rendering/fonts/NotoSerifCJKsc-Regular.ttf
+  # 注/示例标记（「注：」「注1：」「示例：」「示例1：」）：附录 F 表 F.1 序号 42/44
+  # 要求小五号**黑体**，且要与宋体正文一眼可分。primary（文泉驿正黑）是**细黑**，
+  # 9pt 下笔画密度与宋体正文相当（换字体不换字重看不出加黑），故标记单独用黑体粗：
+  # 思源黑体 Bold（同为 CFF 轮廓的 .ttc，otf2ttf 转换后使用，
+  # tools/prepare_label_font.py 一键生成）。留空则退回 primary。
+  label: NotoSansCJKsc-Bold
+  label-file: config/rendering/fonts/NotoSansCJKsc-Bold.ttf
 styles:
   body: {size-pt: 10.5, leading-pt: 18, first-line-indent-em: 2, alignment: justify}
   section: {size-pt: 16, leading-pt: 22, alignment: center}
