@@ -190,3 +190,7 @@ rules:
   stage: extract/merge
   priority: should
   rule: 表格块 hybrid-engine 第二遍：MinerU pipeline 的表格结构识别只在可见网格线处断行——\"隐藏行表\"（块内逐行叠印无网格线，GB_T_5171.1-2014 表1 温升限值、GB_T_755-2025 表13 类）被压成单行单元格且数值串粘接不可逆；正文不得整体换 hybrid-engine（VLM 整页正文丢数字/拉丁短串）。extract 阶段对含表页额外跑 hybrid-engine 表格识别，merge 按（页, 页内序）替换 pipeline 表块的行结构、保留 pipeline 指令行（id/题注/编号）、改写 merge 指令的 table 引用；hybrid 缺失/失败/表数不齐时确定性回退 pipeline 表块（不猜测）；content_list 的 page_idx 是相对 invocation 起始页的本地索引，换算全局页号需加 base。该通道默认关闭（hybrid VLM 整页跑耗时）：不加参数时表格保持 pipeline 原样（原始逻辑），仅 --hybrid-tables 显式开启（未开启时丢弃历史 hybrid 结果，防 merge 误用上一轮替换）。
+- id: GEN-095
+  stage: extract/merge
+  priority: should
+  rule: 并列版面几何识别（finalize 打标，渲染为无边框定位容器）：同一水平带内 x 分离的 2~3 组内容成组。分片目录名（pages-037-054）换算**绝对页号**作页键——MinerU 分片后每个分片的 page_idx 都从 0 起，按相对页号聚合会把不同分片的同号页混在一起。并列区切分：通栏块（宽 ≥ 版心 62%）、独占一行的「示例N：」题注块、相邻块垂距 > 1.5×行高处断开。锚点块为 image 与 interline_equation（公式对照型，如 GB/T 1.1-2020 9.9.3.1 示例3/4 的「正确/不正确」）；锚点按 x 中心聚类成列（2~3 列，4+ 并排不猜测），区内所有块按 x 中心到各列 x 区间的距离归属列。内容映射：图/公式块按 asset basename 匹配注册表；块文本并入 `inline_equation` span（变量在行内公式 span 里），匹配归一「去 `$` + 破折号族压成单个 `—`」（对齐 CSM-OCR-018 的 SSIR 归一）；文本块只在**锚点所在父节点**内匹配（「正确：」等标签在多处出现，跨节点全局匹配会串组）；已有 sideBySideGroup（canonical `ssir:columns` 手工声明）的内容绝不覆盖。收尾校验：≥2 列各有命中，且每个父节点内命中的内容元素 sortOrder 连续无空洞（否则并列组会被渲染端切成多张表），不满足则整组回滚；同文本内容按行（y 容差 0.6 行高）+ x 顺序对应 sortOrder 序候选（返回下一个未用候选）。已存在组 id 纳入占用集合，新组 id 跳过（重复运行幂等）。纯文本并列（无图/公式锚点）不自动猜测，走手工声明。

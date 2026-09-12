@@ -87,6 +87,13 @@ def _sort_order(value: dict[str, Any]) -> int:
     return int(value.get("sortOrder", 0))
 
 
+def _format_width(value: float) -> str:
+    """列宽比的确定性文本（整数不带小数点：2.0 → "2"，1.5 → "1.5"）。"""
+    if value == int(value):
+        return str(int(value))
+    return f"{value:g}"
+
+
 class _RenderState:
     def __init__(self, document: dict[str, Any]) -> None:
         self.document = document
@@ -120,10 +127,51 @@ class _RenderState:
         self._sync_box(node.get("box"), node.get("boxStyle"))
         level = min(max(int(node.get("level", 1)) + 1, 2), 6)
         self.lines.extend(["#" * level + " " + self._heading(node), ""])
-        for content in sorted(node.get("contentElements", []), key=_sort_order):
-            self.render_content(content)
+        self.render_contents(node.get("contentElements", []) or [])
         for child in sorted(node.get("children", []), key=_sort_order):
             self.render_node(child)
+
+    def render_contents(self, contents: list[dict[str, Any]]) -> None:
+        """内容元素序列发射：并列组（sideBySideGroup）按**列优先**重排后重放
+        `ssir:columns/column//columns` 标记（2026-09-11）。
+
+        抽取顺序在源两栏版式下常按行跨栏交错，而 canonical 的并列声明是列优先
+        的；这里统一输出列优先，使「canonical → SSIR → render.md → 再解析」得到
+        同一组列内容（roundtrip 的并列视图按列比较，跨列交错不算差异）。
+        """
+        ordered = sorted(contents, key=_sort_order)
+        index = 0
+        while index < len(ordered):
+            group = ordered[index].get("sideBySideGroup")
+            if group:
+                members: list[dict[str, Any]] = []
+                while index < len(ordered) and ordered[index].get("sideBySideGroup") == group:
+                    members.append(ordered[index])
+                    index += 1
+                self._render_side_by_side(members)
+                continue
+            self.render_content(ordered[index])
+            index += 1
+
+    def _render_side_by_side(self, members: list[dict[str, Any]]) -> None:
+        widths = members[0].get("sideBySideWidths")
+        attr = ""
+        if widths:
+            rendered = ",".join(_format_width(float(value)) for value in widths)
+            attr = f' widths="{rendered}"'
+        self.lines.append(f"<!-- ssir:columns{attr} -->")
+        self.lines.append("")
+        columns: dict[int, list[dict[str, Any]]] = {}
+        for member in members:
+            columns.setdefault(int(member.get("sideBySideColumn", 0)), []).append(member)
+        for position, column in enumerate(sorted(columns)):
+            if position:
+                self.lines.append("<!-- ssir:column -->")
+                self.lines.append("")
+            for member in sorted(columns[column], key=_sort_order):
+                self.render_content(member)
+        self.lines.append("<!-- ssir:/columns -->")
+        self.lines.append("")
 
     def _heading(self, node: dict[str, Any]) -> str:
         # 规则对应: GBT-C09/GEN-030（附录编号、(规范性)/(资料性) 与标题连排不插空格）。

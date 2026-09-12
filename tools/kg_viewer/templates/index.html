@@ -14,6 +14,8 @@
 </header>
 <main class="kg-wrap">
   <h1>标准文档库（{{ docs|length }}）</h1>
+  <p class="kg-hint">每份文档可「浏览」结构树/内容、「图谱」看本体图，或点「详情」打开文档级信息弹窗
+    （元数据、日期、机构、术语逐条、标准要素分层与清单核对）。</p>
   {% if not docs %}
   <p class="kg-empty">数据库为空。请先用命令行导入：
     <code>.venv/bin/python tools/kg_tool.py import GB_T_1.1-2020</code></p>
@@ -36,6 +38,7 @@
         <td class="ops">
           <a href="{{ url_for('doc_page', doc_id=d.doc_id) }}">浏览</a>
           <a href="{{ url_for('graph_page', doc_id=d.doc_id) }}">图谱</a>
+          <a href="javascript:void(0)" onclick="openDocDetail({{ d.doc_id | tojson }})">详情</a>
         </td>
       </tr>
     {% endfor %}
@@ -46,5 +49,6 @@
     数据来自 out/mineru/&lt;ID&gt;/03_ssir/*.ssir.json（文件真源）；本库可随时重建。
   </p>
 </main>
+<script src="{{ url_for('static', filename='js/detail.js') }}"></script>
 </body>
 </html>

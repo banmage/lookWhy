@@ -38,6 +38,8 @@ _STRUCTURAL_KIND = {
     "clause": "Clause",
     "subClause": "Clause",
     "annex": "Annex",
+    # 附录内的章/条（B.1/B.6.1）：图 kind 归入 Clause（kg.schema 无独立 AnnexSection）。
+    "annexSection": "Clause",
     "item": "ContentUnit",
     "subItem": "ContentUnit",
 }

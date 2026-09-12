@@ -146,7 +146,33 @@ class SSIRBuilder:
         # 嵌套开（parser 已报 CSM-STRUCT-006）在此忽略，与宽容解析语义一致。
         active_box: int | None = None
         active_box_style: str = "frame"
+        # 附录作用域（2026-09-12）：当前附录节点 + 其内附录条链（点数, 节点），
+        # 供附录条按字母归位（不依赖层级栈，见 heading 分支）。
+        current_annex: dict[str, Any] | None = None
+        annex_chain: list[tuple[int, dict[str, Any]]] = []
+        # ssir:columns 显式并列声明（2026-09-11）：开标记推进当前并列组，column
+        # 事件推进列序号，其间的每个内容元素写入 sideBySideGroup/sideBySideColumn
+        # （渲染为同一行内的无边框定位容器）。组宽比随内容元素下发。
+        active_columns: int | None = None
+        active_column: int = 0
+        active_columns_widths: list[float] | None = None
         for block in document.blocks:
+            if block.kind == "columns":
+                event = block.data.get("event")
+                if event == "open" and active_columns is None:
+                    active_columns = state.counters["columns"] + 1
+                    state.counters["columns"] = active_columns
+                    active_column = 0
+                    active_columns_widths = block.data.get("widths")
+                elif event == "column":
+                    if active_columns is not None:
+                        active_column += 1
+                elif event == "close":
+                    active_columns = None
+                    active_column = 0
+                    active_columns_widths = None
+                state.canonical_parts.append(block.text)
+                continue
             if block.kind == "box":
                 if block.data.get("event") == "open" and active_box is None:
                     active_box = (state.counters["box"] + 1)
@@ -176,9 +202,57 @@ class SSIRBuilder:
                     node["box"] = active_box
                     node["boxStyle"] = active_box_style
                 depth = max((block.level or 2) - 1, 1)
-                while stack and stack[-1][0] >= depth:
-                    stack.pop()
-                parent = stack[-1][1] if stack else root
+                node_type = node.get("nodeType")
+                node_number = str(node.get("number") or "")
+                if node_type == "documentBlock" and not node_number and str(node.get("title") or "").replace(" ", "") in {
+                    "参考文献", "索引", "前言", "引言", "目次", "封面"
+                }:
+                    # 文后/前置要素：退出附录作用域，其后同名编号不再归入上一个附录。
+                    current_annex = None
+                    annex_chain = []
+                    while stack and stack[-1][0] >= depth:
+                        stack.pop()
+                    parent = stack[-1][1] if stack else root
+                elif node_type == "annex":
+                    # 附录容器挂根级；记录当前附录，供其下附录条按字母归位。
+                    while stack and stack[-1][0] >= depth:
+                        stack.pop()
+                    parent = stack[-1][1] if stack else root
+                    current_annex = node
+                    annex_chain = []
+                elif (
+                    node_type == "annexSection"
+                    and current_annex is not None
+                    and node_number.split(".")[0] == str(current_annex.get("number") or "")
+                ):
+                    # 附录条父节点由附录字母决定，不取层级栈——模型示例（GB_T_20001
+                    # 系列）的章节标题与其同级，按层级会把附录条挂到示例章节之下。
+                    dots = node_number.count(".")
+                    while annex_chain and annex_chain[-1][0] >= dots:
+                        annex_chain.pop()
+                    parent = annex_chain[-1][1] if annex_chain else current_annex
+                    annex_chain.append((dots, node))
+                    while stack and stack[-1][0] >= depth:
+                        stack.pop()
+                elif (
+                    current_annex is not None
+                    and node_type == "documentBlock"
+                    and EX_HEADER_RE.match(str(node.get("title") or "").strip())
+                    and int(node.get("level") or 1)
+                    > int((annex_chain[-1][1] if annex_chain else current_annex).get("level") or 1)
+                ):
+                    # 附录内的**简单示例**（parser CSM-OCR-008 已提升到所属附录条/
+                    # 附录之下）：中间可能夹着示例内容里误升的无编号标题（如
+                    # GB_T_1.1-2020 示例2 的「##    多刃刀片 …」），层级栈会被它弹出，
+                    # 故按附录作用域直接归位。**模型示例**未被提升（层级不深于附录条），
+                    # 不满足本分支，保持扁平示例文档模型。
+                    parent = annex_chain[-1][1] if annex_chain else current_annex
+                    while stack and stack[-1][0] >= depth:
+                        stack.pop()
+                else:
+                    while stack and stack[-1][0] >= depth:
+                        stack.pop()
+                    parent = stack[-1][1] if stack else root
                 parent.setdefault("children", []).append(node)
                 stack.append((depth, node))
                 state.canonical_parts.append(block.text)
@@ -222,6 +296,11 @@ class SSIRBuilder:
             if active_box is not None:
                 element["box"] = active_box
                 element["boxStyle"] = active_box_style
+            if active_columns is not None:
+                element["sideBySideGroup"] = f"columns-{active_columns}"
+                element["sideBySideColumn"] = active_column
+                if active_columns_widths:
+                    element["sideBySideWidths"] = list(active_columns_widths)
             parent.setdefault("contentElements", []).append(element)
             state.canonical_refs.append(element["id"])
             state.canonical_parts.append(self._canonical_fragment(block))
@@ -398,12 +477,23 @@ class SSIRBuilder:
         # 编号后必须接汉字/字母/括号，不能接数字："1 000 kV 变电站监控系统 技术规范"
         # 的 "1 000" 是名称本身（一千伏），不是章号 "1"（GEN-031 层次编号规范化）。
         numbered = re.match(r"^(\d+(?:\.\d+)*)(?:\s+)?(?=[\u4e00-\u9fffA-Za-z（(])(.+)$", title)
+        # 附录条（`B.1`/`B.6.1`，GB/T 1.1-2020 9.6.2/10.4.1）：附录大写字母 + 点分
+        # 数字链。段数决定层级（parser CSM-OCR-006 已按其提升 heading 级别），
+        # 节点类型为数据模型定义的 annexSection（附录内的章/条）。缺此分支时标题
+        # 连同编号落进 documentBlock、层级停留在附录同级 → 附录无子节点。
+        annex_section = re.match(r"^([A-Z]\.\d+(?:\.\d+)*)(?:\s+)?(?=[\u4e00-\u9fffA-Za-z（(])(.+)$", title)
+        annex_section_pure = re.match(r"^([A-Z]\.\d+(?:\.\d+)*)$", title)
         if annex:
             number = annex.group(1)
             # Annex status is normative information, so retain it in the schema's title field.
             status = annex.group(2)
             title = f"（{status}） {annex.group(3)}".rstrip() if status else annex.group(3).strip()
             node_type = "annex"
+        elif annex_section or annex_section_pure:
+            match = annex_section or annex_section_pure
+            number = match.group(1)
+            title = (match.group(2).strip() if annex_section else "")
+            node_type = "annexSection"
         elif numbered:
             number = numbered.group(1)
             title = numbered.group(2)

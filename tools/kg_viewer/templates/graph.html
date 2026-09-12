@@ -20,7 +20,8 @@
   <div class="kg-topbar-inner">
     <a class="kg-brand" href="{{ url_for('index') }}">标准知识图谱</a>
     <span class="kg-sub mono">{{ doc.standard_number }}</span>
-    <span class="kg-actions"><a href="{{ url_for('doc_page', doc_id=doc.doc_id) }}">← 内容浏览</a></span>
+    <span class="kg-actions"><a href="{{ url_for('doc_page', doc_id=doc.doc_id) }}">← 内容浏览</a>
+      <a href="javascript:void(0)" onclick="openDocDetail({{ doc.doc_id | tojson }})">文档详情</a></span>
   </div>
 </header>
 
@@ -167,5 +168,6 @@ function btn(name) {
 
 loadGraph('core');
 </script>
+<script src="{{ url_for('static', filename='js/detail.js') }}"></script>
 </body>
 </html>

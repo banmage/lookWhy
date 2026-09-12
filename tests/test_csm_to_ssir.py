@@ -174,8 +174,16 @@ source:
             path.write_text(csm, encoding="utf-8")
             ssir = parse_csm(path)
         nodes = {str(node.get("title") or "").replace(" ", ""): node for node in self._nodes(ssir["structuralRoot"]) if node.get("nodeType") == "documentBlock"}
-        for title in ("参考文献", "索引", "B", "Z"):
+        for title in ("参考文献", "索引"):
             self.assertFalse(nodes[title].get("exampleContent"), f"{title} must not be example content")
+        # 索引分组字母（B/Z）不是结构节点：按 CSM-OCR-019 降级为索引内容段落
+        # （此前被 MinerU 抽成 ## 标题，成为与附录同级的文档块）。
+        self.assertNotIn("B", nodes)
+        self.assertNotIn("Z", nodes)
+        index_node = next(node for node in nodes.values() if str(node.get("title") or "").replace(" ", "") == "索引")
+        index_texts = {str(ce.get("textContent") or "") for ce in index_node.get("contentElements") or []}
+        self.assertIn("B", index_texts)
+        self.assertIn("Z", index_texts)
         for title in ("示例：", "多刃刀片GB/T2079-TPGN160308-EN-P20"):
             self.assertTrue(nodes[title].get("exampleContent"), f"{title} must be example content")
 

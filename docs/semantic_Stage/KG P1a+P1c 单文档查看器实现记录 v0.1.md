@@ -64,3 +64,35 @@
 - 中文全文检索、运营库（审核流/权限）按主规划 §6 阶段 3；数据量大/多跳查询变扭时再引 Neo4j。
 - Track R 可视化面：规则包层（L1..Ln）叠层图数据源 = rules/ registry + profile 材料化产物
   （R0a 落地后自然可接）。
+
+---
+
+## 增补：文档详情弹窗（2026-09-12，用户需求）
+
+**需求**：作为浏览页的补充，点击文档详情弹出分层信息页——文档级元数据（发布日期/
+实施日期/代替标准/起草单位…）、术语（条数 + 逐层展开定义）、要素（分类与具体名称），
+给人更清晰的分层次展示。
+
+**实现**（`tools/kg_viewer/`）：
+
+- `detail.py`：纯函数 `build_document_detail(payload)`，从 SSIR 载荷只读派生
+  `identity / dates / relations / organizations / terms / elements / stats / coverage`。
+  - 前言机构：标准正文没有「起草单位」等元数据字段，从 `前言` 节点的正文正则提取
+    提出/归口（含「提出并归口」合并句）、起草单位、主要起草人（按 `、，,;；` 切分）。
+  - 术语：收 `node.term` 非空的节点，定义取 `semanticTypes` 含 `termDefinition` 的
+    首个段落（回退首个段落），带条款号/英文对应词/canonical 行/节点 id（可跳结构树）。
+  - 要素：顶层节点按 `标准要素完整清单.md` 分类为 GBT-E01~E14（封面由元数据派生；
+    E11/E12 归主体章节并注明「归类取决于文件功能类型」），分「前置/主体/附录/文后」
+    四组；`coverage` 同时输出 E01~E14 与元数据 M01~M14 的命中/缺失表。
+- `GET /api/doc/<doc_id>/detail`：返回上述结构（叠加 `document` 摘要）。
+- 前端 `static/js/detail.js`（原生 JS，无新依赖）：`window.openDocDetail(docId)` 弹出
+  可折叠弹窗，①②基本信息/日期与关系/③组织机构/④术语（逐条 `<details>`）/⑤标准要素
+  （分组 + 逐条详情 + 跳 `/doc/<id>?focus=<node_id>`）/⑥清单核对/⑦规模统计；
+  index 页每行「详情」、doc 与 graph 页顶栏「文档详情」三处入口共用。
+- 样式在 `static/css/kg.css` 末尾（`.kg-modal-*` / `.kg-dsec` / `.kg-term` / `.kg-elem`
+  / `.kg-cover-table` 等）。
+
+**验证**：`tests/test_kg_viewer_detail.py` 6 例（元数据/机构提取/术语/要素分组/清单核对/
+统计），全量单测 349 绿；真实语料 GB_T_1.1-2020 详情：17 条术语、起草单位 9 家、主要
+起草人 16 人、要素 11/14 命中（缺 E08 符号和缩略语、E09 分类和编码、E10 总体原则）、
+元数据 13/14（缺 M13 技术领域/关键词）；DOM 桩运行 `detail.js` 12 项渲染检查全过。

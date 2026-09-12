@@ -1243,8 +1243,10 @@ def _is_table_caption_shape(content: dict[str, Any]) -> bool:
 def _append_side_by_side(story: list[Any], members: list[dict[str, Any]], registries: dict[str, dict[str, dict[str, Any]]], styles: dict[str, Any], font: str, report: PDFRenderReport, asset_dir: Path, colors: Any, Table: Any, TableStyle: Any, Paragraph: Any, Spacer: Any, Image: Any, content_width: float = _BODY_MEASURE) -> None:
     """Render a side-by-side group as one borderless table row (div 定位等价物)。
 
-    每列是一个单元格（flowables 垂直堆叠）：图按 sourceWidth 原尺寸居中，
-    图内标注/说明文字用 side-cell 样式列内居中。无 GRID/BOX 命令 → 无表格线。
+    每列是一个单元格（flowables 垂直堆叠）：图按 sourceWidth 原尺寸居中，公式图
+    按原尺寸居中（列宽上限内只缩小不放大），图内标注/说明文字用 side-cell 样式列内
+    居中。无 GRID/BOX 命令 → 无表格线。列宽按 ssir:columns 的 widths 比例（缺省按
+    各列内容最宽比例，再退化等分）分配当前容器可用内容宽。
     """
     from reportlab.platypus import KeepTogether
 
@@ -1254,8 +1256,21 @@ def _append_side_by_side(story: list[Any], members: list[dict[str, Any]], regist
     col_keys = sorted(columns)
     if not col_keys:
         return
+    col_index = {col: position for position, col in enumerate(col_keys)}
+    # 显式列宽比（ssir:columns 的 widths 属性，同组成员同值；尺寸不符则忽略）。
+    ratios: list[float] = []
+    raw_ratios = members[0].get("sideBySideWidths")
+    if raw_ratios:
+        try:
+            ratios = [float(value) for value in raw_ratios]
+        except (TypeError, ValueError):
+            ratios = []
+    if len(ratios) != len(col_keys) or any(value <= 0 for value in ratios):
+        ratios = []
     col_flowables: list[list[Any]] = []
-    col_widths: list[float] = []
+    natural_widths: list[float] = []
+    # 公式图（新）：记录 (image, 列序号) 供列宽定下后按列宽上限收窄，防穿列。
+    formula_images: list[tuple[Any, int]] = []
     for col in col_keys:
         cell: list[Any] = []
         widest = 0.0
@@ -1284,6 +1299,32 @@ def _append_side_by_side(story: list[Any], members: list[dict[str, Any]], regist
                     widest = max(widest, draw_w)
                 else:
                     report.warnings.append(f"Missing figure asset in side-by-side group: {figure.get('id')}")
+            elif kind == "formula":
+                # 并列列内的公式（GB/T 1.1 9.9.3.1 示例3/4 型"正确/不正确"对照）：
+                # 与正文公式同规则取原图（MinerU 裁剪图 / MathText 生成图），列内居中。
+                formula = registries["formulas"].get(content.get("formulaRef", ""))
+                if formula:
+                    asset = formula.get("assetRef")
+                    source_image = _resolve_asset(asset_dir, asset) if asset else Path("")
+                    image_path = source_image if source_image.is_file() else _formula_image(
+                        formula.get("latex") or formula.get("rawText", ""), asset_dir
+                    )
+                    if image_path:
+                        image = Image(str(image_path))
+                        scale = min(1.0, content_width / image.imageWidth, 140 / image.imageHeight)
+                        image.drawWidth = image.imageWidth * scale
+                        image.drawHeight = image.imageHeight * scale
+                        image.hAlign = "CENTER"
+                        cell.append(image)
+                        formula_images.append((image, col_index[col]))
+                        widest = max(widest, image.drawWidth)
+                    else:
+                        report.warnings.append(
+                            f"Formula in side-by-side group could not be typeset: {formula.get('id')}"
+                        )
+                        fallback = _latex_to_text(str(formula.get("rawText") or formula.get("latex") or ""))
+                        if fallback.strip():
+                            cell.append(Paragraph(_markup(fallback), styles["side-cell"]))
             elif kind in {"paragraph", "note", "quote", "example", "warning"}:
                 text = str(content.get("textContent") or "")
                 if text.strip():
@@ -1294,17 +1335,25 @@ def _append_side_by_side(story: list[Any], members: list[dict[str, Any]], regist
                     marker = _list_marker(str(item.get("marker", "-")))
                     cell.append(Paragraph(_markup(f"{marker} {item.get('text', '')}".strip()), styles["side-cell"]))
         col_flowables.append(cell)
-        col_widths.append(widest or 60)
-    # 列宽：按各列最宽图原尺寸比例分配当前容器可用内容宽（content_width），
-    # 无图列给保底宽度（正文 455pt / 示例框内 421.5pt，表/图不穿容器框线）。
-    total = sum(col_widths)
+        natural_widths.append(widest)
+    # 列宽：显式 widths 比例优先；否则按各列最宽图/公式原尺寸比例分配当前容器
+    # 可用内容宽（content_width），无图无公式列给保底宽度（正文 455pt / 示例框内
+    # 421.5pt，表/图不穿容器框线）；全为文字时等分。
     avail = content_width - 8 * len(col_keys)  # 单元格左右 padding
-    if total <= 0:
-        col_widths = [avail / len(col_keys)] * len(col_keys)
-    elif total <= avail:
-        col_widths = [w * avail / total for w in col_widths]
+    if ratios:
+        total_ratio = sum(ratios)
+        col_widths = [avail * value / total_ratio for value in ratios]
     else:
-        col_widths = [w * avail / total for w in col_widths]
+        widths = [w or 60 for w in natural_widths]
+        total = sum(widths)
+        col_widths = [w * avail / total for w in widths]
+    # 公式图按所在列可用宽收窄（保留纵横比）：显式 ratios 比内容窄时不穿列。
+    for image, position in formula_images:
+        limit = col_widths[position] - 8
+        if limit > 0 and image.drawWidth > limit:
+            scale = limit / image.drawWidth
+            image.drawWidth *= scale
+            image.drawHeight *= scale
     grid = Table([col_flowables], colWidths=col_widths)
     grid.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
@@ -3046,7 +3095,11 @@ def _index_story(root_nodes: list[dict[str, Any]], styles: dict[str, Any], Index
     if start is None:
         return []
     rows: list[tuple[str, str | None]] = []
-    for node in root_nodes[start + 1:]:
+    # 索引内容可能挂在「索引」节点自身的 contentElements（2026-09-12 起：字母分组
+    # 行按 CSM-OCR-019 降级为段落、不再是与附录同级的兄弟节点），也可能在后续兄弟
+    # 节点里（旧结构：`## B`/`## D`/`## Z` 节点）。两者都收，兼容两种结构。
+    source_nodes = [root_nodes[start], *root_nodes[start + 1:]]
+    for node in source_nodes:
         title = str(node.get("title") or "").strip()
         if re.fullmatch(r"[A-Z]", title):
             rows.append((title, None))

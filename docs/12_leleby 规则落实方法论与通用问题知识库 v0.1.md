@@ -143,6 +143,11 @@
 | 49 | 「注：」仍看不出加粗（2026-09-11 用户报告：「标准中很多『注：』仍没有加粗显示，如 4.2 a) 下的注」） | §3.31 的标记加黑只把标记换成 **primary 黑体（文泉驿正黑）**，而正黑是**细黑**：9pt 下实测笔画墨度 0.209，与宋体正文（0.232）相当甚至更轻。"黑体" 的字面要求满足、字形区分却等于没有 | 渲染 profile 新增 `fonts.label`/`fonts.label-file`（默认思源黑体 Bold，`tools/prepare_label_font.py` 用与宋体同一套 otf2ttf 流程把 CFF 转 TrueType），`pdf_renderer._LABEL_FONT` 模块级（与 `_MARKUP_EM_SIZE` 同属 profile 决定的渲染期全局）由 `render_pdf` 依 profile 设置，`_label_markup` 应用；注悬挂缩进前缀宽同步改按标记实际字体实测。docx 侧无改动（标记 run 已是黑体+bold） | GBT-B10、GBT-B11（10.4.4.1、10.4.5；附录 F 表 F.1 序号 42/44）执行侧落实；无新规则 ID | GB_T_1.1-2020 重渲染：4.2 a) 注标记「注」墨度 **0.359**（修前 0.209 vs 正文 0.19—0.25）＝正文的 1.5—1.9 倍，肉眼可见加粗；106 处标记 span 字体全为 `NotoSansCJKsc-Bold`（内容仍 `NotoSerifCJKsc`）；回归测试新增「同字形墨度比对」1 例（标记侧 > 内容侧 1.3×，故意细黑会失败）+ 既有字形断言改读 profile |
 | 50 | 前言里标准号「GB/T1.2—2002」字母与数字之间的间隔丢失（2026-09-11 用户报告） | `parser._repair_text_spacing` 的 CSM-OCR-004 修复只作用于 `block.text`，而**列项条目**文本在 `data["items"]`、**表格单元格**在 `data["rows"]`——list 分支写在 `if block.kind not in ("paragraph","heading"): continue` **之后**（永不执行的死代码）。前言「历次版本发布情况」正是列项，故那几行标准号从未被修（渲染稿直接印成 `GB/T1.2—1996`）。同一分支的第二条正则 `[A-Z]{2,4}(?=[0-9])` 什么都吞，载体一扩展就把 `RS485`、`AC1 500 V` 这类非标准号拆开 | 载体扩展为 块文本 + 列项条目文本 + 表格单元格文本；无斜杠分支收窄为**已知文件代号白名单**（GB、GJB、ISO、IEC…，斜杠形态 `X/T`、`X/Z`、团体/企业 `T/ZZB`、`Q/XKBZ` 仍覆盖）；规则本体抽成模块级 `restore_standard_number_spacing`（解析修复与回放工具单源）。新增 `tools/replay_text_spacing.py`（CSM-OCR-003/004 逐行回放：跳过 front matter/围栏/指令/图片行，改动必须是「只动空白」，写回后复验命中 0） | CSM-OCR-004（工程规则；GBT-B02/B03 正文书写执行侧） | 跨语料命中 004：1.1-2020 1→7、20001.10 1→3、5171.1 0→4、JB_T_14425 0→7（全部为真实标准号），003 命中 0→0；canonical 回放 38 行（10 份）全部「只插入空格」，复验 003/004 命中 **0**；负例 15 例（RS485/AC1 500 V/维生素B1/SAC/TC286/已有间隔/URL…）零改动；回归测试 5 例（含载体覆盖与幂等） |
 | 51 | 9.4.4.4 的「上下两行的分数」能否正确表达（2026-09-11 用户提问，**不是缺陷报告**） | canonical/SSIR 里该式是**行内 LaTeX**（`$\frac{V}{\mathrm{km/h}}\cdot\frac{l}{\mathrm{m}}$ 和 $\frac{t}{\textrm{s}}$ 或 $v/(km/h)\lrcorner l/\mathrm{m}$…`，抽取原样），但渲染端 `_latex_to_text` 按既有工程规则把行内公式**拍平**成可读文本：`\frac{a}{b}` → `(a)/(b)` → 渲染成「(V)/(km/h)·(l)/(m) 和 (t)/(s) 或 v/(km/h) l/m 和t/s」（`\lrcorner` 无映射被丢弃、`和t/s` 缺空格）。**块级公式**（式(N)）走 matplotlib 图片排版，行内公式没有图片通道 | 未改动（留待裁定）：可行方案是把**含 `\frac` 的行内公式**改走行内图片（matplotlib → reportlab 段内 `<img>` 基线对齐），只在真分式时启用、其余行内公式仍拍平——判据通用（真分式无法线性化），但会影响行内公式的换行与宽度计算，需先裁定再实施；当前如实记录为**行内数学排版局限**（数据无损，`\lrcorner` 是 MinerU 抽取噪声） | 无（记录项；`_latex_to_text` 自 2026-08-27 起为工程规则） | 9.4.4.4 渲染文本层实测为拍平形态（上述字面）；源 PDF 该处确为**真分式**（V/km/h 上下叠排，Y 向两行），故"能否表达"的答案是：数据在、通道缺 |
+| 52 | GB/T 1.1-2020 9.9.3.1 示例3/4/5 的「正确/不正确」对照应为**左右并列**，实际渲染成上下堆叠（示例4 的左右内容还互相交错：式中/E/F/l 与 不正确/公式/或 交替；示例5 修复过程中另暴露两类匹配缺陷，见「修复」） | 源 PDF 是两栏对照版面（正确 x78–105、不正确 x308–344，公式 x159/x380 同一 y 带）；MinerU 阅读顺序按行**跨栏交替**线性化（middle.json 块序 正确→fL→不正确→式中→fR→E→或→F→fR2→l），列归属在抽取层丢失；引擎侧：① 既有并列打标 `_stamp_side_by_side_layout` 只把 `type=="image"` 当锚点，`interline_equation`（公式）不在候选 → 公式型并列永不命中；② 该函数用**相对 page_idx** 作页键，MinerU 分片后每个分片 page_idx 都从 0 起，跨分片同号页会并进同一桶（潜在跨页误组）；③ PDF `_append_side_by_side` 无 `formula` 分支，公式列会被丢弃；④ docx 无并列渲染；⑤ canonical 无手工声明手段。**示例5 专项根因**（修复①②③④⑤ 后仍漏）：a) MinerU 把变量解释行的变量放在 `inline_equation` span、只把「——解释」放在 text span，块文本抽取只取 text span → 与 SSIR 文本（含 `$t_i$`）**精确匹配落空**；b) SSIR 侧破折号已被 CSM-OCR-018 归一为「——」，块文本仍是 `———`，精确匹配再落空；c) 重复标签「式中：」×2 与同形解释行的匹配只认第一个候选；任一内容落空 → 组内 sortOrder 出现空洞 → 整组被连续性校验回滚（示例5 因此未成组）；d) 半程续跑/重复打标会从 0 重编组 id、与已存在组撞名 | **两条腿**：① 手工声明 `ssir:columns`/`column`/`/columns`（docs/07 §6.9，parser+builder → sideBySideGroup/Column/Widths，CSM-STRUCT-008；csm_renderer 按列优先确定性重放；roundtrip 并列感知视图）；② 几何自动识别 GEN-095：页键改绝对页号，`示例N：`题注/通栏块/大垂距切分并列区，锚点 = 图块+公式块，区内块按 x 距各列区间归列，文本仅在锚点父节点内匹配（正确/不正确 多处出现不串组），要求 ≥2 列命中且父节点内 sortOrder 连续否则整组回滚；渲染端 PDF `_append_side_by_side` 增 formula 分支与 `sideBySideWidths` 列宽比、文本列按字宽计入自然宽，docx 并列组渲染为无框 1×N 表（可嵌于 ssir:box 外框内）。**示例5 专项修复**：匹配用 `_norm` 增「去行内公式定界符 `$` + 破折号族（`[—–]+`）压成单个 `—`」；块文本并入 `inline_equation` span；同文本内容按**行（y 容差 0.6 行高，两列同一行 y 可差 1–2pt）+ x** 顺序对应 sortOrder 序候选；已存在组 id 纳入 `used_group_ids`，新组 id 跳过占用（重复运行幂等） | GEN-095（新）；CSM-STRUCT-008（新）；docs/07 §6.9 | GB_T_1.1-2020 重跑 reprocess：自动成组 **4 处**（p037-c00 示例3、p037-c01 示例4、p037-c02 示例5、p038-c03 9.9.3.2「使用/而不使用」），roundtrip passed、渲染 85 页 0 警告；PDF 实测 示例3/4/5 的 正确/不正确 同基线（y=219.1 / 354.1 / 542.0）、x 分离（156.9/354.4、167.8/365.3、177.3/374.8），修前同 x=116.4 上下堆叠；docx 4 组无框 1×2 表（嵌于框内，示例5 两列各含「式中：」与变量解释）；跨语料 9 份重打标零新增组（仅 1.1-2020 4 组，无锚点页零误判，重复运行幂等）；回归测试 19 例、全量单测 332 绿 |
+| 53 | kg_viewer 文档浏览页结构树里**附录 A/B/… 的下属条款没有折叠到附录之下**（2026-09-12 用户报告）。实测 GB_T_1.1-2020：附录 A–F 全部 `kids=0`，B.1–B.6.3 挂在文档根上与附录平级；`annexSection` 节点类型在数据模型中定义却从未产生 | canonical 里附录条与附录同为 `##`（MinerU 扁平抽取，如 `## 附录 B（规范性）标准化项目标记` 与 `## B.1 概述`）；parser 的层级修复 `_repair_heading_levels`（CSM-OCR-006）只认**十进制**编号 `\d+(\.\d+)*`，附录条的「大写字母 + 点分数字」`[A-Z]\.\d+...` 不在其内 → heading 级别不提升；builder 按 heading 级别压栈，附录条 depth 与附录相同 → 挂成附录的兄弟（且 `numbered` 正则只认数字，标题连同编号落进 `documentBlock`、`number` 为空）。结构树只按 `parent_id` 建，附录因此无子节点 | `parser._repair_heading_levels` 编号式扩为 `\d+(?:\.\d+)*\|[A-Z]\.\d+(?:\.\d+)*`：附录条按点分链段数提升（B.1 两段 → level 3、B.6.1 三段 → level 4），自然落入所属附录之下；`builder._make_node` 新增附录条分支：`^([A-Z]\.\d+(?:\.\d+)*)` → `number` + `nodeType="annexSection"`（数据模型 §附录内的章/条），标题去掉编号；`kg.py` `_STRUCTURAL_KIND` 补 `annexSection → Clause`（kg.schema 无独立 kind）。附录标题、条号文本、渲染文本均不变 | CSM-OCR-006 载体扩展（附录条编号；无新码）；数据模型 docs/01 annexSection 首次落地 | GB_T_1.1-2020：附录 B 6 子条（B.1–B.7）、B.6 3 子条（B.6.1–B.6.3）、附录 C 5 子条、附录 D 3 子条全部嵌套（重新 reprocess + 重导 kg.db 后结构树可折叠）；`annexSection` 18 个；roundtrip passed、渲染 85 页 0 警告；跨语料 15 份 canonical 重解析：新增附录条 7 份（1.1-2020 18、5171.1 10、GB_3100 7、20001.10 7、20001.5 3、JB_T_14425 3、T_ZZB 1064 1）全部 roundtrip 通过（GB_T_20001.10-2014 的 6.4.3 段落/节点往返差异为**改动前既有**、与本规则无关，见 §3.37 遗留）；回归测试 5 例、全量单测 337 绿 |
+| 54 | `tools/kg_tool.py import <ID>` **重导同一 doc_id 失败**：首次导入空库成功，第二次（更新）报 `sqlite3.OperationalError: unable to open database file`（2026-09-12 应用附录条修复时实测必现，导致查看器拿不到新结构） | `kgstore.import_ssir` 用 `INSERT OR REPLACE INTO documents`；`documents` 是被 `structure` 以 `ON DELETE CASCADE` 引用的**父表**，REPLACE 的内部删除触发级联，在 WAL 下对较大载荷（SSIR payload_json，实测 >~50KB）报 SQLITE_CANTOPEN。首次导入无同键冲突、不触发 REPLACE 删除路径，故只在重导时暴露 | `kgstore.import_ssir` 改为「显式 `DELETE FROM documents WHERE doc_id=?`（FK 级联清 structure）→ 普通 `INSERT INTO documents`」；`replaced` 语义（先查存在性）不变 | 工程规则（KG P1a 索引库；无新码） | 真实语料 GB_T_1.1-2020（1.3MB payload）连导两次成功、`replaced` 第二次为 true、库内仍 1 份；回归夹具 `test_reimport_large_payload_uses_delete_insert`（200KB 放大载荷，旧实现必失败、新实现通过，已用 stash 对照验证）；全量单测 338 绿 |
+| 55 | 结构树中**附录内的示例**（附录 A 的「示例：」、B.6.3.5/B.6.3.6 的「示例：/示例1～4：」）被误为**与附录同级**的元素；**索引**（`## 索 引`）的单字母分组标签 B/D/Z 也成了与附录同级的文档块（2026-09-12 用户报告：「该条款的下属元素」「索引的 B、D、Z」） | ① 示例：`_repair_example_heading_levels`（CSM-OCR-008）的归属上下文只认十进制条号，附录内的 `示例：` 留在 `##` → builder 按层级挂到文档根；且附录 B 示例2 内有一行被误升的无编号标题「##    多刃刀片 …」，按层级会把附录条上下文弹掉，示例3/4 更被挂到该噪声标题下。② 索引：MinerU 把拼音首字母分组行 B/D/Z 抽成 `##` 标题（C/F/W/X/Y 却是普通段落）→ 成为与附录同级的结构节点 | ① `_repair_example_heading_levels` 改用**显式附录作用域**（附录标题到下一个附录/文后要素之间全属该附录，不被噪声标题弹出），归属上下文纳入附录条编号与附录标题 → 简单示例提升到所属附录条/附录之下；**模型示例**（示例内容自带 `1`/`5`/`6.1` 章节标题，GB_T_20001 系列）判定后保持扁平示例文档模型。builder 对附录内简单示例按附录作用域归位（模型示例层级不深于附录条，不受影响），附录条按**附录字母**归位（免受扁平示例文档层级干扰）。② 新增 `_demote_index_letter_headings`（CSM-OCR-019）：索引要素内单字母标题降级为段落 | CSM-OCR-008 扩展；CSM-OCR-019（新）；builder 附录作用域归位（工程规则） | GB_T_1.1-2020 结构树：附录 A→示例、B.6.3→示例/示例1-4（5 个）、B.7→示例，共 **42 个附录内示例全部归位**、根级示例 0；索引 B/D/Z 不再是结构节点、作为索引内容段落挂在「索引」节点下；roundtrip passed、渲染 85 页 0 警告；GB_T_20001.5-2017 的 **6 个模型示例保持扁平**（A.2/A.3 正确归入附录 A）、渲染 20 页无 LayoutError；GB_T_20001.6 渲染 13 页；跨语料 15 份 roundtrip 仅 GB_T_20001.10 既有 6.4.3 差异；索引渲染回归（`_index_story` 改从「索引」节点自身 contentElements 取行，否则降级字母后整页索引渲染为空——实测曾 85→80 页）；回归测试 342 绿 |
+| 56 | 附录 B.6.3.6 示例2 的**标记行**「多刃刀片 GB/T 2079-TPGN 160308-EN-P20」被错误地提升到**与章同级**（2026-09-12 用户报告：「是其示例的下属元素」） | MinerU 把示例内容里的「标记：」行抽成 `##` 标题；该标题无编号、不在 CSM-OCR-008 的示例提升判据内，且其后紧跟的「标记中的相关字符含义如下：/T ——…/P20——…」等解释段被它夺走（挂到该节点下）。按标题层级它是一个 depth 1 的结构节点 → 渲染/结构树里与章平级 | 新增 `_repair_example_heading_levels` 的「简单示例内容标题」判据（**CSM-OCR-020**）：处于简单示例块内（`示例：/示例N：` 之后、下一个边界之前）且非边界（非 附录/附录条/十进制条号/文档级要素）的无编号标题 → 降级为段落；模型示例（示例文档自带章节）与正文标题不受影响 | CSM-OCR-020（新） | GB_T_1.1-2020：仅该 1 处命中，结构树中不再有 `多刃刀片…` 节点，B.6.3→示例2 的 contentElements 完整包含「产品：/硬质合金…/标记：/多刃刀片…/标记中的相关字符含义如下：/T——…/P20——…」（共 15 段）；跨语料零附带命中；roundtrip passed、渲染 85 页 0 警告；回归测试 `test_example_content_heading_demoted`、全量单测 343 绿 |
 
 
 
@@ -1375,6 +1380,271 @@ roundtrip passed；render.pdf 文本层无字面标记；框标记（§3.32）�
 （10.4.4.1、10.4.5）——均为**执行侧落实**，无新增规则 ID；CSM-OCR-003/004/007 为既有
 issue 码的**载体/形态扩展**（§5.3）。
 
+### 3.36 并列版式：手工声明 + 几何自动识别（GEN-095 / CSM-STRUCT-008，2026-09-11，用户裁定）
+
+**现象**（用户报告）：GB/T 1.1-2020 9.9.3.1 示例3/4 的「正确/不正确」应左右并列，
+渲染稿却是上下堆叠；示例4 的左右两栏内容还互相交错。用户要求：**不只针对「正确/
+不正确」，要做并列版式的通用处理**——能自动识别并正确排版最好，识别不了时允许在
+canonical 里手工加命令使其正确渲染。首轮修复后用户复报**示例5 仍上下排列**（本轮
+补齐，见下「示例5 专项」）。
+
+**根因（三层）**：
+
+- 源 PDF 无缺陷：9.9.3.1 示例3/4 是两栏对照版面（正确 x78–105 / 不正确 x308–344，
+  公式 x159–192 / x380–434 落在同一 y 带）。
+- MinerU 抽取局限：阅读顺序按行**跨栏交替**线性化，列归属丢失。middle.json（分片
+  pages-037-054，page_idx=0）块序为
+  `正确→fL→不正确→式中→fR→E→或→F→fR2→l`；canonical/SSIR 的 sortOrder 原样保留
+  这条交错序（示例4 sortOrder 0..9）。
+- 本引擎：① `tools/mineru_full_standard._stamp_side_by_side_layout` 只把
+  `type=="image"` 块当锚点（`interline_equation` 直接挂在 `block["lines"]`，且不在
+  候选内）→ 公式型并列永不命中；② 该函数以 **page_idx（分片内相对页号）** 作页键，
+  MinerU 分片后每个分片的 page_idx 都从 0 起，跨分片同号页会被并进同一桶（潜在跨页
+  误组）；③ `pdf_renderer._append_side_by_side` 只处理 figure/paragraph/list，无
+  `formula` 分支 → 即便打上标公式列也会被丢弃；④ `docx_renderer` 完全没有并列
+  渲染；⑤ canonical 没有手工声明并列的手段。
+
+**修复（两条腿，均为通用规则）**：
+
+1. **手工声明 `ssir:columns`**（docs/07 §6.9，与 `ssir:box` 同型事件块）：
+   - parser（`COLUMNS_MARKER_RE`）：`columns`/`column`/`/columns` 三段行级指令 →
+     `kind="columns"` 事件块；配对/嵌套/列错位记 **CSM-STRUCT-008**（宽容模式确定性
+     继续：未闭合延伸到文档尾、错位事件忽略）；开标记 `widths="2,3"` 解析为列宽比。
+   - builder：组内每个内容元素写 `sideBySideGroup="columns-N"`、`sideBySideColumn`、
+     `sideBySideWidths`（schema 新增字段）。
+   - `csm_renderer.render_contents`：并列组按**列优先**重排后重放标记（同组跨列交错
+     时先按列归并再输出），保证 canonical → render.md → 再解析同一列语义。
+   - `roundtrip._content_sequence_view`：并列组折叠为 `columns` 条目（列内保序、跨列
+     交错不参与比较），并列组成为 roundtrip 不变量。
+2. **几何自动识别 GEN-095**（`_stamp_side_by_side_layout` 重写）：
+   - 页键改**绝对页号**（分片目录 `pages-037-054` → +37；MinerU 分片 page_idx 各自
+     从 0 起，旧实现会串页）；
+   - 通栏块（宽 ≥ 版心 62%）、`示例N：` 题注块、垂距 > 1.5×行高处切分为独立并列区；
+   - 区内在锚点块（image + interline_equation）上按 x 中心聚类成 2~3 列（≤3 列不
+     猜测 4+ 并排），再按块 x 中心到各列 x 区间的距离归属列；
+   - 内容映射：图/公式按 asset basename 匹配注册表；文本**只在锚点所在父节点内**
+     匹配（「正确：/不正确：」在多处出现，跨节点全局匹配会串组）；
+   - 收尾校验：≥2 列各有命中，且每个父节点内命中的内容元素 sortOrder **连续无空洞**
+     （否则并列组会被渲染端切成多张表）——不满足整组回滚，不留半组；已有
+     `sideBySideGroup`（手工声明）的内容绝不覆盖；
+   - 纯文本并列（无图/公式锚点）不自动猜测，走手工声明。
+3. **渲染端**：PDF `_append_side_by_side` 增 `formula` 分支（缺图退化为文本）与
+   `sideBySideWidths` 列宽比；文本列按实测字宽计入自然列宽（防公式很窄时文字列被
+   压到不可读）。docx 并列组渲染为无框 1×N 表（单元格经 `_column` 容器路由，可嵌于
+   `ssir:box` 外框单元格内；示例内容路径 `_example_content` 一并接入）。
+
+**示例5 专项**（用户复报「示例5 还有 1 处未正确排版」，首轮修复后的第二轮）：
+
+- 现象：示例3/4 已并列，示例5（同为两栏「正确/不正确」）仍上下堆叠。
+- 根因（首轮修复未覆盖的内容匹配缺陷，任一命中失败即触发连续性回滚）：
+  1. MinerU 把变量解释行的**变量**放在 `inline_equation` span、只把「——解释」放在
+     text span；首轮块文本抽取只取 text span → 块文本 `——系统i 的统计量；` 与 SSIR
+     文本 `$t_i$——系统i 的统计量；` **精确匹配落空**；
+  2. SSIR 侧破折号已被 CSM-OCR-018 归一为「——」，MinerU 块文本仍是 `———`/`——`
+     变体 → 精确匹配再落空（`$S_{ME,i}$` 行因此匹配不到）；
+  3. 「式中：」在同组出现两次、变量解释行左右同形：`_match_text` 只返回第一个候选，
+     后一列的对应内容永远落空；
+  4. 上述任一内容落空 → 该父节点内命中集合 sortOrder 出现空洞（如缺 sort8）→ 整组
+     被连续性校验回滚（示例5 因此完全未成组）；
+  5. 半程续跑/重复打标时 `stamped_group` 从 0 重编，与已存在组 id 撞名（会把两个
+     不同示例的内容并成同一 `sideBySideGroup`）。
+- 修复（均通用，不针对示例5）：
+  1. 块文本抽取并入 `inline_equation` span（与实际 MinerU 层级一致）；
+  2. 匹配归一 `_norm` 增「去行内公式定界符 `$` + 破折号族 `[—–]+` 压成单个 `—`」
+     （对齐 CSM-OCR-018 的 SSIR 归一）；
+  3. 同文本内容改为按**行（y 容差 0.6 行高）+ x** 顺序对应 sortOrder 序候选（返回
+     下一个未用候选，而非永远第一个）；行聚类用容差而非取整分桶——两列同一行的块
+     y 可能差 1–2pt，取整会把左右列拆到不同行；
+  4. 已存在组 id 纳入 `used_group_ids`，新组 id 跳过占用（重复运行幂等）。
+
+**验证**：
+
+- 回归测试 `tests/test_ssir_columns.py` **19 例**：parser 事件/widths/三种配对错误、
+  builder 列与宽比、csm 重放 + roundtrip passed + 并列视图对交错不敏感、PDF 同行
+  几何（正确/不正确 同基线且 x 分离）、docx 无框 1×N 表（递归查嵌套）、几何打标
+  （两公式列成组 / 单栏不误判 / 分片 page_idx 碰撞不串页 / 手工声明不被覆盖 /
+  重复标签+行内公式行全部成组 / 重复运行幂等且不复用组 id）。
+- GB_T_1.1-2020 `tools/reprocess_canonical.py`：自动成组 **4 处**（示例3、示例4、
+  **示例5**、9.9.3.2「使用/而不使用」），**roundtrip passed**、渲染 85 页 0 警告。
+- PDF 真几何：示例3/4/5 的 正确/不正确 同基线（y=219.1 / 354.1 / **542.0**）、x 分离
+  （156.9/354.4、167.8/365.3、**177.3/374.8**）；修前为同 x=116.4、上下堆叠。
+- docx：**4 组**无框 1×2 表（嵌于框内；示例5 两列各含「式中：」与变量解释）。
+- 跨语料：9 份 `out/mineru/*` 重跑打标，除 GB_T_1.1-2020 的 4 组外**零新增组**
+  （无锚点页零误判；重复运行幂等）；全量单测 **332 绿**。
+
+**规则对应**：GEN-095（新，通用并列识别）、CSM-STRUCT-008（新，`ssir:columns` 配对
+错误）、docs/07 §6.9（新语法）；既有 `sideBySideGroup` 打标机制（`_stamp_side_by_side_layout`
++ `_append_side_by_side`）为本次扩展的载体。
+
+**遗留**：纯文本并列（无图/公式锚点）不做自动识别，需手工 `ssir:columns`；4 列及以上
+的并排版面不猜测。`render.md`（roundtrip 产物）从 canonical 重新解析生成，不含几何
+自动打标的并列标记（PDF/docx 从 stamped SSIR 渲染，不受影响）。
+
+### 3.37 附录条未嵌套 → 查看器结构树无法折叠（CSM-OCR-006 载体扩展，2026-09-12，用户报告）
+
+**现象**：`http://127.0.0.1:8600/doc/GB_T_1.1-2020` 的结构树里，附录 A/B/… 的下属
+条款没有折叠到附录之下（附录行没有子节点，B.1–B.6.3 与附录平级）。实测
+`out/kg/kg.db` 的 structure 表：6 个 annex 节点 `kids=0`，`B.1` 等以
+`documentBlock` 形态挂在 `document` 之下。
+
+**根因（三层）**：
+
+- canonical：附录条与附录同为 `##`（MinerU 扁平抽取）：
+  `## 附录 B（规范性）标准化项目标记`、`## B.1 概述`、`## B.6.1 通则`。
+- parser：`_repair_heading_levels`（CSM-OCR-006）的编号式只认十进制
+  `\d+(?:\.\d+)*`，附录条的「大写字母 + 点分数字」`[A-Z]\.\d+…` 不在其内 → 不做
+  层级提升，附录条停在 `##`。
+- builder：按 heading 级别压栈（`depth = level - 1`），附录与附录条同为 depth 1 →
+  附录条挂成附录的**兄弟**；且 `numbered` 正则只认数字，附录条标题连同编号落进
+  `documentBlock`、`number` 为空。数据模型里的 `annexSection`（附录内的章/条）
+  因此从未产生。
+- kg_viewer 结构树只按 `parent_id` 建树 → 附录无子节点，UI 上无从折叠。
+
+**修复（通用规则，三处）**：
+
+1. `parser._repair_heading_levels` 编号式扩为
+   `\d+(?:\.\d+)*|[A-Z]\.\d+(?:\.\d+)*`，按点分链段数提升：附录条两段 → level 3、
+   附录子条三段 → level 4，自然落入所属附录之下（仍只提升、不降低）。
+2. `builder._make_node` 新增附录条分支 `^([A-Z]\.\d+(?:\.\d+)*)`（含纯编号形态）→
+   `number` = `B.1` / `B.6.1`、`title` 去编号、`nodeType = "annexSection"`。
+3. `kg.py` `_STRUCTURAL_KIND` 补 `annexSection → Clause`（kg.schema 的 kind 枚举无
+   AnnexSection，归入 Clause）。
+
+**未改**：附录标题、条号文本、PDF/docx 视觉（`_heading_parts` 此前已从标题里提取
+`B.1` 参与渲染，故渲染文本与层级深度不变）；`_toc_nodes` 未动——它经 `_heading_parts`
+本就把附录条编号从标题中取出并列入目次（实测渲染稿目次含 B.1/B.2/B.6/B.6.1…，与
+源标准目次一致），改为节点自带 `number` 后取值不变。
+
+**验证**：
+
+- GB_T_1.1-2020 重跑 `reprocess_canonical.py`：附录 B 6 子条（B.1–B.7）、B.6 3 子条
+  （B.6.1–B.6.3）、附录 C 5 子条、附录 D 3 子条全部嵌套，`annexSection` 18 个；
+  roundtrip passed、渲染 85 页 0 警告。
+- 重导 `out/kg/kg.db` 后 `/api/structure` 校验：annex B `parent_id=…/annex-B-221` 下
+  6 个子条、B.6 下 3 个，树形可折叠。
+- 跨语料 15 份 canonical 重解析：7 份存在附录条（1.1-2020 18、5171.1 10、GB_3100 7、
+  20001.10 7、20001.5 3、JB_T_14425 3、T_ZZB 1064 1），除 20001.10 既有差异外
+  roundtrip 全部通过。
+- 回归测试 `tests/test_annex_sections.py` 5 例（级别提升 / 非附录前缀不误判 / 嵌套与
+  节点类型 / 无平级 annexSection / roundtrip）；全量单测 337 绿。
+
+**遗留（既有、与本规则无关）**：`GB_T_20001.10-2014` 的 roundtrip 在 `6.4.3` 处
+不一致——canonical 中 `6.4.3 产品分类的基本要求如下：` 是冒号引导的**段落**，而
+render.md 往返后被解析成 6.4 之下的节点。改动前（stash 掉本次 parser/builder 改动）
+同样失败，属独立的「冒号引导编号段落」判型差异，另案处理。
+
+**规则对应**：CSM-OCR-006 载体扩展（附录条编号；无新 issue 码）；数据模型
+`annexSection`（docs/01）首次落地。
+
+### 3.38 KG 索引库重导失败（INSERT OR REPLACE + 级联 FK，2026-09-12）
+
+**现象**：应用附录条修复后重导 `tools/kg_tool.py import GB_T_1.1-2020`，
+`sqlite3.OperationalError: unable to open database file`（`kgstore.py` 的
+`INSERT OR REPLACE INTO documents`）。首次导入空库成功，同 doc_id 第二次必失败，
+查看器因此一直显示旧结构。
+
+**根因**：`documents` 是被 `structure` 以 `ON DELETE CASCADE` 引用的**父表**；
+`INSERT OR REPLACE` 的内部删除会触发级联，在 WAL 下对较大载荷（`payload_json` 为
+整篇 SSIR，实测 >~50KB）报 SQLITE_CANTOPEN。首次导入无同键冲突、不触发 REPLACE
+的删除路径，故只在**重导**时暴露（`test_import_list_tree_delete` 用最小夹具，
+未触发）。
+
+**修复**：`import_ssir` 改为显式「`DELETE FROM documents WHERE doc_id=?`（FK 级联
+清 structure）→ 普通 `INSERT INTO documents`」；`replaced` 仍按导入前的存在性判定。
+
+**验证**：真实语料 GB_T_1.1-2020（1.3MB payload）连导两次成功、第二次
+`replaced=true`、库内仍 1 份；新增回归夹具
+`tests/test_kg.py::StoreTests::test_reimport_large_payload_uses_delete_insert`
+（200KB 放大载荷，用 `git stash` 对照确认旧实现失败、新实现通过）；全量单测 338 绿；
+重导后 `/api/structure` 返回嵌套附录条（§3.37）。
+
+**规则对应**：工程规则（KG P1a 索引库），无新 issue 码。
+
+### 3.39 附录内示例与索引分组字母的结构归位（CSM-OCR-008 扩展 / CSM-OCR-019，2026-09-12，用户报告）
+
+**现象**：kg_viewer 结构树里，
+1. 附录 A 的「示例：」、B.6.3.5/B.6.3.6 的「示例：/示例1～4：」等**该条款的下属示例**
+   被显示为与附录同级的元素（挂在文档根）；
+2. 索引（`## 索 引`）的拼音分组标签 `B`/`D`/`Z` 也成为与附录同级的文档块
+   （用户：「索引的 B、D、Z」）。
+
+**根因**：
+
+- 示例：`parser._repair_example_heading_levels`（CSM-OCR-008）的归属上下文只认十进制
+  条号（`9.9.3` → 示例提升到其下）；附录内的 `示例：`（与 `附录 B` 同为 `##`）没有
+  十进制上下文 → 不提升 → builder 按层级挂到文档根。另有噪声：附录 B 示例2 内容里
+  有一行被 MinerU 误升的无编号标题「`##    多刃刀片 GB/T 2079-…`」，按层级会把附录条
+  上下文弹掉，把示例3/4 挂到该噪声标题之下。
+- 索引：MinerU 把拼音首字母分组行 B/D/Z 抽成 `##` 标题（同索引内 C/F/W/X/Y 却是普通
+  段落）→ 成为结构节点。渲染端的 `_index_story` 又恰好**依赖这些兄弟节点**取索引行，
+  降级它们会让整页索引渲染为空（见「连带修复」）。
+
+**修复**：
+
+1. `_repair_example_heading_levels` 改用**显式附录作用域**：`附录 X` 到下一个附录/
+   文后要素之间的全部内容都属于该附录，不因中间的无编号噪声标题而退出；归属上下文
+   纳入**附录条编号**（`B.1`/`B.6.3`）与**附录标题**。简单示例提升到所属附录条/附录
+   之下（`示例:` → level 5、`B.7` 的示例 → level 4 等）。
+2. **模型示例**（示例内容本身是一份示例文档，后随 `1`/`5`/`6.1` 章节标题，GB_T_20001
+   系列）保持扁平示例文档模型：`owns_following_heading` 向后扫描到下一个「示例/附录/
+   附录条/文档级要素」边界，其间出现十进制条号标题即判为模型示例，不提升。单个误升
+   标题（如上面的「多刃刀片」）不算模型。
+3. builder 配套：附录条按**附录字母**归位（`current_annex` + `annex_chain`），不受
+   扁平示例文档层级干扰；附录内简单示例按附录作用域直接归位（模型示例层级不深于附录
+   条，不走该分支）；文后/前置要素（参考文献/索引等）重置附录作用域。
+4. 新增 `parser._demote_index_letter_headings`（**CSM-OCR-019**）：进入「索引」要素后，
+   形如单个大写字母的标题块降级为段落（索引内容）；遇下一个文档级要素或编号章条退出。
+
+**连带修复**（`_index_story`）：索引行原来从「索引」节点之后的**兄弟节点**收集
+（旧结构 B/D/Z 是节点）。字母降级后索引内容改挂「索引」节点自身的 contentElements，
+`_index_story` 改为从 `[索引节点] + 后续兄弟` 两者取行（兼容两种结构），否则整页索引
+渲染为空（实测页数 85→80、最后一页只剩「索 引」标题）。
+
+**验证**：
+
+- GB_T_1.1-2020 结构树：附录 A→示例、B.6.3→示例/示例1-4（5 个）、B.7→示例，共
+  **42 个附录内示例全部归位、根级示例 0**；索引 B/D/Z 不再是结构节点，作为索引内容
+  段落挂在「索引」节点下；roundtrip passed、渲染 **85 页 0 警告**，索引完整
+  （PDF 文本层与 docx 双胞胎均含索引条目）。
+- 模型示例：GB_T_20001.5-2017 的 **6 个模型示例保持扁平**（A.2/A.3 正确归入附录 A），
+  渲染 20 页无 LayoutError；GB_T_20001.6 渲染 13 页。
+- 跨语料 15 份 canonical 重解析 roundtrip：仅 GB_T_20001.10-2014 的既有 6.4.3 差异
+  （改动前即失败，与本规则无关）。
+- 回归测试：`tests/test_annex_sections.py`（简单示例归位、模型示例扁平、索引字母降级、
+  索引渲染取行）+ `tests/test_csm_to_ssir.py` 后置要素用例更新；全量单测 **342 绿**。
+
+**规则对应**：CSM-OCR-008 载体扩展（附录条/附录上下文 + 模型示例判据）；
+CSM-OCR-019（新，索引字母降级）；`_index_story` 取行来源为工程规则（渲染端）。
+
+### 3.40 示例内容里的「标记」行被误升为章级标题（CSM-OCR-020，2026-09-12，用户报告）
+
+**现象**：附录 B.6.3.6 的示例2（硬质合金可转位多刃刀片标记示例）中，标记行
+「多刃刀片 GB/T 2079-TPGN 160308-EN-P20」被显示为**与章同级**的结构节点；它是
+示例内容的下属元素，其后「标记中的相关字符含义如下：/T——…/P20——…」等解释段
+也被该节点夺走。
+
+**根因**：canonical 中该行是 `## 多刃刀片 GB/T 2079-TPGN 160308-EN-P20`（MinerU
+把示例内的「标记：」内容行抽成了标题）。该标题**无编号**，不在 CSM-OCR-008 的示例
+提升判据内；按标题层级它是一个 depth 1 节点 → 结构树/渲染里与章平级，并把后续解释
+段收作自己的 contentElements。
+
+**修复**：在 `_repair_example_heading_levels` 增加「简单示例内容标题」判据
+（**CSM-OCR-020**）：处于**简单示例块**内（`示例：`/`示例N：` 之后、下一个边界之前）
+且**非边界**（非 附录/附录条/十进制条号/文档级要素）的无编号标题 → 降级为段落
+（示例内容）。模型示例（示例文档自带章节，§3.39 判据）与正文标题不受影响。
+
+**验证**：
+
+- GB_T_1.1-2020：仅该 1 处命中；结构树中不再有 `多刃刀片…` 节点，B.6.3→示例2 的
+  contentElements 完整包含「产品：/硬质合金…/标记：/**多刃刀片…**/标记中的相关字符
+  含义如下：/T——…/P20——…」（15 段，与源文一致）；roundtrip passed、渲染 85 页 0 警告。
+- 跨语料 15 份 canonical：CSM-OCR-020 零附带命中；roundtrip 仅 GB_T_20001.10-2014
+  既有 6.4.3 差异。
+- 回归测试：`tests/test_annex_sections.py::ExampleNestingTests::test_example_content_heading_demoted`；
+  全量单测 **343 绿**。
+
+**规则对应**：CSM-OCR-020（新）；与 CSM-OCR-008/CSM-OCR-009（标题↔正文判型族）同族。
+
 
 
 ## 4. 历史通用问题速查（2026-08 早期，均有规则映射）
@@ -1445,6 +1715,7 @@ issue 码的**载体/形态扩展**（§5.3）。
 | GEN-093 | build | must | 文后/前置要素（目次/前言/引言/参考文献/索引）是文档级要素，不得并入附录示例 |
 | GEN-094 | extract/merge | should | 表格块 hybrid-engine 第二遍：对含表页跑 hybrid-engine 表格识别（正文仍用 pipeline——VLM 正文丢数字/拉丁），merge 按（页, 页内序）替换 pipeline 表行、保留指令行 id/题注/编号、merge 指令 table 引用改写；hybrid 缺失/失败/表数不齐确定性回退；content_list page_idx 为 invocation 本地索引需加 base；默认关闭（不加参数表格保持 pipeline 原样=原始逻辑），--hybrid-tables 显式开启（未开启丢弃历史 hybrid 结果） |
 | GEN-076 | render | should | 渲染图与原图尺寸相当：finalize 从源 PDF 版面矩形打标 sourceWidth/sourceHeight（祖先目录解析资产；矩形贪心匹配防抢；封面徽标矩形不参与；无匹配子图按文档像素密度回退，扫描型默认 200/72≈2.78）；表中图尺寸写入 table.cellImageSizes |
+| GEN-095 | extract/merge | should | 并列版面几何识别（finalize 打标 → 渲染为无边框定位容器）：分片目录换算**绝对页号**（MinerU 分片 page_idx 各自从 0 起，不得按相对页号聚合）；通栏块（宽 ≥ 版心 62%）/`示例N：`题注/垂距 > 1.5×行高处切分并列区；锚点块 = image + interline_equation，按 x 中心聚类成 2~3 列，区内块按 x 距各列区间归列；块文本并入 `inline_equation` span、匹配归一「去 `$` + 破折号族压成单个 `—`」（对齐 CSM-OCR-018），文本内容只在锚点所在父节点内匹配、同文本按行（y 容差 0.6 行高）+ x 顺序对应 sortOrder 候选；要求 ≥2 列命中且父节点内 sortOrder 连续，否则整组回滚；已存在组 id 纳入占用集合（重复运行幂等）；已有 sideBySideGroup（`ssir:columns` 手工声明）不覆盖。纯文本并列不自动猜测 |
 
 ### 5.2 需求规则（requirements.yaml，GBT-*）
 
@@ -1472,7 +1743,7 @@ issue 码的**载体/形态扩展**（§5.3）。
 | CSM-OCR-002 | 条号掉点 | 编号连续性可唯一拆点时修复（_repair_clause_numbers），否则保守跳过记 issue |
 | CSM-OCR-003 | 术语中英文间隙（术语行「中文 English」半角空格、编号术语条目标题行「3.1.2 标准 standard」，2026-09-11 载体扩到编号形态） | U+3000 → 渲染端 `_markup` 换成恰好 1em 的不可见白字字隙；规则本体 `restore_term_entry_gap`（解析修复与 `tools/replay_text_spacing.py` 回放同源） |
 | CSM-OCR-004 | 正文标准号「文件代号 + 顺序号」之间缺空格（`GB/T20001`、`GB1.1—1981`；2026-09-11 载体从 `block.text` 扩到**列项条目 + 表格单元格**，无斜杠分支收窄为已知代号白名单） | `restore_standard_number_spacing`：斜杠形态 `X/T`、`X/Z`、团体/企业 `T/ZZB`、`Q/XKBZ` + 无斜杠白名单（GB/GJB/ISO/IEC…）；幂等；负例 RS485/AC1 500 V 不动 |
-| CSM-OCR-006 | 标题层级被压成同一层 | 按编号段数提升层级（_repair_heading_levels，只提升不降低），文本不变 |
+| CSM-OCR-006 | 标题层级被压成同一层（十进制章条编号；2026-09-12 载体扩到**附录条编号** `[A-Z]\.\d+(\.\d+)*`，如 `## B.1` 与 `## 附录 B` 同级 → 附录无子节点、查看器无法折叠、`annexSection` 从未产生） | 按编号段数提升层级（_repair_heading_levels，只提升不降低），文本不变；附录条两段 → level 3、子条三段 → level 4，落入所属附录之下（builder 据此生成 `annexSection` 节点，§3.37） |
 | CSM-OCR-007 | 术语条目被抽成两种形态：① 两条同级标题（`## 3.1.2` + `## 标准　standard`，编号标题与术语行同级 → 编号标题脱离 3.1 组、层级被破坏）；② 裸编号段落 + 术语行段落（`3.1.1` + `标准化文件　standardizing document`，术语条目不成结构节点、按正文缩进排版） | `_repair_term_entry_headings`：① 两条同级编号标题 + 术语行标题 → 合并为「编号 + 术语行」单条标题；② **术语和定义要素内**（章标题含「术语」）的裸编号段落 + 术语行段落 → 同样合并为单条编号标题（层级随后由 CSM-OCR-006 按编号段数提升）；两形态的术语行中英文间隙归一 U+3000（与 CSM-OCR-003 同源 `restore_term_entry_gap`）。渲染端按 GBT-FM4 两行版式（§3.35） |
 | CSM-STRUCT-001 | 裸条号标题提升 | 祖先链 + 父已提升子级跟随的级联提升为标题（无确认标题不提升），记 warning |
 | CSM-TABLE-002 | 跨页续表间的裸图 | 前表最后一行既有含图单元格又含不含图单元格时，裸图折回第一个不含图且非首格单元格并删除游离 figure 块（条件全满足才归位，纯文本行不归位） |
@@ -1492,6 +1763,10 @@ issue 码的**载体/形态扩展**（§5.3）。
 | CSM-TABLE-004 | 表单元格内已转义竖线被写侧二次转义（normalize/roundtrip 幂等破坏；含 LaTeX 绝对值/范数竖线的表，GB_T_755-2025 表12/13/15 报 "row has 6 cells; expected 4"） | 写侧转义与读侧同规且幂等：`parser.escape_table_cell` 只给偶数反斜杠前缀的竖线补反斜杠、已转义（奇数前缀）保持原样；csm_normalizer（raw→canonical）/csm_renderer（SSIR→render.md）/mineru_html/docx_importer 四处写侧统一（docx_importer 原实现源码 4 反斜杠更过冲一并修正） |
 | CSM-OCR-017 | 公式编号从未进入 SSIR：MinerU 把整条公式行识别为一个 equation 块，引导线连编号写进 LaTeX `\tag{…}`（常缺右花括号 `\tag{……………………(1}`）；另有编号行非「式(N)」形态的噪声 | `parser._repair_formula_numbers`：从 `\tag{}` 提取编号（括号可缺）并清掉残留；「式（1）/式(1)」归一为纯编号标签（解析动作不记 issue，噪声形态才记修复）；**全文档编号管理**——正文自引言起 1..n、附录内 `<字母>.1..n`，抽取值与序列位不符即报出（保留抽取值、不重排、不填补；9.9.2 缺号即保持无编号）；`csm_renderer`/`csm_normalizer` 写回「式(N)」 |
 | CSM-OCR-018 | 「式中：」变量解释项形态被 OCR 读坏：破折号族长度变体（-、—、——）或整段丢失、缺终止符、终止符被读成「：」 | `parser._repair_formula_variable_lines`：以独占一行的「式中：」为锚、其后连续段落块按「短变量头 + 破折号族或缺失 + 汉字解释」判型（组内 ≥2 项），归一只碰破折号族与终止符（统一「——」、缺失补回、补「；」，末项「。」）；已有「。」不强制改「；」（示例边界）；渲染端 PDF 固定字隙、docx 半角空格补四分之一汉字字隙 |
+| CSM-STRUCT-008 | `ssir:columns` 显式并列声明配对/嵌套错误：`ssir:column`/`ssir:/columns` 无开（裸列/裸关）、`ssir:columns` 嵌套开、开标记未闭合到文档尾 | parser `_parse_body` 行级事件块（COLUMNS_MARKER_RE，先于通用 ssir 指令分支）：维护 columns_open_line/列序号，嵌套开/裸列/裸关/未闭合 → 本码记录（宽容模式不阻断，确定性继续：未闭合开延伸到文档尾、错位事件忽略；strict 模式照常 raise）；builder 同语义推进（嵌套开不新开组）。列宽比 widths 非法时告警并等分 | 工程规则（docs/07 §6.9 ssir:columns 语法；2026-09-11） | 回归测试 4 例（事件正常零命中 / 裸列+裸关 / 嵌套开 / 未闭合开）；无标记文档零命中 |
+| CSM-OCR-008 | 框式示例标题（`示例：`/`示例N：`）被 MinerU 抽成与章同级的 `##` 标题 → 示例块挂文档根、其后条款被挂到示例节点下 | `_repair_example_heading_levels`：把示例标题提升到「当前最近归属上下文层级 + 1」（只升不降、上限 6 级），使其成为所属条款的子节点。**2026-09-12 扩展**：归属上下文纳入**附录条编号**（`B.1`/`B.6.3`）与**附录标题**（`附录 A`）——附录内示例挂到所属附录条/附录之下；**模型示例**（示例内容本身是一份示例文档、后随 `1`/`5`/`6.1` 章节标题，GB_T_20001 系列）保持扁平示例文档模型不提升（示例标题不压栈） | 工程规则（docs/07；GB_T_20001 系列附录示例模型） | 回归测试 `tests/test_annex_sections.py`（简单示例挂附录条/附录、模型示例保持扁平）；GB_T_1.1-2020 42 处附录内示例全部归位；GB_T_20001.5 6 处模型示例保持扁平、渲染 20 页无 LayoutError |
+| CSM-OCR-019 | 索引（`## 索 引`）内的单字母分组标签行被 MinerU 抽成 `## B`/`## D`/`## Z` 标题（同组其余字母 C/F/W/X/Y 是普通段落）→ 在 SSIR 树中成为与附录同级的文档块，而索引其余内容挂在「索引」节点下 | `_demote_index_letter_headings`：进入「索引」要素（无编号、文本为「索引」）后，形如单个大写字母的标题块降级为段落（索引内容）；遇下一个文档级要素（参考文献/前言/引言/目次/封面）或编号章条标题退出索引模式 | 工程规则（GB/T 1.1 8.14 索引；2026-09-12 用户报告「索引的 B、D、Z」） | 回归测试（索引字母不再是结构节点、作为内容段落在索引节点下）；GB_T_1.1-2020 结构树不再出现与附录同级的 B/D/Z |
+| CSM-OCR-020 | **简单示例内容里的无编号标题**被 MinerU 抽成 `##` 标题 → 成为与章同级的结构节点并夺走后续解释段（GB_T_1.1-2020 附录 B 示例2「标记：」下的 `##    多刃刀片 GB/T 2079-TPGN 160308-EN-P20`，后随「标记中的相关字符含义如下：T——… P20——…」全被挂到该节点下） | `_repair_example_heading_levels` 增加「简单示例内容标题」判据：处于简单示例块内（`示例：/示例N：` 之后、下一个边界之前）且**非边界标题**（非 附录/附录条/十进制条号/文档级要素）的无编号标题 → 降级为段落（示例内容）；模型示例（示例文档自带章节）不受影响 | 工程规则（GB/T 1.1 9.10/10.4.5 示例内容；2026-09-12 用户报告） | 回归测试 `test_example_content_heading_demoted`；GB_T_1.1-2020 仅该 1 处命中（跨语料零附带命中），B.6.3→示例2 的 contentElements 含「多刃刀片…」及全部标记解释；全量单测 343 绿 |
 
 ---
 

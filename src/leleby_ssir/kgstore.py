@@ -159,9 +159,14 @@ class KGDocStore:
             conn.execute(
                 "DELETE FROM structure WHERE doc_id=?", (doc_id,)
             )
+            # 重导既有文档：先删 documents 行（FK ON DELETE CASCADE 连带清 structure），
+            # 再普通 INSERT。不用 INSERT OR REPLACE——documents 是被 structure 级联
+            # 引用的父表，REPLACE 的内部删除在 WAL 下会以 "unable to open database
+            # file" 失败（重导路径实测必现：首次导入空库可行、同 doc_id 再导即失败）。
+            conn.execute("DELETE FROM documents WHERE doc_id=?", (doc_id,))
             placeholders = ",".join("?" * (len(_DOC_COLS.split(","))))
             conn.execute(
-                f"INSERT OR REPLACE INTO documents ({_DOC_COLS}) VALUES ({placeholders})",
+                f"INSERT INTO documents ({_DOC_COLS}) VALUES ({placeholders})",
                 (
                     doc_id, standard_number,
                     meta.get("chineseTitle") or common.get("title"),

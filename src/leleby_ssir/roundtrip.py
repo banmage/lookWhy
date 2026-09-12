@@ -121,9 +121,46 @@ def _node_view(node: dict[str, Any], registries: dict[str, dict[str, dict[str, A
         # ssir:box 显式框归属（2026-09-08）：框边界成为 roundtrip 不变量。
         "box": node.get("box"),
         "boxStyle": node.get("boxStyle"),
-        "content": [_content_view(content, registries) for content in sorted(node.get("contentElements", []), key=_sort_order)],
+        "content": _content_sequence_view(node.get("contentElements", []), registries),
         "children": [_node_view(child, registries) for child in sorted(node.get("children", []), key=_sort_order)],
     }
+
+
+def _content_sequence_view(contents: list[dict[str, Any]], registries: dict[str, dict[str, dict[str, Any]]]) -> list[dict[str, Any]]:
+    """内容元素序列的并列感知视图（2026-09-11）。
+
+    `ssir:columns`/几何打标产生的 sideBySideGroup 是版式不变量：同组内容按**列**
+    归并成一个 `columns` 条目（列内保持 sortOrder 顺序），跨列的交错顺序不参与
+    比较——抽取层按行跨栏交错、canonical 声明为列优先，二者语义等价。无并列组
+    的文档与旧视图逐字段一致（现有 roundtrip 口径不变）。
+    """
+    ordered = sorted(contents, key=_sort_order)
+    view: list[dict[str, Any]] = []
+    index = 0
+    while index < len(ordered):
+        group = ordered[index].get("sideBySideGroup")
+        if not group:
+            view.append(_content_view(ordered[index], registries))
+            index += 1
+            continue
+        members: list[dict[str, Any]] = []
+        while index < len(ordered) and ordered[index].get("sideBySideGroup") == group:
+            members.append(ordered[index])
+            index += 1
+        columns: dict[int, list[dict[str, Any]]] = {}
+        for member in members:
+            columns.setdefault(int(member.get("sideBySideColumn", 0)), []).append(
+                _content_view(member, registries)
+            )
+        widths = members[0].get("sideBySideWidths")
+        entry: dict[str, Any] = {
+            "type": "columns",
+            "columns": [columns[key] for key in sorted(columns)],
+        }
+        if widths:
+            entry["widths"] = [float(value) for value in widths]
+        view.append(entry)
+    return view
 
 
 def _content_inventory(document: dict[str, Any], registries: dict[str, dict[str, dict[str, Any]]]) -> dict[str, list[Any]]:

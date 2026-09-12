@@ -24,6 +24,7 @@
 - 封面必备信息缺失时渲染占位符：文件编号、ICS、CCS、发布/实施日期、发布机构、名称任一缺失，封面以 “ICS ××”/“×× 发布” 等占位并保留版式，同时在渲染报告记录对应规则 ID（GBT-C01）。
 - 保留章条层级、表格、图/图占位、公式、列表、注/示例/警示、未知内容和 Markdown 行号溯源。
 - 验证 `Canonical -> SSIR -> Render.md -> Verify`：比较身份、结构、内容和语义，并检查规范性用语、禁止性表述、数值、单位、表格、公式、引用、范围等关键信息。
+- 知识图谱单文档阶段（P1a/P1c）：`tools/kg_tool.py` 把 SSIR 投影为带 schema 校验的 `kg.json` 图切片，并导入可重建的 sqlite 索引库；`tools/kg_viewer/` 提供文档库列表、结构树内容浏览与 vis-network 本体图（见下文「知识图谱/本体查看器」）。
 
 ## 快速开始
 
@@ -231,7 +232,68 @@ PYTHONPATH=src python3 tools/verify_markdown_roundtrip.py \
 
 该程序为每份 Canonical 写出对应的 Render.md、逐份回环报告和 `roundtrip-summary.json`；任一文件失败时返回 `3`。
 
-### 7. 运行测试
+### 7. 知识图谱/本体查看器（`tools/kg_viewer/`）
+
+`tools/kg_viewer/` 是知识图谱阶段（P1a 索引浏览 + P1c 本体图）的轻量 Web 查看器（Flask）。它本身不产生数据，只读取下游产物：**SSIR JSON 是唯一真源**，查看器用 sqlite 索引库做列表/树导航、用 `kg.json` 图切片做 vis-network 本体图：
+
+```
+out/mineru/<ID>/03_ssir/<ID>.ssir.json          （唯一真源）
+   ├─→ out/kg/kg.db      可重建索引：documents 元数据 + structure 扁平树 + 全文载荷
+   └─→ <ID>.kg.json      图切片投影（kgVersion=0.1，带 schema 校验），供 vis-network / 未来 Neo4j
+```
+
+命令行入口是 `tools/kg_tool.py`（子命令 `build` / `import` / `list` / `serve`）：
+
+```bash
+# 1) 建库/更新库：把 SSIR 导入 sqlite 索引（默认 out/kg/kg.db，删除后可重建）
+.venv/bin/python tools/kg_tool.py import GB_T_1.1-2020   # ID 快捷：out/mineru/<ID>/03_ssir/<ID>.ssir.json
+.venv/bin/python tools/kg_tool.py import --all           # 扫描 out/mineru/*/03_ssir/ 全量导入
+.venv/bin/python tools/kg_tool.py import path/to/x.ssir.json
+
+# 2) 查看库内文档
+.venv/bin/python tools/kg_tool.py list
+
+# 3) 生成并校验图切片 kg.json（只读 SSIR，不影响库）
+.venv/bin/python tools/kg_tool.py build GB_T_1.1-2020 -o out/gb11.kg.json
+
+# 4) 启动查看器（默认 127.0.0.1:8600）
+.venv/bin/python tools/kg_tool.py serve --port 8600
+```
+
+启动后浏览器访问三个页面：
+
+| 页面 | 地址 | 内容 |
+|---|---|---|
+| 文档库 | `http://127.0.0.1:8600/` | sqlite `documents` 表：标准号/中文名称/类型/ICS/CCS/代替/结构节点数，每行可进「浏览」「图谱」「详情」 |
+| 内容浏览 | `/doc/<doc_id>` | 左侧结构树（资源管理器式展开/折叠）+ 右侧节点内容（条款 → 段落/列项/注/表/图/公式/术语）；支持面包屑深链、`📄 查看原文行` 跳 canonical 原文、表/图/公式资产经 `/asset` 解析；顶栏「文档详情」 |
+| 本体图谱 | `/graph/<doc_id>` | vis-network 本体图：核心视图（结构 + 表/图/公式 + 术语）/ 全量视图（含段落级内容元素）、层级/力导向布局切换；点节点看条款号/类型/溯源行并可跳原文；顶栏「文档详情」 |
+
+**文档详情弹窗**（索引页每行的「详情」、内容/图谱页顶栏的「文档详情」）：按分层可折叠结构展示文档级信息——
+① 基本信息（标准号/中英文名称/类型/ICS/CCS/语言）；② 日期与关系（发布日期、实施日期、代替标准、一致性程度标识）；
+③ 组织机构（发布机构、提出/归口单位、起草单位列表、主要起草人列表——后三项从前言正文提取）；
+④ 术语和定义（条数，逐条点击展开定义 + 跳结构树）；⑤ 标准要素（前置/主体章节/附录/文后四组，逐条点击展开节点类型、子节点/内容单元数、canonical 行，并可跳结构树）；
+⑥ 清单核对（`标准要素完整清单.md` 的 GBT-E01~E14 与 GBT-M01~M14 命中/缺失表）；⑦ 规模统计。
+
+`serve` 同时提供下列 HTTP API（便于脚本或集成）：
+
+| 接口 | 说明 |
+|---|---|
+| `GET /api/docs` | 文档列表 |
+| `GET /api/structure/<doc_id>` | 结构树全量行（前端内存建树） |
+| `GET /api/node/<doc_id>/<node_id>` | 节点内容 HTML + 祖先链 + 锚点 |
+| `GET /api/doc/<doc_id>/detail` | 文档详情分层结构（元数据/机构/术语/要素/清单核对），供详情弹窗使用 |
+| `GET /api/raw/<doc_id>/<start>/<end>` | canonical.md 原文行（单次最多 200 行） |
+| `GET /api/kg/<doc_id>?scope=core\|full` | kg 图切片（`core` 去段落级内容元素） |
+| `GET /asset/<doc_id>/<rel>` | 文档资产（图/公式图片） |
+
+说明与注意：
+
+- 依赖 `flask>=3.0`（见 `pyproject.toml`）；`vis-network.min.js` 为本地副本（MIT，附 `static/js/VIS_NETWORK_LICENSE.txt`），无需外网。
+- `out/kg/kg.db` 是可重建的运行时索引（gitignore）：删除后重新 `import` 即可；同一 `doc_id` 重跑 `import` 会标「更新」并覆盖旧记录。
+- 没有数据库时首页会提示先执行 `import`；`/doc`、`/graph` 对未知 `doc_id` 返回 404，`/api/*` 出错返回 JSON。
+- 设计记录与后续规划（P2 多标准 CITES/REPLACES 边、中文全文检索、Neo4j 迁移）见 `docs/semantic_Stage/KG P1a+P1c 单文档查看器实现记录 v0.1.md`。
+
+### 8. 运行测试
 
 ```bash
 PYTHONPATH=src python3 -m unittest discover -v
@@ -263,7 +325,7 @@ CSM 的完整格式、YAML front matter、表格/图/公式/列表写法见 [CSM
 | `corpus/reference-standards/` | GB/T 1.1、GB/T 20001.10 及其他参考标准的 Markdown 文本（原 standards/），用于设计和人工核对。 |
 | `storage/tenants/{tenant_id}/` | 多租户运行时存储（gitignore）：未来 uploads 原始上传、work 中间产物、outputs 转换结果、profile 企业编排规则。 |
 | `docs/` | 数据模型、Schema、格式、实现、测试和开发报告等项目文档。 |
-| `tools/` | 辅助脚本，包括 Schema 抽取和批量回环验证。 |
+| `tools/` | 辅助脚本：完整流水线 `mineru_full_standard.py`、半程重跑 `reprocess_canonical.py`、批量回环验证 `verify_markdown_roundtrip.py`、知识图谱 CLI `kg_tool.py` 与查看器 `kg_viewer/`。 |
 | `pyproject.toml` | Python 项目元数据、依赖和 `ssir` 命令行入口定义。 |
 
 ## 主要程序入口（含 `tools/mineru_full_standard.py` 完整参数）
@@ -275,6 +337,8 @@ CSM 的完整格式、YAML front matter、表格/图/公式/列表写法见 [CSM
 || `tools/mineru_full_standard.py` | **完整标准流水线**：任意国家标准 PDF → 分块 MinerU 抽取 → 合并 raw → normalize → canonical → SSIR → 回旋验证 → 可选渲染（PDF + docx）。主要参数：`file`（快捷名，默认在 `corpus/golden/` 查找）或 `--input`（完整路径）；`--stage`（`extract`/`merge`/`finalize`/`all`）；`--method`（`auto`/`ocr`/`txt`）；`--hybrid-tables`（开启 GEN-094 表混合识别，默认关闭）；`--chunk-size`（分块页数，默认 18）；`--roundtrip`；`--render`；`--toc-depth`；`--standard-number` / `--title` 覆盖元数据；`--front-matter-json` 补充元数据（如 `ics`/`ccs`/`replaces`/`issuer`）；`--output-dir` / `--output-stem`；快捷模式（仅传文件名）自动启用 `--stage all --roundtrip --render`，并在已有 `02_canonical/*.canonical.md` 时自动半程续跑（不覆盖 canonical）。退出码：`0` 完成且等价、`2` 抽取/转换失败、`3` 关键损失/不等价。 |
 || `tools/reprocess_canonical.py` | 半程重跑：从已有 `02_canonical/*.canonical.md` 开始，跳过抽取/合并/normalize，重跑 parse → roundtrip → render，不覆盖 canonical。 | 位置参数为标准 ID（如 `GB_T_1.1-2020`）；自动查找 `out/mineru/<ID>/02_canonical/*.canonical.md` |
 || `tools/verify_markdown_roundtrip.py` | 批量回环验证：对 `corpus/golden/csm` 中多个 canonical 批量执行 `canonical → SSIR → render.md → verify`。 | `--examples-dir`、`--output-dir` |
+|| `tools/kg_tool.py` | 知识图谱 CLI：`build`（SSIR → `kg.json` 图切片 + schema 校验）、`import`（SSIR → sqlite 索引库，`--all` 全量）、`list`（列出库中文档）、`serve`（启动 `tools/kg_viewer` Web 查看器）。详见「知识图谱/本体查看器」。 | `build <ssir.json 或 ID> [-o out.kg.json]`；`import <ID 或路径> [--all] [--db out/kg/kg.db]`；`list [--db]`；`serve [--db] [--host 127.0.0.1] [--port 8600]` |
+|| `tools/kg_viewer/` | Flask Web 查看器（无独立 CLI，经 `kg_tool.py serve` 调用）：文档库列表 `/`、结构树+内容浏览 `/doc/<doc_id>`、vis-network 本体图 `/graph/<doc_id>`，**文档详情弹窗**（元数据/日期/机构/术语逐条/标准要素分层/清单核对），并暴露 `/api/docs`、`/api/structure`、`/api/node`、`/api/doc/<id>/detail`、`/api/raw`、`/api/kg`、`/asset` 接口；`detail.py` 为详情派生纯函数（便于单测）。 | 由 `serve` 参数控制；应用工厂 `create_app(db_path)` 供脚本内嵌 |
 || `src/leleby_ssir/naming.py` | 命名单一事实源（标准号推导、文件名解析）。 | 无 CLI 参数 |
 || `src/leleby_ssir/service.py` | 服务层：Canonical 生成、CSM→SSIR、导出、回环、逐条合规验证（GEN→GBT→P10）。 | 同 CLI |
 || `src/leleby_ssir/compliance.py` | 规则库三层逐条验证（GEN/GBT/P10）。 | 内部调用 |
@@ -303,15 +367,16 @@ CSM 的完整格式、YAML front matter、表格/图/公式/列表写法见 [CSM
 
 ## 当前状态与后续工作
 
-当前项目已具备两条并行可用链路：
+当前项目已具备三条并行可用链路：
 
 1. M1 已完成 Markdown -> SSIR 的核心链路及 Markdown 回旋验证；
-2. PDF -> CSM Markdown 适配器已实现并接入 `ssir pdf extract` / `tools/mineru_full_standard.py`，支持 MinerU 首选后端和 PyMuPDF 回退。
+2. PDF -> CSM Markdown 适配器已实现并接入 `ssir pdf extract` / `tools/mineru_full_standard.py`，支持 MinerU 首选后端和 PyMuPDF 回退；
+3. 知识图谱单文档阶段 P1a/P1c 已实现：SSIR → sqlite 索引库 + `kg.json` 图切片 + `tools/kg_viewer/` Web 查看器（列表 / 结构树内容浏览 / 本体图）。
 
 后续按以下顺序推进：
 
 1. 从 SSIR 按 GB/T 1.1 要求生成传统 PDF 标准，并建立 PDF 视觉与语义验收；
-2. 从 SSIR 生成知识图谱/本体表达，即 lookWhy 格式标准，并定义 SSIR 到本体的稳定映射和校验；
+2. 知识图谱扩展到多标准（引用 CITES / 代替 REPLACES 边）与中文全文检索，必要时再引入 Neo4j；
 3. 进一步补全扫描件、表格/图像精确识别和人工质量复核流程，强化 PDF/MinerU 适配器的可追溯 sidecar 与 OCR 能力。
 
 这些工作不得改变已经冻结的 CSM -> SSIR 核心输入契约；新适配器应复用 Canonical、SSIR Schema、解析报告和回环测试基准。文件名与目录结构遵循 `naming_specification.txt` v2.0（`<STANDARD_ID>.<representation>.<ext>` + 阶段目录）。

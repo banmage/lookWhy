@@ -277,6 +277,29 @@ class StoreTests(unittest.TestCase):
             self.assertTrue(store.delete_document("Q_TEST_001-2026"))
             self.assertEqual(len(store.list_documents()), 0)
 
+    def test_reimport_large_payload_uses_delete_insert(self):
+        """重导既有 doc_id 不得走 INSERT OR REPLACE。
+
+        documents 被 structure 以 ON DELETE CASCADE 引用；REPLACE 的内部删除在 WAL
+        下对较大载荷（实测 >~50KB）会以 ``sqlite3.OperationalError: unable to open
+        database file`` 失败——真实语料 GB_T_1.1-2020（1.3MB payload）重导必现
+        （2026-09-12 修复：先 DELETE documents 行再由 FK 级联清 structure，最后普通
+        INSERT）。本夹具放大载荷以复现该路径。
+        """
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            ssir = self._write_ssir(tmp)
+            doc = json.loads(ssir.read_text(encoding="utf-8"))
+            doc["padding"] = "x" * 200_000
+            ssir.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+            store = KGDocStore(tmp / "kg.db")
+            first = store.import_ssir(ssir)
+            second = store.import_ssir(ssir)
+            self.assertFalse(first["replaced"])
+            self.assertTrue(second["replaced"])
+            self.assertEqual(second["node_count"], first["node_count"])
+            self.assertEqual(len(store.list_documents()), 1)
+
     def test_import_invalid_json_raises(self):
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)

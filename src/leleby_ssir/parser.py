@@ -74,6 +74,13 @@ BOX_MARKER_RE = re.compile(r"^<!--\s*ssir:(/box|box)\s*(.*?)-->\s*$")
 BOX_STYLE_ATTR_RE = re.compile(r'style="((?:\\.|[^"\\])*)"')
 # 支持 style 属性（其余属性忽略并告警）。
 _BOX_STYLES = {"frame", "shaded"}
+# ssir:columns / ssir:column / ssir:/columns 显式并列声明（手工兜底 + 几何自动
+# 打标的共同 canonical 载体）：成对行级独占指令，把若干内容元素声明为同一行内的
+# N 列并列版式（渲染为无边框定位容器，等价 HTML div/两栏对照）。开标记可带
+# widths="2,3"（列宽比，缺省等分）；column 分隔相邻列，/columns 结束。名称字符类
+# 不含 "/"，故与 BOX_MARKER_RE 同型独立正则；备选顺序须把 /columns 放最前。
+COLUMNS_MARKER_RE = re.compile(r"^<!--\s*ssir:(/columns|columns|column)\s*(.*?)-->\s*$")
+COLUMNS_WIDTHS_ATTR_RE = re.compile(r'widths="((?:\\.|[^"\\])*)"')
 ATTR_RE = re.compile(r'([A-Za-z][A-Za-z0-9-]*)="((?:\\.|[^"\\])*)"')
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 TABLE_SEPARATOR_RE = re.compile(r"^\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$")
@@ -686,6 +693,7 @@ class CSMParser:
         self._repair_reference_entry_brackets(blocks, issues)
         self._reclassify_footnote_definitions(blocks, issues)
         self._demote_sentence_headed_clauses(blocks, issues)
+        self._demote_index_letter_headings(blocks, issues)
         fatal_errors.extend(self._classify_body_errors(parse_errors, issues))
         self._normalise_metadata(metadata, blocks, source, issues)
         document_errors: list[str] = []
@@ -770,6 +778,7 @@ class CSMParser:
         directive_ids: set[str] = set()
         last_table: Block | None = None
         box_open_line: int | None = None  # ssir:box 配对状态（未闭合开标记的行号）
+        columns_open_line: int | None = None  # ssir:columns 配对状态（未闭合开标记行号）
         i = 0
 
         def line_no(index: int) -> int:
@@ -829,6 +838,73 @@ class CSMParser:
                             end_line=line_no(i),
                             text=stripped_box_line,
                             data={"event": "close", "style": style},
+                        )
+                    )
+                i += 1
+                continue
+
+            # ssir:columns 显式并列声明（与 ssir:box 同型的事件块，2026-09-11）：
+            # 开/列分隔/关三段行级独占指令；校验不得嵌套、列分隔必须在组内、
+            # 关必须匹配开（宽容模式：错位事件忽略并报 CSM-STRUCT-006，确定性继续）。
+            stripped_columns_line = line.strip()
+            columns_match = COLUMNS_MARKER_RE.match(stripped_columns_line)
+            if columns_match:
+                token = columns_match.group(1)
+                attrs_text = columns_match.group(2)
+                widths: list[float] | None = None
+                widths_match = COLUMNS_WIDTHS_ATTR_RE.search(attrs_text)
+                if widths_match:
+                    raw_widths = _unescape_attribute(widths_match.group(1))
+                    try:
+                        parsed_widths = [float(item) for item in re.split(r"[,，\s]+", raw_widths) if item]
+                    except ValueError:
+                        parsed_widths = []
+                    if parsed_widths and all(item > 0 for item in parsed_widths):
+                        widths = parsed_widths
+                    else:
+                        warnings.append(f"line {line_no(i)}: ssir:columns widths {raw_widths!r} invalid; equal widths used.")
+                    attrs_text = COLUMNS_WIDTHS_ATTR_RE.sub("", attrs_text)
+                extra = attrs_text.strip()
+                if extra:
+                    warnings.append(f"line {line_no(i)}: ssir:columns attributes {extra!r} ignored.")
+                if token == "columns":
+                    if columns_open_line is not None:
+                        errors.append(f"line {line_no(i)}: ssir:columns must not nest inside another ssir:columns (nested open ignored)")
+                    else:
+                        columns_open_line = line_no(i)
+                    blocks.append(
+                        Block(
+                            kind="columns",
+                            start_line=line_no(i),
+                            end_line=line_no(i),
+                            text=stripped_columns_line,
+                            data={"event": "open", "widths": widths},
+                        )
+                    )
+                elif token == "column":
+                    if columns_open_line is None:
+                        errors.append(f"line {line_no(i)}: ssir:column has no enclosing ssir:columns (ignored)")
+                    blocks.append(
+                        Block(
+                            kind="columns",
+                            start_line=line_no(i),
+                            end_line=line_no(i),
+                            text=stripped_columns_line,
+                            data={"event": "column"},
+                        )
+                    )
+                else:
+                    if columns_open_line is None:
+                        errors.append(f"line {line_no(i)}: ssir:/columns has no matching ssir:columns open (ignored)")
+                    else:
+                        columns_open_line = None
+                    blocks.append(
+                        Block(
+                            kind="columns",
+                            start_line=line_no(i),
+                            end_line=line_no(i),
+                            text=stripped_columns_line,
+                            data={"event": "close"},
                         )
                     )
                 i += 1
@@ -1344,6 +1420,8 @@ class CSMParser:
             warnings.append(f"line {directive.line}: ssir:{name} has no following compatible block")
         if box_open_line is not None:
             errors.append(f"line {box_open_line}: ssir:box opened here is never closed; box extends to end of document")
+        if columns_open_line is not None:
+            errors.append(f"line {columns_open_line}: ssir:columns opened here is never closed; columns extend to end of document")
         blocks = _absorb_table_note_spill(blocks, warnings)
         return blocks, errors, warnings
 
@@ -1372,6 +1450,7 @@ class CSMParser:
         return bool(
             # ssir:box 标记容忍行首/行尾空白（手工编辑常带缩进，2026-09-08）
             (stripped and BOX_MARKER_RE.match(stripped))
+            or (stripped and COLUMNS_MARKER_RE.match(stripped))
             or DIRECTIVE_RE.match(line)
             or HEADING_RE.match(line)
             or line.startswith("$$")
@@ -2139,8 +2218,14 @@ class CSMParser:
         不降低——避免把用户手写的高层标题（如 #### 下的 ###）误压扁，也避免
         与 _repair_clause_numbers 的连续性修复冲突。标题文本本身不变，
         canonical/SSIR/render 三侧一致，roundtrip 等价性保持。
+
+        附录条（`B.1`/`B.6.1` 型，GB/T 1.1-2020 9.6.2/10.4.1）同规：以附录大写
+        字母 + 点分数字编号，段数 = 点分链段数，层级 = 段数 + 1（附录本身 1 段 →
+        level 2、附录条 2 段 → level 3、附录子条 3 段 → level 4），使其落入所属
+        附录之下。此前本式只认十进制编号，附录条与附录同级 → 扁平化为文档块，
+        SSIR 树中附录无子节点（查看器折叠失效、`annexSection` 从未产生）。
         """
-        heading_number = re.compile(r"^(\d+(?:\.\d+)*)\s*[\u4e00-\u9fffA-Za-z0-9（(]")
+        heading_number = re.compile(r"^(\d+(?:\.\d+)*|[A-Z]\.\d+(?:\.\d+)*)\s*[\u4e00-\u9fffA-Za-z0-9（(]")
         for block in blocks:
             if block.kind != "heading" or not block.level:
                 continue
@@ -2177,39 +2262,128 @@ class CSMParser:
         编号条款上下文）。附录（附录 A…）内容按既有的扁平示例文档模型保留
         （GB_T_20001 系列附录示例依赖该模型），只有编号条款上下文内的示例
         才调整。
+
+        2026-09-12 扩展（用户报告：附录 A 与 B.6.3.5/B.6.3.6 的示例被误为与附录
+        同级）：
+        - 附录条编号（`B.1`/`B.6.3`）与附录标题（`附录 A`）也作为示例的**归属
+          上下文**——示例挂到所属附录条/附录之下（示例直接位于附录内时挂到附录
+          之下）。此前上下文只认十进制编号，附录内示例留在 ## → 挂到文档根。
+        - **模型示例**（示例内容本身是一份示例文档，自带 `1`/`5` 等章节标题，
+          GB_T_20001 系列）保持扁平：示例标题之后的下一个标题既不是另一个示例/
+          附录/附录条/十进制条号/文档级要素时，判定该标题属于示例文档本身，不做
+          提升（否则示例文档章节会与附录条争夺层级，破坏渲染端的示例框分组）。
         """
-        digit_heading = re.compile(r"^\d+(?:\.\d+)*\s*\S")
         annex_heading = re.compile(r"^附\s*录\s*[A-Z]")
-        stack: list[tuple[int, bool]] = []  # (markdown level, is_digit_numbered)
-        for block in blocks:
+        annex_section_heading = re.compile(r"^[A-Z]\.\d+(?:\.\d+)*(?:\s|$)")
+        digit_heading = re.compile(r"^\d+(?:\.\d+)*\s*[\u4e00-\u9fffA-Za-z（(]")
+        element_only = re.compile(r"^(?:参考文献|索\s*引|前\s*言|引\s*言|目\s*次|封面|重要提示)$")
+
+        def owns_following_heading(index: int) -> bool:
+            """示例标题之后的标题是否构成示例文档（模型示例判据）。
+
+            扫描到下一个「示例/附录/附录条/文档级要素」边界为止：其间只要出现
+            十进制条号标题（示例文档自带的 1/5/6.1 章节），即认定示例内容本身是
+            一份示例文档（模型示例）。单个 OCR 误升的标题（如 GB_T_1.1-2020
+            示例2 里的「##     多刃刀片 GB/T 2079-…」）不算模型。
+            """
+            for later in blocks[index + 1:]:
+                if later.kind != "heading" or not later.level:
+                    continue
+                later_text = later.text.strip()
+                if (
+                    EX_HEADER_RE.match(later_text)
+                    or annex_heading.match(later_text)
+                    or annex_section_heading.match(later_text)
+                    or element_only.match(later_text.replace(" ", ""))
+                ):
+                    return False
+                if digit_heading.match(later_text):
+                    return True
+            return False
+
+        # 附录作用域：附录标题到下一个附录/文后要素之间的全部内容都属于该附录，
+        # 不因中间的无编号标题（如示例内容里误升的标题）而退出——用显式作用域而非
+        # 层级栈，避免噪声标题把附录上下文弹掉。
+        annex_level: int | None = None
+        annex_section_level: int | None = None
+        clause_stack: list[int] = []  # 正文十进制条号层级栈
+        simple_example = False  # 当前是否处于「简单示例」块内（内容非示例文档）
+        for index, block in enumerate(blocks):
             if block.kind != "heading" or not block.level:
                 continue
             text = block.text.strip()
+            level = block.level
             if EX_HEADER_RE.match(text):
-                context = next((lvl for lvl, digit in reversed(stack) if digit), None)
-                if context is not None:
-                    target = min(context + 1, 6)
-                    if (block.level or 2) < target:
-                        previous = block.level
-                        block.level = target
-                        CSMParser._issue(
-                            issues,
-                            "CSM-OCR-008",
-                            f"Example heading {text!r} sat at level {previous} (extractor "
-                            f"chapter level) inside clause context level {context}; raised to "
-                            f"level {target} so it nests under its clause.",
-                            line=block.start_line,
-                            repaired=True,
-                            repair_action=f"Raised example heading level {previous} -> {target} in memory.",
-                        )
+                if annex_level is not None:
+                    context_level = annex_section_level or annex_level
+                    if owns_following_heading(index):
+                        # 模型示例：保持扁平示例文档模型（示例文档章节仍与其同级）。
+                        simple_example = False
+                        continue
+                else:
+                    context_level = clause_stack[-1] if clause_stack else None
+                    if context_level is None:
+                        simple_example = False
+                        continue
+                target = min(context_level + 1, 6)
+                if level < target:
+                    previous = level
+                    block.level = target
+                    CSMParser._issue(
+                        issues,
+                        "CSM-OCR-008",
+                        f"Example heading {text!r} sat at level {previous} (extractor "
+                        f"chapter level) inside clause context level {context_level}; raised to "
+                        f"level {target} so it nests under its clause.",
+                        line=block.start_line,
+                        repaired=True,
+                        repair_action=f"Raised example heading level {previous} -> {target} in memory.",
+                    )
+                simple_example = True
                 continue
-            while stack and stack[-1][0] >= (block.level or 2):
-                stack.pop()
+            # 简单示例内容里的无编号标题（MinerU 把示例的「标记：」行等抽成 ## 标题，
+            # GB/T 1.1-2020 示例2 的「多刃刀片 GB/T 2079-…」）是示例内容，不是章条
+            # 标题——降级为段落，避免它成为与章同级的结构节点并夺走后续解释段。
+            is_boundary = bool(
+                element_only.match(text.replace(" ", ""))
+                or annex_heading.match(text)
+                or annex_section_heading.match(text)
+                or digit_heading.match(text)
+            )
+            if simple_example and not is_boundary:
+                block.kind = "paragraph"
+                block.level = None
+                CSMParser._issue(
+                    issues,
+                    "CSM-OCR-020",
+                    f"Heading {text!r} inside an example block is example content, "
+                    f"not a clause title; demoted to a paragraph.",
+                    line=block.start_line,
+                    repaired=True,
+                    repair_action="Demoted an example-content heading to a body paragraph in memory.",
+                )
+                continue
+            simple_example = False
+            if element_only.match(text.replace(" ", "")):
+                annex_level = None
+                annex_section_level = None
+                clause_stack = []
+                continue
+            if annex_heading.match(text):
+                annex_level = level
+                annex_section_level = None
+                clause_stack = []
+                continue
+            if annex_section_heading.match(text):
+                annex_section_level = level
+                continue
+            if annex_level is not None:
+                # 附录作用域内：无编号/噪声标题不影响附录条上下文。
+                continue
+            while clause_stack and clause_stack[-1] >= level:
+                clause_stack.pop()
             if digit_heading.match(text):
-                stack.append((block.level or 2, True))
-            elif annex_heading.match(text):
-                # 附录容器：关闭正文编号上下文，附录内示例不再获得正文条款上下文。
-                stack.append((block.level or 2, False))
+                clause_stack.append(level)
 
     @staticmethod
     def _repair_lost_list_markers(blocks: list[Block], issues: list[CSMIssue]) -> None:
@@ -2844,6 +3018,44 @@ class CSMParser:
             )
 
     @staticmethod
+    def _demote_index_letter_headings(blocks: list[Block], issues: list[CSMIssue]) -> None:
+        """索引要素内的单字母分组标签标题降级为正文段落（CSM-OCR-019）。
+
+        现象（GB_T_1.1-2020 索引，2026-09-12 用户报告）：索引按汉语拼音首字母分组，
+        组标签行「B」「D」「Z」被 MinerU 抽成 `##` 标题，而同一索引里的其他字母
+        （C/F/W/X/Y）是普通段落 → 这三个字母在 SSIR 树里成为与附录同级的文档块，
+        而索引其余内容挂在「索引」节点下（用户：「索引的 B、D、Z」）。
+        判据：进入「索引」要素（无编号、文本为「索引」）后，形如单个大写字母的
+        标题块一律降级为段落；遇下一个文档级要素（参考文献/前言/引言/目次/封面）
+        或编号章条标题即退出索引模式。
+        """
+        letter_only = re.compile(r"^[A-Z]$")
+        element_only = re.compile(r"^(?:参考文献|索\s*引|前\s*言|引\s*言|目\s*次|封面)$")
+        in_index = False
+        for block in blocks:
+            if block.kind != "heading" or not block.level:
+                continue
+            text = block.text.strip()
+            normalized = text.replace(" ", "")
+            if letter_only.match(text) and in_index:
+                block.kind = "paragraph"
+                block.level = None
+                CSMParser._issue(
+                    issues,
+                    "CSM-OCR-019",
+                    f"Index group heading {text!r} demoted to a paragraph "
+                    f"(index content, not a clause title).",
+                    line=block.start_line,
+                    repaired=True,
+                    repair_action="Demoted the index letter heading to a body paragraph in memory.",
+                )
+                continue
+            if element_only.match(normalized):
+                in_index = "索引" in normalized
+            elif re.match(r"^\d+", text):
+                in_index = False
+
+    @staticmethod
     def _classify_body_errors(errors: list[str], issues: list[CSMIssue]) -> list[str]:
         fatal_errors: list[str] = []
         for error in errors:
@@ -2856,6 +3068,10 @@ class CSMParser:
                 # ssir:box 配对/嵌套错误（2026-09-08 显式文档框声明）：不阻断解析，
                 # 宽容模式按确定性规则继续（未闭合开 → 延伸到文档尾；关无开/嵌套 → 忽略）。
                 CSMParser._issue(issues, "CSM-STRUCT-006", error)
+            elif "ssir:column" in error:
+                # ssir:columns 配对/嵌套/列错位错误（2026-09-11 显式并列声明，
+                # docs/07 §6.9）：与 box 同族的宽容语义，独立 issue 码便于追溯。
+                CSMParser._issue(issues, "CSM-STRUCT-008", error)
             elif "table row has" in error:
                 # Short rows were repaired above. Extra cells have already been recorded as fatal there.
                 continue

@@ -497,6 +497,9 @@ class _DocxBuilder:
         self.title = str(self.common.get("title") or "")
         self.body_title_inserted = False
         self._box: dict[str, Any] | None = None  # ssir:box 显式框（docx 侧活动容器，2026-09-08）
+        # sideBySideGroup 并列列（docx 侧活动容器，2026-09-11）：优先于 _box 的
+        # 最内层容器，_content 写入其中一列的单元格。
+        self._column: dict[str, Any] | None = None
         self._configure()
 
     # -- 页面与样式 ---------------------------------------------------------
@@ -733,13 +736,14 @@ class _DocxBuilder:
         self._box = {"id": box, "cell": cell, "para_used": False}
 
     def _container_paragraph(self, style: str | None = None) -> Any:
-        """正文段落槽：显式框内写入框单元格（首个段落复用单元格默认空段），
-        框外直接写文档体。"""
-        if self._box is None:
+        """正文段落槽：并列列单元格 > 显式框单元格 > 文档体（从最内层容器取）。
+        首个段落复用单元格默认空段。"""
+        container = self._column if self._column is not None else self._box
+        if container is None:
             return self.doc.add_paragraph(style=style) if style else self.doc.add_paragraph()
-        cell = self._box["cell"]
-        if not self._box["para_used"]:
-            self._box["para_used"] = True
+        cell = container["cell"]
+        if not container["para_used"]:
+            container["para_used"] = True
             paragraph = cell.paragraphs[0]
             if style:
                 paragraph.style = self.doc.styles[style]
@@ -747,9 +751,10 @@ class _DocxBuilder:
         return cell.add_paragraph(style=style) if style else cell.add_paragraph()
 
     def _container_table(self, rows: int, cols: int) -> Any:
-        if self._box is None:
+        container = self._column if self._column is not None else self._box
+        if container is None:
             return self.doc.add_table(rows=rows, cols=cols)
-        return self._box["cell"].add_table(rows=rows, cols=cols)
+        return container["cell"].add_table(rows=rows, cols=cols)
 
     def render_body(self) -> None:
         nodes = self._root_nodes()
@@ -804,8 +809,7 @@ class _DocxBuilder:
                 index += 1
                 for child in node.get("children", []) or []:
                     self._marked_node(child)
-                for content in sorted(node.get("contentElements", []) or [], key=_order):
-                    self._marked_content(content)
+                self._render_contents(node.get("contentElements", []) or [], marked=True)
                 continue
             self._marked_node(node)
             index += 1
@@ -830,8 +834,7 @@ class _DocxBuilder:
                 level = self._heading_level(node)
                 paragraph = self._container_paragraph(style=f"Heading {level}")
                 _run_fonts(paragraph, heading_text, self.docx, ea=EA_HEI, bold=True)
-        for content in sorted(node.get("contentElements", []), key=_order):
-            self._marked_content(content)
+        self._render_contents(node.get("contentElements", []) or [], marked=True)
         for child in sorted(node.get("children", []), key=_order):
             self._marked_node(child)
 
@@ -889,10 +892,71 @@ class _DocxBuilder:
                 level = self._heading_level(node)
                 paragraph = self.doc.add_paragraph(style=f"Heading {level}")
                 _run_fonts(paragraph, heading_text, self.docx, ea=EA_HEI, bold=True)
-        for content in sorted(node.get("contentElements", []), key=_order):
-            self._content(content)
+        self._render_contents(node.get("contentElements", []) or [])
         for child in sorted(node.get("children", []), key=_order):
             self._node(child)
+
+    def _render_contents(self, contents: list[dict[str, Any]], *, marked: bool = False,
+                         render: Any = None) -> None:
+        """内容元素序列发射：并列组（sideBySideGroup）渲染为一行无框 N 列表格，
+        其余内容照常逐元素发射。``marked`` 为真时（ssir:box 显式模式）每个单元
+        先经 `_box_cell` 推进框归属；``render`` 指定单元渲染器（示例内容用
+        `_example_content`，正文用 `_content`）。"""
+        emit = render or self._content
+        ordered = sorted(contents, key=_order)
+        index = 0
+        while index < len(ordered):
+            group = ordered[index].get("sideBySideGroup")
+            if group:
+                members: list[dict[str, Any]] = []
+                while index < len(ordered) and ordered[index].get("sideBySideGroup") == group:
+                    members.append(ordered[index])
+                    index += 1
+                if marked:
+                    self._box_cell(members[0].get("box"), members[0].get("boxStyle"))
+                self._side_by_side(members, render=emit)
+                continue
+            content = ordered[index]
+            if marked:
+                self._box_cell(content.get("box"), content.get("boxStyle"))
+            emit(content)
+            index += 1
+
+    def _side_by_side(self, members: list[dict[str, Any]], *, render: Any = None) -> None:
+        """并列组 → 无边框 N 列表格（等价 HTML 定位容器）；列宽按 sideBySideWidths
+        比例（缺省等分）。单元格内内容经 `_column` 容器路由。"""
+        docx = self.docx
+        emit = render or self._content
+        columns: dict[int, list[dict[str, Any]]] = {}
+        for member in members:
+            columns.setdefault(int(member.get("sideBySideColumn", 0)), []).append(member)
+        col_keys = sorted(columns)
+        if not col_keys:
+            return
+        ratios: list[float] = []
+        raw_ratios = members[0].get("sideBySideWidths")
+        if raw_ratios:
+            try:
+                ratios = [float(value) for value in raw_ratios]
+            except (TypeError, ValueError):
+                ratios = []
+        if len(ratios) != len(col_keys) or any(value <= 0 for value in ratios):
+            ratios = [1.0] * len(col_keys)
+        table = self._container_table(1, len(col_keys))
+        total_ratio = sum(ratios)
+        previous_column = self._column
+        try:
+            for position, column in enumerate(col_keys):
+                cell = table.cell(0, position)
+                width = docx["Cm"](CONTENT_WIDTH_CM * ratios[position] / total_ratio)
+                cell.width = width
+                table.columns[position].width = width
+                self._column = {"cell": cell, "para_used": False}
+                for member in sorted(columns[column], key=_order):
+                    emit(member)
+        finally:
+            self._column = previous_column
+
 
     # -- 内容元素分发 ---------------------------------------------------------
     def _content(self, content: dict[str, Any]) -> None:
@@ -1178,8 +1242,7 @@ class _DocxBuilder:
         if heading_text:
             paragraph = self.doc.add_paragraph(style=STYLE_EXAMPLE_TITLE)
             _run_fonts(paragraph, heading_text, self.docx, ea=EA_HEI, bold=True)
-        for content in sorted(node.get("contentElements", []), key=_order):
-            self._example_content(content)
+        self._render_contents(node.get("contentElements", []) or [], render=self._example_content)
         for child in sorted(node.get("children", []), key=_order):
             self._example_node(child)
 
@@ -1187,7 +1250,7 @@ class _DocxBuilder:
         kind = content.get("presentationType")
         if kind in {"paragraph", "note", "quote", "warning", "example"}:
             text = str(content.get("textContent") or "")
-            paragraph = self.doc.add_paragraph(style=STYLE_EXAMPLE)
+            paragraph = self._container_paragraph(style=STYLE_EXAMPLE)
             _add_markup(paragraph, _flatten_latex(_footnote_superscripts(text)), self.docx,
                         asset_dir=self.asset_dir)
         elif kind == "list":
@@ -1195,7 +1258,7 @@ class _DocxBuilder:
             markers = [_list_marker(str(item.get("marker", "-"))) for item in items]
             uniform_bullets = bool(markers) and all(m in ("●", "○", "•") for m in markers)
             for item, marker in zip(items, markers):
-                paragraph = self.doc.add_paragraph(style=STYLE_EXAMPLE)
+                paragraph = self._container_paragraph(style=STYLE_EXAMPLE)
                 _list_indent(paragraph, marker, self.docx,
                              sub_level=_list_is_sub_level(marker, uniform_bullets))
                 _add_markup(paragraph, _flatten_latex(str(item.get("text") or "")), self.docx,
@@ -1211,7 +1274,7 @@ class _DocxBuilder:
         else:
             text = str(content.get("textContent") or "")
             if text.strip():
-                paragraph = self.doc.add_paragraph(style=STYLE_EXAMPLE)
+                paragraph = self._container_paragraph(style=STYLE_EXAMPLE)
                 _add_markup(paragraph, text, self.docx, asset_dir=self.asset_dir)
 
     # -- 导出 ----------------------------------------------------------------

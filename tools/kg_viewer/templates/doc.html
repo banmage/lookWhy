@@ -11,6 +11,7 @@
     <a class="kg-brand" href="{{ url_for('index') }}">标准知识图谱</a>
     <span class="kg-sub mono">{{ doc.standard_number }}</span>
     <span class="kg-actions">
+      <a href="javascript:void(0)" onclick="openDocDetail({{ doc.doc_id | tojson }})">文档详情</a>
       <a href="{{ url_for('graph_page', doc_id=doc.doc_id) }}">本体图谱视图 →</a>
     </span>
   </div>
@@ -52,5 +53,6 @@ const DOC_ID = {{ doc.doc_id | tojson }};
 const FOCUS_ID = new URLSearchParams(location.search).get('focus');
 </script>
 <script src="{{ url_for('static', filename='js/doc.js') }}"></script>
+<script src="{{ url_for('static', filename='js/detail.js') }}"></script>
 </body>
 </html>

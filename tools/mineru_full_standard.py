@@ -1948,19 +1948,35 @@ def _stamp_figure_source_sizes(ssir_path: Path, source_pdf: Path) -> None:
         _log(f"Figure source sizes stamped from source PDF: {stamped}/{len(candidates)} images (density={density and round(density, 2)} px/pt)")
 
 
+# 并列版面几何识别的通用参数（GEN-095）：只用版心比例与行高，不依赖具体文档。
+_PART_PAGE_RANGE_RE = re.compile(r"pages-(\d+)-(\d+)")
+_EXAMPLE_CAPTION_RE = re.compile(r"^示例\s*\d*\s*[:：]")
+_FULL_WIDTH_RATIO = 0.62   # 宽度 ≥ 版心 62% → 通栏块（并列区天然分隔）
+_ANCHOR_COLUMN_GAP_RATIO = 0.20  # 锚点 x 中心相距 > 20% 版心 → 不同列
+_MAX_SIDE_COLUMNS = 3      # 并列列数上限（4+ 并排的罕见版面不猜测）
+_REGION_GAP_LINES = 1.5    # 相邻块垂距 > 1.5×行高 → 另起并列区
+
+
 def _stamp_side_by_side_layout(ssir_path: Path, parts_dir: Path) -> None:
-    """Detect side-by-side figure/annotations from MinerU geometry and mark them
-    as a side-by-side group so the renderer lays them out on one row (无边框定位
-    容器，等价 HTML div 布局——GB_T_23132-2024 图2 的 a)/b) 并列子图型).
+    """Detect side-by-side (parallel) layout from MinerU geometry and mark it so the
+    renderer lays the members out on one row (无边框定位容器，等价 HTML div 布局)。
 
-    依据 MinerU OCR 中间产物 middle.json 的版面几何（preproc_blocks 的 bbox，
-    pt 坐标，与源 PDF 同页面尺寸）：同一页内 **y 区间重叠、x 区间分离**的多个
-    image block 判定为并列组；组内按 x 升序分配 sideBySideColumn。图块附带
-    的图内文字 span（L≤0.4 mm 等）按 span bbox 的 x 中心归属列。命中后把
-    SSIR content（figure 引用与相邻文字段）写入 sideBySideGroup/sideBySideColumn。
+    规则对应: GEN-095（并列版面通用识别）。识别对象是**同一水平带内 x 分离的
+    2~3 组内容**，锚点块可为 image（子图并列）或 interline_equation（公式对照，
+    如 GB/T 1.1-2020 9.9.3.1 示例3/4 的「正确/不正确」）。通用规则：
 
-    通用性：不依赖具体文档——任何"同一水平带内并排的 2-3 块内容"都命中；
-    无并列证据的图保持原样（单列不组）。
+    - 页键用**绝对页号**（分片目录 pages-037-054 → 起始页 37）：MinerU 分片的
+      page_idx 各自从 0 起，旧实现按相对页号聚合会把不同分片的同号页混在一起；
+    - 通栏块、`示例N：` 题注块、垂距 > 1.5×行高处切分为独立「并列区」，防止把
+      同页多处并列/题注混进同一组；
+    - 区内先按 x 中心对**锚点块**（图/公式）做 1D 聚类得到列（≥2 列、≤3 列），
+      再按块 x 中心到各列 x 区间的距离把区内所有块归属列；
+    - 内容映射：图/公式块按 asset basename 匹配注册表；文本块只在**锚点所在父
+      节点**内匹配（「正确：/不正确：」等标签在多处出现，跨节点全局匹配会串组）；
+      已有 sideBySideGroup（`ssir:columns` 手工声明）的内容绝不覆盖；
+    - 收尾校验：≥2 列各有命中，且每个父节点内命中的内容元素 sortOrder **连续
+      无空洞**（否则并列组会被渲染端切成多张表）——不满足则整组回滚，不留半组。
+    纯文本并列（无任何图/公式锚点）不自动猜测，走 canonical `ssir:columns`。
     """
     try:
         data = json.loads(ssir_path.read_text(encoding="utf-8"))
@@ -1971,10 +1987,24 @@ def _stamp_side_by_side_layout(ssir_path: Path, parts_dir: Path) -> None:
     middle_files = sorted(parts_dir.rglob("*_middle.json"))
     if not middle_files:
         return
-    # 收集每页的 image block 几何（含图内文字 span 的 bbox 与内容）。
-    # page_blocks[page_idx] = {"images": [(image_path_basename, x0,y0,x1,y1), ...],
-    #                          "spans": [(text, x0,y0,x1,y1), ...]}
-    page_blocks: dict[int, dict[str, list[tuple]]] = {}
+
+    def _absolute_page(middle_path: Path, page_idx: int) -> int:
+        for parent in middle_path.parents:
+            match = _PART_PAGE_RANGE_RE.fullmatch(parent.name)
+            if match:
+                return int(match.group(1)) + int(page_idx)
+        return int(page_idx) + 1
+
+    def _block_lines(block: dict) -> list[dict]:
+        # image 块的 span 在 blocks[*].lines[*]，text/interline_equation 块直接在
+        # lines[*]（MinerU pipeline 后端的两种层级都要取）。
+        lines: list[dict] = []
+        for sub in block.get("blocks") or []:
+            lines.extend(sub.get("lines") or [])
+        lines.extend(block.get("lines") or [])
+        return lines
+
+    pages: dict[int, list[dict]] = {}
     for middle in middle_files:
         try:
             raw = json.loads(middle.read_text(encoding="utf-8"))
@@ -1984,36 +2014,52 @@ def _stamp_side_by_side_layout(ssir_path: Path, parts_dir: Path) -> None:
             page_idx = info.get("page_idx")
             if page_idx is None:
                 continue
-            page = page_blocks.setdefault(page_idx, {"images": [], "spans": []})
+            page_no = _absolute_page(middle, page_idx)
+            blocks = pages.setdefault(page_no, [])
             for block in info.get("preproc_blocks") or []:
-                if block.get("type") != "image":
-                    continue
                 bbox = block.get("bbox")
                 if not bbox or len(bbox) != 4:
                     continue
-                image_path = None
-                for sub in block.get("blocks") or []:
-                    for line in sub.get("lines") or []:
-                        for span in line.get("spans") or []:
-                            if span.get("type") == "image" and span.get("image_path"):
-                                image_path = Path(span["image_path"]).name
-                            elif span.get("type") == "text" and span.get("content"):
-                                sb = span.get("bbox")
-                                if sb and len(sb) == 4:
-                                    page["spans"].append((str(span["content"]).strip(), sb[0], sb[1], sb[2], sb[3]))
-                if image_path:
-                    page["images"].append((image_path, bbox[0], bbox[1], bbox[2], bbox[3]))
-    if not page_blocks:
+                text_parts: list[str] = []
+                spans: list[tuple[str, float, float, float, float]] = []
+                asset: str | None = None
+                for line in _block_lines(block):
+                    for span in line.get("spans") or []:
+                        span_type = span.get("type")
+                        span_bbox = span.get("bbox")
+                        if span_type in ("image", "interline_equation") and span.get("image_path"):
+                            asset = Path(str(span["image_path"])).name
+                        elif span_type in ("text", "inline_equation") and span.get("content"):
+                            # 行内公式 span 必须并入块文本：变量解释行「$t_i$——…」的
+                            # 变量在 inline_equation span 里，只取 text span 会丢掉它
+                            # → 与 SSIR 文本（含变量）精确匹配落空（示例5）。
+                            content = str(span["content"])
+                            text_parts.append(content)
+                            if span_bbox and len(span_bbox) == 4:
+                                spans.append((content.strip(), float(span_bbox[0]), float(span_bbox[1]),
+                                              float(span_bbox[2]), float(span_bbox[3])))
+                blocks.append({
+                    "type": block.get("type"),
+                    "bbox": [float(value) for value in bbox],
+                    "text": "".join(text_parts).strip(),
+                    "asset": asset,
+                    "spans": spans,
+                })
+    if not pages:
         return
 
-    # 图块 assetRef 索引（basename）。
-    ref_by_basename: dict[str, str] = {}
+    # 注册表索引：asset basename → figure/formula id。
+    figure_by_basename: dict[str, str] = {}
     for figure in data.get("figures") or []:
         ref = figure.get("assetRef")
         if ref:
-            ref_by_basename.setdefault(Path(ref).name, figure["id"])
+            figure_by_basename.setdefault(Path(ref).name, figure["id"])
+    formula_by_basename: dict[str, str] = {}
+    for formula in data.get("formulas") or []:
+        ref = formula.get("assetRef")
+        if ref:
+            formula_by_basename.setdefault(Path(ref).name, formula["id"])
 
-    # 遍历 SSIR 树找 content 元素（figureRef / textContent 匹配用）。
     contents: list[dict] = []
 
     def _walk(node: dict) -> None:
@@ -2024,103 +2070,183 @@ def _stamp_side_by_side_layout(ssir_path: Path, parts_dir: Path) -> None:
 
     _walk(data.get("structuralRoot") or {})
     content_by_figure = {c.get("figureRef"): c for c in contents if c.get("presentationType") == "figure"}
+    content_by_formula = {c.get("formulaRef"): c for c in contents if c.get("presentationType") == "formula"}
 
-    # 每页检测并列组：image blocks 两两 y 重叠（>60% 小高）且 x 分离 → 组内按 x 排序。
-    def _norm(t: str) -> str:
-        return re.sub(r"\s+", "", t).replace("（", "(").replace("）", ")")
+    def _norm(text: str) -> str:
+        # 匹配用归一：去空白、全角括号→半角、去行内公式定界符 `$`，并把破折号族
+        # （—/– 的任意长度连续串）压成单个 `—`——SSIR 侧经 CSM-OCR-018 已归一为
+        # 「——」，而 MinerU 块文本仍是 `———`/`——`/`—` 变体，不归一会漏配
+        # （GB/T 1.1-2020 9.9.3.1 示例5 的变量解释行）。
+        text = re.sub(r"\s+", "", text).replace("（", "(").replace("）", ")").replace("$", "")
+        return re.sub(r"[—–]+", "—", text)
 
-    def _content_search_text(content: dict) -> list[str]:
-        """content 的可搜索文本：段落取 textContent；列项取 marker+text。"""
+    def _search_texts(content: dict) -> list[str]:
         if content.get("presentationType") == "list":
             return [_norm(f"{item.get('marker', '')}{item.get('text', '')}") for item in content.get("listItems") or []]
         return [_norm(str(content.get("textContent", "")))]
 
+    def _match_text(text: str, parent_ids: set, used: set[int]) -> dict | None:
+        needle = _norm(text)
+        if not needle:
+            return None
+        for content in contents:
+            if content.get("sideBySideGroup") or id(content) in used:
+                continue
+            if content.get("presentationType") not in ("paragraph", "note", "quote", "example", "warning", "list"):
+                continue
+            if parent_ids and content.get("parentNodeId") not in parent_ids:
+                continue
+            if needle in _search_texts(content):
+                return content
+        return None
+
+    def _content_for_asset(asset: str) -> dict | None:
+        figure_id = figure_by_basename.get(asset)
+        if figure_id:
+            return content_by_figure.get(figure_id)
+        formula_id = formula_by_basename.get(asset)
+        if formula_id:
+            return content_by_formula.get(formula_id)
+        return None
+
+    # 已存在的并列组 id（手工 `ssir:columns-N` 或上一轮几何打标）：新一轮打标不得
+    # 复用同 id（重复运行/半程续跑时否则会把两组内容并成一个组）。
+    used_group_ids = {c.get("sideBySideGroup") for c in contents if c.get("sideBySideGroup")}
     stamped_group = 0
-    for page_idx in sorted(page_blocks):
-        images = sorted(page_blocks[page_idx]["images"], key=lambda item: item[1])  # 按 x0
-        spans = page_blocks[page_idx]["spans"]
-        used: set[int] = set()
-        for i, (name_i, x0i, y0i, x1i, y1i) in enumerate(images):
-            if i in used:
+    for page_no in sorted(pages):
+        blocks = [b for b in pages[page_no] if b["bbox"][3] > b["bbox"][1]]
+        if len(blocks) < 2:
+            continue
+        frame_x0 = min(b["bbox"][0] for b in blocks)
+        frame_x1 = max(b["bbox"][2] for b in blocks)
+        frame_width = max(frame_x1 - frame_x0, 1.0)
+        heights = sorted(b["bbox"][3] - b["bbox"][1] for b in blocks)
+        line_height = heights[len(heights) // 2] or 10.0
+
+        def _is_full_width(block: dict) -> bool:
+            return (block["bbox"][2] - block["bbox"][0]) >= _FULL_WIDTH_RATIO * frame_width
+
+        def _is_caption(block: dict) -> bool:
+            return bool(_EXAMPLE_CAPTION_RE.match(block.get("text", "")))
+
+        # 切分并列区：通栏块 / 示例题注 / 大垂距处断开。
+        segments: list[list[dict]] = []
+        current: list[dict] = []
+        for block in sorted(blocks, key=lambda item: (item["bbox"][1], item["bbox"][0])):
+            if _is_full_width(block) or _is_caption(block):
+                if current:
+                    segments.append(current)
+                    current = []
                 continue
-            group = [i]
-            used.add(i)
-            # 贪心：与已组内任一成员 y 重叠且 x 分离的都并入（上限 3 列——用户
-            # 描述"并列的两部分或三部分内容"；4+ 并排的罕见版面不猜测）。
-            changed = True
-            while changed:
-                changed = False
-                for j, (name_j, x0j, y0j, x1j, y1j) in enumerate(images):
-                    if j in used or len(group) >= 3:
+            if current and block["bbox"][1] - current[-1]["bbox"][3] > _REGION_GAP_LINES * line_height:
+                segments.append(current)
+                current = []
+            current.append(block)
+        if current:
+            segments.append(current)
+
+        for segment in segments:
+            anchors = [b for b in segment if b.get("asset")]
+            if len(anchors) < 2:
+                continue
+            # 锚点按 x 中心聚类成列（列序 = x 升序）。
+            anchor_columns: list[list[dict]] = []
+            for anchor in sorted(anchors, key=lambda item: (item["bbox"][0] + item["bbox"][2]) / 2):
+                center = (anchor["bbox"][0] + anchor["bbox"][2]) / 2
+                if anchor_columns:
+                    last_center = (anchor_columns[-1][-1]["bbox"][0] + anchor_columns[-1][-1]["bbox"][2]) / 2
+                    if center - last_center <= _ANCHOR_COLUMN_GAP_RATIO * frame_width:
+                        anchor_columns[-1].append(anchor)
                         continue
-                    for k in group:
-                        _, _, y0k, _, y1k = images[k]
-                        x0k, x1k = images[k][1], images[k][3]
-                        overlap = min(y1k, y1j) - max(y0k, y0j)
-                        small_h = min(y1k - y0k, y1j - y0j)
-                        x_separated = x1k <= x0j or x1j <= x0k
-                        if small_h > 0 and overlap > 0.6 * small_h and x_separated:
-                            group.append(j)
-                            used.add(j)
-                            changed = True
-                            break
-                    if changed:
-                        break
-            if len(group) < 2:
+                anchor_columns.append([anchor])
+            if not (2 <= len(anchor_columns) <= _MAX_SIDE_COLUMNS):
                 continue
-            group.sort(key=lambda k: images[k][1])  # x 升序 → 列序
-            group_x0 = min(images[k][1] for k in group)
-            group_x1 = max(images[k][3] for k in group)
-            group_id = f"p{page_idx:03d}-g{stamped_group:02d}"
-            # image → 对应 figure content。
-            fig_col: dict[str, int] = {}
-            for col, k in enumerate(group):
-                name = images[k][0]
-                figure_id = ref_by_basename.get(name)
-                if figure_id:
-                    fig_col[figure_id] = col
-            if not fig_col:
+            column_ranges = [
+                (min(a["bbox"][0] for a in column), max(a["bbox"][2] for a in column))
+                for column in anchor_columns
+            ]
+
+            def _column_of(block: dict) -> int:
+                center = (block["bbox"][0] + block["bbox"][2]) / 2
+                best, best_distance = 0, None
+                for index, (x0, x1) in enumerate(column_ranges):
+                    if x0 <= center <= x1:
+                        distance = 0.0
+                    else:
+                        distance = min(abs(center - x0), abs(center - x1))
+                    if best_distance is None or distance < best_distance:
+                        best, best_distance = index, distance
+                return best
+
+            # 锚点内容的父节点集合（文本匹配的作用域）。
+            parent_ids: set = set()
+            for anchor in anchors:
+                content = _content_for_asset(anchor["asset"])
+                if content is not None and not content.get("sideBySideGroup"):
+                    parent_ids.add(content.get("parentNodeId"))
+            if not parent_ids:
                 continue
-            # span 归属列：x 中心与各列图 x 区间距离最近者。
-            col_ranges = []
-            for k in group:
-                col_ranges.append((images[k][1], images[k][3]))
-            span_col: dict[str, int] = {}
-            for span in spans:
-                text, sx0, sy0, sx1, sy1 = span
-                center = (sx0 + sx1) / 2
-                best_col, best_dist = 0, 1e18
-                for col, (cx0, cx1) in enumerate(col_ranges):
-                    dist = 0.0 if cx0 <= center <= cx1 else min(abs(center - cx0), abs(center - cx1))
-                    if dist < best_dist:
-                        best_col, best_dist = col, dist
-                if best_dist < (group_x1 - group_x0) / len(col_ranges):
-                    span_col[text] = best_col
-            # 写标：figure content。
-            hit = False
-            for figure_id, col in fig_col.items():
-                content = content_by_figure.get(figure_id)
-                if content is not None:
-                    content["sideBySideGroup"] = group_id
-                    content["sideBySideColumn"] = col
-                    hit = True
-            # 写标：图内文字（与 span 文本一致的段落/列项，含全角括号归一）。
-            # 只打标与本组 figure 同父节点的 content，避免跨节点误组。
-            parent_ids = {c.get("parentNodeId") for c in contents if c.get("sideBySideGroup") == group_id}
-            for text, col in span_col.items():
-                n = _norm(text)
-                for content in contents:
-                    if content.get("sideBySideGroup") or content.get("parentNodeId") not in parent_ids:
-                        continue
-                    if n in _content_search_text(content):
-                        content["sideBySideGroup"] = group_id
-                        content["sideBySideColumn"] = col
-                        hit = True
-                        break
-            if hit:
+
+            pending: list[tuple[dict, int]] = []
+            assigned: set[int] = set()
+            # 同文本内容去重（GB/T 1.1-2020 9.9.3.1 示例5 两列各有「式中：」与同形
+            # 变量解释行）：按**行（y 容差 0.6 行高）+ x** 顺序匹配，同文本的第 n 次
+            # 出现对应 sortOrder 序的第 n 个候选——否则重复文本永远命中第一个、后一列
+            # 的内容落空 → 组内 sortOrder 出现空洞 → 整组被回滚。行聚类用容差而非
+            # 取整分桶：两列同一行的块 y 可能差 1–2pt，取整会把左右列拆到不同行。
+            rows: list[dict] = []
+            for block in sorted(segment, key=lambda item: (item["bbox"][1], item["bbox"][0])):
+                if rows and abs(block["bbox"][1] - rows[-1]["ref"]) <= 0.6 * line_height:
+                    rows[-1]["blocks"].append(block)
+                else:
+                    rows.append({"ref": block["bbox"][1], "blocks": [block]})
+            ordered_segment = [
+                block
+                for row in rows
+                for block in sorted(row["blocks"], key=lambda item: item["bbox"][0])
+            ]
+            for block in ordered_segment:
+                column = _column_of(block)
+                content = None
+                if block.get("asset"):
+                    content = _content_for_asset(block["asset"])
+                else:
+                    content = _match_text(block.get("text", ""), parent_ids, assigned)
+                    if content is None:
+                        for span_text, *_ in block.get("spans") or []:
+                            content = _match_text(span_text, parent_ids, assigned)
+                            if content is not None:
+                                break
+                if content is None or content.get("sideBySideGroup") or id(content) in assigned:
+                    continue
+                assigned.add(id(content))
+                pending.append((content, column))
+            if len({column for _, column in pending}) < 2:
+                continue
+            # 每个父节点内命中的内容元素 sortOrder 必须连续（否则渲染端会切表）。
+            by_parent: dict[str, list[dict]] = {}
+            for content, _ in pending:
+                by_parent.setdefault(str(content.get("parentNodeId")), []).append(content)
+            contiguous = True
+            for group_contents in by_parent.values():
+                orders = sorted(int(item.get("sortOrder", 0)) for item in group_contents)
+                if orders[-1] - orders[0] + 1 != len(orders):
+                    contiguous = False
+                    break
+            if not contiguous:
+                continue
+
+            while f"p{page_no:03d}-c{stamped_group:02d}" in used_group_ids:
                 stamped_group += 1
-                _log(f"Side-by-side group {group_id}: page {page_idx + 1}, {len(group)} columns "
-                     f"({' + '.join(images[k][0][:8] for k in group)})")
+            group_id = f"p{page_no:03d}-c{stamped_group:02d}"
+            used_group_ids.add(group_id)
+            for content, column in pending:
+                content["sideBySideGroup"] = group_id
+                content["sideBySideColumn"] = column
+            stamped_group += 1
+            _log(f"Side-by-side group {group_id}: page {page_no}, {len(anchor_columns)} columns, "
+                 f"{len(pending)} element(s)")
+
     if stamped_group:
         ssir_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         _log(f"Side-by-side layout stamped: {stamped_group} group(s)")

@@ -25,6 +25,7 @@ from leleby_ssir import kg as kglib
 from leleby_ssir.kgstore import KGDocStore
 
 from . import render as kg_render
+from . import detail as kg_detail
 
 _HERE = Path(__file__).parent
 
@@ -81,6 +82,21 @@ def create_app(db_path: str | Path) -> Flask:
             abort(404)
         rows = st.all_rows(doc_id)
         return jsonify({"doc_id": doc_id, "rows": rows})
+
+    @app.get("/api/doc/<doc_id>/detail")
+    def api_doc_detail(doc_id: str):
+        """文档详情（弹窗）：元数据 + 前言机构 + 术语条目 + 标准要素分层 + 清单核对。"""
+        st = store()
+        meta = st.get_document(doc_id)
+        if not meta:
+            abort(404, description=f"未知文档: {doc_id}")
+        payload = st.get_payload(doc_id)
+        if payload is None:
+            abort(404, description=f"文档 {doc_id} 无载荷（数据库可能损坏，请重导）")
+        detail = kg_detail.build_document_detail(payload)
+        detail["doc_id"] = doc_id
+        detail["document"] = {k: meta.get(k) for k in ("standard_number", "chinese_title", "document_type")}
+        return jsonify(detail)
 
     @app.get("/api/node/<doc_id>/<path:node_id>")
     def api_node(doc_id: str, node_id: str):

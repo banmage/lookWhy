@@ -588,6 +588,15 @@
           "minimum": 0,
           "description": "并列组内列序号（0-based，按源 PDF x 坐标升序）。"
         },
+        "sideBySideWidths": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "minItems": 1,
+          "description": "并列组的列宽比（ssir:columns 开标记 widths 属性；缺省等分）。同组各成员取同一值，渲染端只读首成员。"
+        },
         "box": {
           "type": "integer",
           "minimum": 1,
