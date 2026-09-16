@@ -11,7 +11,7 @@ import re
 _FOOTNOTE_REF_RE = re.compile(r"\[\^([0-9A-Za-z_-]+)\]")
 from typing import Any
 
-from .parser import EX_HEADER_RE, Block, CSMDocument
+from .parser import EX_HEADER_RE, Block, CSMDocument, term_entry_pair
 
 
 def _slug(value: str) -> str:
@@ -32,20 +32,10 @@ def _is_annex_heading(text: str) -> bool:
     return bool(re.match(r"^附\s*录\s*[A-Z]", text.strip()))
 
 
-# 术语行：中文术语 + 间隙（U+3000/空格/历史 U+200B）+ 英文对应词。
-# 英文部分只允许拉丁字母、数字、空白与少量符号，禁止中文标点/汉字，
-# 避免把定义段误判为术语行。
-TERM_LINE_RE = re.compile(
-    r"^([\u4e00-\u9fff]{1,24})[\u3000 \u200b]+([A-Za-z][A-Za-z0-9 &()（）·.\-—]*)$"
-)
-
-
-def _match_term_line(text: str) -> tuple[str, str] | None:
-    """Split a term line into (中文术语, 英文对应词), or None when it is not one."""
-    match = TERM_LINE_RE.match(text.strip())
-    if not match:
-        return None
-    return match.group(1), match.group(2).strip()
+# 术语行判据（中文术语/拉丁缩写术语 + 间隙 + 英文对应词）定义在 parser.term_entry_pair，
+# 与 CSM-OCR-003 的间隙归一、CSM-OCR-007 的条目形态归一同一份字符类——曾经这里各写一份
+# 更窄的（术语限纯汉字串、英文对应词不含逗号），于是「SI词头　SI prefix」与「国际单位制
+#　International System of Units, SI」抽不出 term/englishTerm（GB_3100-2026 3.13/3.8）。
 
 
 def _marker_type(marker: str) -> str:
@@ -269,7 +259,7 @@ class SSIRBuilder:
                     # 裸术语节（3.1，title=""）：期待紧随的术语行（段落或文档块标题）；
                     # 已合并形态（3.1.2 标准　standard，标题即术语行）直接取 term 字段。
                     pending_term = node
-                    pair = _match_term_line(str(node.get("title") or "").strip())
+                    pair = term_entry_pair(str(node.get("title") or ""))
                     if pair:
                         node["term"] = pair[0]
                         node["englishTerm"] = pair[1]
@@ -281,7 +271,7 @@ class SSIRBuilder:
                     # 文档块/子条：若是术语行的标题形态（3.2 + "功能function"）
                     if pending_term is not None and node.get("nodeType") in ("documentBlock", "clause", "subClause", "item", "subItem"):
                         title = str(node.get("title") or "").strip()
-                        pair = _match_term_line(title)
+                        pair = term_entry_pair(title)
                         if pair:
                             pending_term["term"] = pair[0]
                             pending_term["englishTerm"] = pair[1]
@@ -328,7 +318,7 @@ class SSIRBuilder:
             # 术语行的段落形态（3.1 + "规范标准 specification standard"）
             if pending_term is not None and parent is pending_term:
                 text = str(element.get("textContent") or "")
-                pair = _match_term_line(text)
+                pair = term_entry_pair(text)
                 if pair:
                     pending_term["term"] = pair[0]
                     pending_term["englishTerm"] = pair[1]
@@ -663,6 +653,10 @@ class SSIRBuilder:
         if caption:
             figure["caption"] = caption
             figure["altText"] = block.text
+        if block.data.get("unit"):
+            # 单位陈述行（"单位为毫米"，GEN-032）：与表同型地挂在图节点上，
+            # 渲染端右对齐画在图上方并与图同组（分页时不与图分离，见 docs/12 §3.54）。
+            figure["unit"] = str(block.data["unit"])
         if block.data.get("asset_ref"):
             figure["assetRef"] = block.data["asset_ref"]
         elif block.directive and block.directive.attrs.get("asset-status") == "missing":

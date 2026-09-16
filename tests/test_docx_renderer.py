@@ -1,7 +1,7 @@
 """docx_renderer 单元测试：SSIR JSON → docx（doc_1，与 render.pdf 内容等价）。
 
 覆盖：封面/目次/正文结构、表格合并单元格语义（vMerge/gridSpan）、
-表格单元格脚注标记与平拍指数上标还原、真实 canonical 解析冒烟。
+表格单元格脚注标记与拍平指数上标还原（GEN-104：只认抽取里带证据的分支）、真实 canonical 解析冒烟。
 """
 
 import tempfile
@@ -87,7 +87,7 @@ def _mini_document() -> dict:
                     {"rowIndex": 2, "isHeader": False, "cells": [
                         {"colIndex": 0, "text": "10-2"},
                         {"colIndex": 1, "text": "s−1"},
-                        {"colIndex": 2, "text": ""},
+                        {"colIndex": 2, "text": "cm3"},
                     ]},
                 ],
             }
@@ -179,7 +179,8 @@ class DocxRenderStructureTests(unittest.TestCase):
         self.assertEqual(len(tr1_tcs), 3)
         vmerge = tr1_tcs[1].find(qn("w:tcPr")).find(qn("w:vMerge"))
         self.assertIsNotNone(vmerge)
-        # 上标还原：1030 → 10 + sup(30)；s−1 → s + sup(−1)
+        # 上标还原（GEN-104，只认抽取里带证据的分支）：s−1 → s + sup(−1)、
+        # cm3 → cm + sup(3)；「10+纯数字」不猜——1030 保持普通数字
         sup_runs: list[str] = []
         for t in doc.tables:
             for row in t.rows:
@@ -188,8 +189,9 @@ class DocxRenderStructureTests(unittest.TestCase):
                         for run in p.runs:
                             if run.font.superscript:
                                 sup_runs.append(run.text)
-        self.assertIn("30", sup_runs)
         self.assertIn("−1", sup_runs)
+        self.assertIn("3", sup_runs)
+        self.assertNotIn("30", sup_runs)
         # 表注引用点（显式 [:^a] 标记）：匝间绝缘[:^a] 的 a 应为上标
         self.assertTrue(any(run.font.superscript and run.text == "a" for run in _all_runs(doc)))
         # 表头居中、数据行居左（2026-09-07 用户裁定）

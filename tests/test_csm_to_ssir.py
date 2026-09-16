@@ -673,6 +673,154 @@ source:
         self.assertEqual(markers, ["-", "—", "——", "-", "-"])
         self.assertTrue(compare_ssir(ssir, ssir_reparsed).passed)
 
+    def test_figure_unit_line_folds_into_figure(self) -> None:
+        # 回归（2026-09-13，GB_T_1.1-2020 附录 E）：源文件里"单位为毫米"是每张图页
+        # 第一行（9.7.4.1：图的右上方），canonical 里它写在图行之前。折进图节点 unit
+        # 后渲染端把它与图放进同一组，满页的图另起一面时这一行随之成为新页第一行，
+        # 不会被留在前页末（docs/12 §3.54）。
+        csm = """---
+csm-version: "1.0"
+document-type: standard
+document-identifier: "GB/T 1.1—2020"
+standard-number: "GB/T 1.1—2020"
+title: "标准化工作导则"
+language: zh-CN
+source:
+  mode: mineru
+  original-file-name: "GB_T_1.1-2020.pdf"
+---
+
+# 标准化工作导则
+
+## 附录 E（规范性） 文件格式
+
+图E.1～图E.12规定了不同文件的页面格式。
+
+单位为毫米
+
+![图 E.2 双数页格式](assets/images/e2.jpg)
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "annex-e.canonical.md"
+            path.write_text(csm, encoding="utf-8")
+            ssir = parse_csm(path)
+        self.assertEqual(ssir["figures"][0].get("unit"), "毫米")
+        # 折走的单位行不得残留为段落（否则渲染成图上方独立一行，分页还会被拆开）
+        paragraphs = [
+            content.get("textContent", "")
+            for node in self._nodes(ssir["structuralRoot"])
+            for content in node.get("contentElements", [])
+            if content.get("presentationType") == "paragraph"
+        ]
+        self.assertNotIn("单位为毫米", paragraphs)
+
+    def test_figure_unit_line_folds_with_directive_and_without_blank_line(self) -> None:
+        # 两种书写形态都要折：① 单位行与图指令、图片行相邻（附录 E 的 raw 形态）；
+        # ② 指令形态（ssir:figure 指令行夹在中间）。
+        csm = """---
+csm-version: "1.0"
+document-type: standard
+document-identifier: "GB/T 1.1—2020"
+standard-number: "GB/T 1.1—2020"
+title: "标准化工作导则"
+language: zh-CN
+source:
+  mode: mineru
+  original-file-name: "GB_T_1.1-2020.pdf"
+---
+
+# 标准化工作导则
+
+## 附录 E（规范性） 文件格式
+
+单位为毫米
+![图 E.3 正文首页格式](assets/images/e3.jpg)
+
+单位为毫米
+
+<!-- ssir:figure id="f-9" -->
+
+![图 E.4 封底格式](assets/images/e4.jpg)
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "annex-e2.canonical.md"
+            path.write_text(csm, encoding="utf-8")
+            ssir = parse_csm(path)
+        self.assertEqual([figure.get("unit") for figure in ssir["figures"]], ["毫米", "毫米"])
+
+    def test_unit_line_before_body_text_is_not_folded(self) -> None:
+        # 反例（防规则过度触发）：单位行后不是图/表时保持原样——它可能只是正文句子
+        # 的独立成段（如"单位为毫米"出现在说明性文字里，后面跟普通段落）。
+        csm = """---
+csm-version: "1.0"
+document-type: standard
+document-identifier: "T/UNIT 001—2026"
+standard-number: "T/UNIT 001—2026"
+title: "单位行反例"
+language: zh-CN
+source:
+  mode: mineru
+  original-file-name: "T_UNIT_001.pdf"
+---
+
+# 单位行反例
+
+## 1 范围
+
+单位为毫米
+
+本文件规定了单位陈述行的处理。
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "neg.canonical.md"
+            path.write_text(csm, encoding="utf-8")
+            ssir = parse_csm(path)
+        self.assertEqual(ssir["figures"], [])
+        paragraphs = [
+            content.get("textContent", "")
+            for node in self._nodes(ssir["structuralRoot"])
+            for content in node.get("contentElements", [])
+            if content.get("presentationType") == "paragraph"
+        ]
+        self.assertIn("单位为毫米", paragraphs)
+
+    def test_figure_unit_line_survives_round_trip(self) -> None:
+        # roundtrip：render.md 重放单位行（写在图指令之前）→ 再解析仍折进同一图节点。
+        csm = """---
+csm-version: "1.0"
+document-type: standard
+document-identifier: "GB/T 1.1—2020"
+standard-number: "GB/T 1.1—2020"
+title: "标准化工作导则"
+language: zh-CN
+source:
+  mode: mineru
+  original-file-name: "GB_T_1.1-2020.pdf"
+---
+
+# 标准化工作导则
+
+## 附录 E（规范性） 文件格式
+
+单位为毫米
+
+![图 E.8 目次格式](assets/images/e8.jpg)
+"""
+        from leleby_ssir.csm_renderer import render_csm
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "rt.canonical.md"
+            path.write_text(csm, encoding="utf-8")
+            ssir = parse_csm(path)
+            rendered = render_csm(ssir)
+            rendered_path = root / "render.md"
+            rendered_path.write_text(rendered, encoding="utf-8")
+            reparsed = parse_csm(rendered_path)
+        self.assertEqual(reparsed["figures"][0].get("unit"), "毫米")
+        self.assertTrue(compare_ssir(ssir, reparsed).passed)
+        self.assertIn("单位为毫米", rendered)
+
     def test_ocr_glyph_confused_markers_are_corrected_and_recorded(self) -> None:
         # OCR 把 l）误读为 1）、把 1 误读为 l/I、把 0 误读为 O；多数派上下文
         # 中的可混淆项在解析时纠正（CSM-OCR-001 repaired），canonical 随之更正。
@@ -1461,6 +1609,120 @@ class Gb3100ParserFixTests(unittest.TestCase):
         result = _absorb_table_note_spill([table, para], warnings)
         self.assertEqual(len(result), 2)
         self.assertEqual(result[0].data["rows"][-1][0], "注1：一般常用时间单位。")
+
+
+class TermEntryLineTests(unittest.TestCase):
+    """术语行判据单源（CSM-OCR-003 / CSM-OCR-007，GB/T 1.1-2020 8.7.3.1、10.3.5）。
+
+    用户报告（2026-09-15，GB_3100-2026）：术语 3.8「国际单位制　International System
+    of Units, SI」与 3.13「SI词头　SI prefix」在目次里只剩条目编号——术语行的字符类在
+    parser（间隙归一、条目形态归一）与 builder（term/englishTerm 抽取）各写一份且都偏窄
+    （术语限**纯汉字串**、英文对应词不含逗号），于是术语带拉丁缩写、英文对应词带逗号的
+    条目在两种抽取形态下都抽不出 term/englishTerm。判据现由 `term_entry_pair` 单源提供。
+    """
+
+    HEADER = (
+        "---\n"
+        'csm-version: "1.0"\n'
+        "document-type: standard\n"
+        "document-identifier: ssir:TEST-1\n"
+        'title: "测试"\n'
+        "---\n\n"
+        "# 测试\n\n"
+    )
+
+    @classmethod
+    def _parse(cls, body: str):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "t.canonical.md"
+            path.write_text(cls.HEADER + body + "\n", encoding="utf-8")
+            return parse_csm_with_report(path)
+
+    @classmethod
+    def _nodes(cls, ssir: dict):
+        return CSMToSSIRTests._nodes(ssir["structuralRoot"])
+
+    def _term_node(self, ssir: dict, number: str) -> dict:
+        node = next((n for n in self._nodes(ssir) if n.get("number") == number), None)
+        self.assertIsNotNone(node, number)
+        return node
+
+    def test_bare_term_section_with_latin_initial_term_keeps_its_pair(self) -> None:
+        # 裸条目编号（3.13）+ 术语行段落，术语本体带拉丁缩写。
+        ssir, _ = self._parse(
+            "## 3 术语和定义\n\n"
+            "### 3.13\n\n"
+            "SI词头\u3000SI prefix\n\n"
+            "与SI单位名称或符号结合，用以形成该单位十进倍数单位或分数单位的词头。"
+        )
+        node = self._term_node(ssir, "3.13")
+        self.assertEqual(node.get("term"), "SI词头")
+        self.assertEqual(node.get("englishTerm"), "SI prefix")
+        # 术语行仍被标为条目定义（渲染端据此版式化）。
+        semantics = [ce.get("semanticTypes") for ce in node.get("contentElements", [])]
+        self.assertIn(["termDefinition"], semantics)
+
+    def test_bare_term_section_with_comma_in_english_term_keeps_its_pair(self) -> None:
+        # 英文对应词含逗号（"… Units, SI"）。旧判据的英文类不含逗号，整条被漏。
+        ssir, _ = self._parse(
+            "## 3 术语和定义\n\n"
+            "### 3.8\n\n"
+            "国际单位制\u3000International System of Units, SI\n\n"
+            "由国际计量大会（CGPM）批准采用的基于国际量制的单位制。"
+        )
+        node = self._term_node(ssir, "3.8")
+        self.assertEqual(node.get("term"), "国际单位制")
+        self.assertEqual(node.get("englishTerm"), "International System of Units, SI")
+
+    def test_merged_heading_shape_keeps_the_same_pair(self) -> None:
+        # 标题形态（## 3.8 + ## 术语行标题）：与裸编号形态必须给出同一对字段。
+        ssir, _ = self._parse(
+            "## 3 术语和定义\n\n"
+            "## 3.13\n\n"
+            "## SI词头 SI prefix\n\n"
+            "与SI单位名称或符号结合的词头。"
+        )
+        node = self._term_node(ssir, "3.13")
+        self.assertEqual(node.get("term"), "SI词头")
+        self.assertEqual(node.get("englishTerm"), "SI prefix")
+
+    def test_latin_only_line_in_terms_chapter_is_not_a_term(self) -> None:
+        # 守卫：术语本体须含至少一个汉字——英文标题的换行（GB_T_1.1-2020 前置部分
+        # "structure and drafting of ISO and IEC documents,NEQ)"）不是术语行。
+        ssir, _ = self._parse(
+            "## 3 术语和定义\n\n"
+            "### 3.1\n\n"
+            "structure and drafting of ISO and IEC documents,NEQ)\n\n"
+            "本文件规定了用语。"
+        )
+        node = self._term_node(ssir, "3.1")
+        self.assertIsNone(node.get("term"))
+        self.assertIsNone(node.get("englishTerm"))
+
+    def test_definition_line_with_latin_tail_is_not_a_term(self) -> None:
+        # 守卫：英文对应词段不得含汉字——正文变量行（"普朗克常量 h为 …"）不是术语行。
+        ssir, _ = self._parse(
+            "## 3 术语和定义\n\n"
+            "### 3.1\n\n"
+            "普朗克常量 h为 6.62607015×10−34 J s；\n\n"
+            "本文件规定了用语。"
+        )
+        node = self._term_node(ssir, "3.1")
+        self.assertIsNone(node.get("term"))
+
+    def test_term_gap_normalisation_accepts_latin_initial_term(self) -> None:
+        # CSM-OCR-003 间隙归一：判据放宽后「SI词头 SI prefix」此类半角间隔也被归一为
+        # U+3000；纯汉字术语的无间隔形态（OCR 丢间隔）沿用旧判据，不得把英文词尾吞进术语。
+        from leleby_ssir.parser import restore_term_entry_gap
+
+        self.assertEqual(restore_term_entry_gap("SI词头 SI prefix"), "SI词头\u3000SI prefix")
+        self.assertEqual(restore_term_entry_gap("国际单位制 International System of Units, SI"),
+                         "国际单位制\u3000International System of Units, SI")
+        self.assertEqual(restore_term_entry_gap("标准化文件standardizing document"),
+                         "标准化文件\u3000standardizing document")
+        # 负例：整行纯拉丁（英文标题换行）原样返回。
+        self.assertEqual(restore_term_entry_gap("structure and drafting of ISO and IEC documents,NEQ)"),
+                         "structure and drafting of ISO and IEC documents,NEQ)")
 
 
 class ClauseHeadingDemoteTests(unittest.TestCase):

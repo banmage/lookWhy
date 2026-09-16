@@ -275,9 +275,14 @@ class _RenderState:
         return escape_table_cell(text)
 
     def _render_figure(self, figure: dict[str, Any]) -> None:
-        # 规则对应: GBT-X01（图编号+图题；资产缺失时以占位符标注并保留编号）。
+        # 规则对应: GBT-X01（图编号+图题；资产缺失时以占位符标注并保留编号）、
+        # GEN-032（图的单位陈述行写在图指令之前——解析时折进图节点，重放须保形）。
         figure_id = self._next_id("fig")
         missing = figure.get("preservationStatus") == "partiallyPreserved" and not figure.get("assetRef")
+        unit = str(figure.get("unit") or "").strip()
+        if unit:
+            self.lines.append(f"单位为{unit}")
+            self.lines.append("")
         directive = f'<!-- ssir:figure id="{figure_id}"'
         if missing:
             directive += ' asset-status="missing"'

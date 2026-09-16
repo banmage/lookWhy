@@ -206,6 +206,101 @@ class TermEntryPdfLayoutTests(unittest.TestCase):
             self.assertAlmostEqual(x0, 85.4, delta=0.5)
 
 
+class TermEntryTocLabelTests(unittest.TestCase):
+    """目次行必须带出术语（用户可见症状，2026-09-15 GB_3100-2026）。
+
+    裸术语节（条目编号 2 段，如 3.13）不满足 `_term_entry_text` 的「≥3 段编号」判据，
+    目次标签只能由 builder 写入的 term 元数据合成——term/englishTerm 一丢，目次行就只剩
+    条目编号（3.8/3.13 曾如此）。本用例走完整链路（canonical → SSIR → PDF 目次文本层）。
+    """
+
+    CANON = _HEADER.replace(
+        "title: 标准化工作导则 第1部分：标准化文件的结构和起草规则",
+        "title: 国际单位制及其应用",
+    ) + """# 国际单位制及其应用
+
+## 目次
+
+1 范围....1
+3 术语和定义....1
+
+## 1 范围
+
+本文件规定了国际单位制及其应用。
+
+## 3 术语和定义
+
+下列术语和定义适用于本文件。
+
+### 3.8
+
+国际单位制\u3000International System of Units, SI
+
+由国际计量大会（CGPM）批准采用的基于国际量制的单位制。
+
+### 3.13
+
+SI词头\u3000SI prefix
+
+与SI单位名称或符号结合，用以形成该单位十进倍数单位或分数单位的词头。
+
+## 4 国际单位制的构成
+
+4.1 国际单位制由SI基本单位和SI导出单位组成。
+"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        try:
+            import pymupdf  # noqa: F401
+        except ImportError:  # pragma: no cover
+            raise unittest.SkipTest("pymupdf unavailable")
+        font = ROOT / "config" / "rendering" / "fonts" / "NotoSerifCJKsc-Regular.ttf"
+        if not font.is_file():  # pragma: no cover
+            raise unittest.SkipTest("body font asset missing")
+        import pymupdf
+
+        from leleby_ssir.builder import SSIRBuilder
+        from leleby_ssir.parser import CSMParser
+        from leleby_ssir.pdf_renderer import render_pdf_file
+
+        cls.tempdir = tempfile.TemporaryDirectory()
+        directory = Path(cls.tempdir.name)
+        source = directory / "t.canonical.md"
+        source.write_text(cls.CANON, encoding="utf-8")
+        ssir = directory / "t.ssir.json"
+        ssir.write_text(
+            json.dumps(SSIRBuilder().build(CSMParser().read(str(source))), ensure_ascii=False),
+            encoding="utf-8",
+        )
+        target = directory / "t.pdf"
+        render_pdf_file(str(ssir), str(target), toc_depth=2)
+        cls.document = pymupdf.open(str(target))
+        toc_pages = [
+            page for page in cls.document
+            if "目 次" in page.get_text() or "\n目 次" in page.get_text()
+        ]
+        cls.toc_text = "\n".join(page.get_text() for page in toc_pages) if toc_pages else ""
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.document.close()
+        cls.tempdir.cleanup()
+
+    def test_term_rows_carry_the_chinese_term(self) -> None:
+        for label in ("3.8\u3000国际单位制", "3.13\u3000SI词头"):
+            row = next((line for line in self.toc_text.splitlines() if line.startswith(label)), None)
+            self.assertIsNotNone(row, (label, self.toc_text))
+            # 行里必须有页码（点线连接），即不是半截标签。
+            self.assertTrue(row.rsplit(".", 1)[-1].strip().isdigit(), row)
+
+    def test_no_term_row_is_a_bare_clause_number(self) -> None:
+        # 反例守卫：目次里不得出现「3.8」这类只有条目编号、没有术语的行。
+        rows = [line for line in self.toc_text.splitlines() if line.strip()]
+        bare = [line for line in rows if line.strip().rstrip(".·–—- ") in {"3.8", "3.13"}]
+        self.assertFalse(bare, rows)
+
+
 class TermEntryDocxLayoutTests(unittest.TestCase):
     """docx 孪生：编号行/术语行各自成段，术语行左侧空两个汉字（420 twips）。"""
 

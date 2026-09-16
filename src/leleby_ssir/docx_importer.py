@@ -1,5 +1,7 @@
 """docx → canonical 级 CSM Markdown（把 Word 稿件放回流水线的输入侧）。
 
+【暂时停用（2026-09-12）】本模块的接线已从流水线、CLI 与文档中移除：当前既不接受 .docx 作为源文档，也不产出 .docx 渲染产物。模块本身保留（未删除、单测仍在），恢复方式是重新接回 `ssir pdf render --docx-output` 与 Word 输入分支——见 docs/12 §3.46。
+
 闭环场景（2026-09）：``04_render/<ID>.render.docx``（docx_renderer 产物）放回
 ``corpus/golden/`` 后，流水线不再做 MinerU PDF 识别，而是从 Word 直接导入：
 docx → canonical 级 CSM → normalize → parse → SSIR → render（PDF + 新 docx）。

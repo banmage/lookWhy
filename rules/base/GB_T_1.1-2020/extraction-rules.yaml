@@ -108,7 +108,7 @@ rules:
   stage: normalize
   priority: should
   gbt11-ref: 9.7.4.1 与 9.8.4（单位相同时在图/表右上方用“关于单位的陈述”）；附录F 表F.1 序号40（小五号宋体）
-  rule: 表格单位陈述（"单位为…"）：题注段落内嵌换行的单位陈述拆分为居中题注 + 右对齐单位行；独立成段的单位行且后随表格时折进 table 的 unit 属性；渲染为小五号右对齐、位于题注之下紧贴表格（表头右上）。题注折叠同时防止「表N 题名」+「表N」双题注。
+  rule: 图/表单位陈述（"单位为…"，9.7.4.1 与 9.8.4）：题注段落内嵌换行的单位陈述拆分为居中题注 + 右对齐单位行；独立成段的单位行且后随表格时折进 table 的 unit 属性、后随图（图片行，可隔一个 ssir:figure 指令行或空行）时折进 figure 的 unit 属性（**图侧单位行必须与图同一组**：否则满页的图另起一面时该行被留在前页末，源文件里它本应是图页第一行）；单位行后不是图/表时保持原样（不折）。渲染为小五号右对齐、位于图/表上方紧贴框线（表的单位行在题注之下）。题注折叠同时防止「表N 题名」+「表N」双题注。
 - id: GEN-033
   stage: normalize
   priority: must
@@ -193,4 +193,70 @@ rules:
 - id: GEN-095
   stage: extract/merge
   priority: should
-  rule: 并列版面几何识别（finalize 打标，渲染为无边框定位容器）：同一水平带内 x 分离的 2~3 组内容成组。分片目录名（pages-037-054）换算**绝对页号**作页键——MinerU 分片后每个分片的 page_idx 都从 0 起，按相对页号聚合会把不同分片的同号页混在一起。并列区切分：通栏块（宽 ≥ 版心 62%）、独占一行的「示例N：」题注块、相邻块垂距 > 1.5×行高处断开。锚点块为 image 与 interline_equation（公式对照型，如 GB/T 1.1-2020 9.9.3.1 示例3/4 的「正确/不正确」）；锚点按 x 中心聚类成列（2~3 列，4+ 并排不猜测），区内所有块按 x 中心到各列 x 区间的距离归属列。内容映射：图/公式块按 asset basename 匹配注册表；块文本并入 `inline_equation` span（变量在行内公式 span 里），匹配归一「去 `$` + 破折号族压成单个 `—`」（对齐 CSM-OCR-018 的 SSIR 归一）；文本块只在**锚点所在父节点**内匹配（「正确：」等标签在多处出现，跨节点全局匹配会串组）；已有 sideBySideGroup（canonical `ssir:columns` 手工声明）的内容绝不覆盖。收尾校验：≥2 列各有命中，且每个父节点内命中的内容元素 sortOrder 连续无空洞（否则并列组会被渲染端切成多张表），不满足则整组回滚；同文本内容按行（y 容差 0.6 行高）+ x 顺序对应 sortOrder 序候选（返回下一个未用候选）。已存在组 id 纳入占用集合，新组 id 跳过（重复运行幂等）。纯文本并列（无图/公式锚点）不自动猜测，走手工声明。
+  rule: 并列版面几何识别（finalize 打标，渲染为无边框定位容器）：同一水平带内 x 分离的 2~3 组内容成组。分片目录名（pages-037-054）换算**绝对页号**作页键——MinerU 分片后每个分片的 page_idx 都从 0 起，按相对页号聚合会把不同分片的同号页混在一起。并列区切分：通栏块（宽 ≥ 版心 62%）、独占一行的「示例N：」题注块、相邻块垂距 > 1.5×行高处断开。锚点块为 image 与 interline_equation（公式对照型，如 GB/T 1.1-2020 9.9.3.1 示例3/4 的「正确/不正确」）；锚点按 x 中心聚类成列（2~3 列，4+ 并排不猜测），区内所有块按 x 中心到各列 x 区间的距离归属列。内容映射：图/公式块按 asset basename 匹配注册表；块文本并入 `inline_equation` span（变量在行内公式 span 里），匹配归一「去 `$` + 破折号族压成单个 `—`」（对齐 CSM-OCR-018 的 SSIR 归一）；文本块只在**锚点所在父节点**内匹配（「正确：」等标签在多处出现，跨节点全局匹配会串组）；已有 sideBySideGroup（canonical `ssir:columns` 手工声明）的内容绝不覆盖。收尾校验：≥2 列各有命中，且每个父节点内命中的内容元素 sortOrder 连续无空洞（否则并列组会被渲染端切成多张表），不满足则整组回滚；同文本内容按行（y 容差 0.6 行高）+ x 顺序对应 sortOrder 序候选（返回下一个未用候选）。已存在组 id 纳入占用集合，新组 id 跳过（重复运行幂等）。纯文本并列（无图/公式锚点）不自动猜测，走手工声明。**几何来源**（`_side_by_side_sources`）：文档根 `parts/` 分片目录与整份文档 `middle.json`（`tools/build_ssir.py` 的 `.json` 输入默认用自身）**合并**使用——合并稿这类「文本来自一侧、公式来自另一侧」的文档只取一侧会丢一半锚点，重复锚点由内容级去重挡住；**锚点内容映射**先按资产 basename，再按 LaTeX（`_latex_key` 去掉全部空白后比对：云端路线没有裁剪图资产，公式块与 SSIR 公式节点都只有 LaTeX）。匹配键归一统一走 `_fold_match_text`（去空白 + 去行内公式定界符 `$` + 全/半角标点折叠 + 行内 LaTeX 字体命令 `\mathrm`/`\text`/… 循环脱壳 + 破折号族压成单个 `—`）——MinerU 几何块与 SSIR 文本在标点宽度、行内公式拼写、破折号长度上可能不同，任一处漏配都会在组内留下 sortOrder 空洞；同一 LaTeX 键可对应**多个** SSIR 节点（排版相同、几何上分处两列的公式），候选按注册表顺序**逐个消费**（取第一个未被占用的节点），一对一映射会让第二个几何块拿不到节点；因 sortOrder 不连续而回滚时输出 `Side-by-side region skipped` 日志（含页号、y、父节点与已命中序号），不静默回滚。
+- id: GEN-096
+  stage: extract/merge
+  priority: should
+  rule: 图片占位替代文本不是图题名：MinerU（云端 markdown 尤甚）对没有题注的插图一律写通用占位替代文本（`![image](…)`/`![image1](…)`/`![img](…)`/`![picture](…)`/`![图片](…)`/`![图像](…)`，大小写不敏感），而 CSM 规定图片替代文本必须包含图号和图题（docs/07 §6.5；GBT-B09 图题注、GBT-B12 图编号）——占位串原样进 CSM 会被渲染端当成图题名印出「图 image」。`convert_mineru_markup` 的图片循环里，凡**整行**图片语法且替代文本恰为占位串 → 清为空替代文本 `![](…)`（图片块与资产引用不变）；图片后 6 行内匹配到「图 N 题名」题注行时仍吸附为题注（吸附优先于清空）；真实题名（`![图 1 接线图](…)`、`![接线图](…)`）与行内出现的图片语法一律不动。
+- id: GEN-097
+  stage: extract/merge
+  priority: must
+  rule: HTML 行内公式标记不是正文：MinerU 的 HTML 片段用 `<eq>…</eq>` 承载行内公式（内容为 LaTeX 源码），主要出现在表格单元格里（GB/T 10401-2023 表10 的 `<eq>\frac{1}{2}</eq>连续堵转转矩`）。标签被 HTML 解析剥掉后只剩裸 LaTeX 源码，渲染端不识别会把 `\frac{1}{2}` 原样印进 PDF。merge/raw 适配阶段（`convert_mineru_markup` / `html_table_to_csm`）先做一轮 `<eq>…</eq>` → CSM 行内公式 `$…$`（docs/07 §6.6）的确定性转换（内容空白折叠；空公式删除），表格单元格与正文一视同仁；已带 `$…$` 的内容不重复包装。换算到显示文本时（pdf_renderer._latex_to_text / docx 同款）：`\frac{1}{4}`/`\frac{1}{2}`/`\frac{3}{4}` 用分数字形 ¼/½/¾（渲染字体只带这三个分数字形），其余分数（字母、多位、Number Forms 区无字形者）仍拍平为 `(a)/(b)`。
+
+- id: GEN-098
+  stage: render
+  priority: must
+  rule: 图按源版面尺寸还原（不放大原始裁剪图）：提取阶段把每张图在源文档中的版面尺寸（pt）写入 SSIR figure 的 sourceWidth/sourceHeight，渲染端据此缩放（上限版心宽/520pt，不放大）。源尺寸首选源 PDF 的图元矩形（get_image_info，含像素密度回退与封面徽标排除）；raw 起点（MinerU middle.json 输入）无源 PDF 时取图块 bbox——与图元矩形同坐标系，实测偏差 0.2%~5%（块区域含少量留白），量级远小于不回尺寸时的 2~3 倍放大。两者都在场时以源 PDF 为准。取不到尺寸时保持无印记、渲染端按默认尺寸，不猜测。
+
+- id: GEN-099
+  stage: extract/merge
+  priority: must
+  rule: 「一行一条记录」的块不按段落折行拼接：MinerU 的 `ref_text`（参考文献条目）、`index`（目次/索引条目）、`list`（列项）三类块的 `lines[]` 是**记录边界**（一行一条），走 `text` 的「同一段折行直接拼接」规则会把整块粘成一段（`[1] …[2] …`）、条目结构全丢——raw 起点路线据此丢掉 GB/T 1.1-2020 的 18 条参考文献与整段索引。`mineru_middle._rows_markdown` 逐行输出（行内仍按 span 顺序拼接，span 内嵌 `\n` 也算分行；行内拼接与 `_block_lines` 共用 `_line_rows`）；无可输出行时如实记 warning，不静默丢。
+- id: GEN-100
+  stage: extract/merge
+  priority: must
+  rule: 图类块按「部件族」处理，不按块名前缀枚举：MinerU 的图块有两族——`image_*`（照片/截图类）与 `chart_*`（整块栅格化的版式示意图，如 GB/T 1.1-2020 图 E.8 目次格式，图体在 `chart_body` 的 span `image_path` 上）。`mineru_middle._figure_inner_role` 按 `*_body` / `*_caption` / `*_footnote` 后缀取部件，`chart` 块与 `image` 块同一处理（题注写进替代文本、脚注排在图后），`chart` span 与 image span 同处理；`image_source_sizes` 把 chart 图块也计入图源尺寸（GEN-098 第二来源）。旧实现只认 `image_*`：整张图连同题注一起被丢（云端路线的图 E.8 即此）。
+- id: GEN-101
+  stage: extract/merge
+  priority: must
+  rule: 封面字段按**形态**恢复，不按抽取路线特判（GEN-014 / GBT-C01 的字段清单）：① 分类号两种版式都收——CCS 代号裸写（`A 00`）或带前缀（`CCS A 00`）；ICS 与 CCS 同处一行也能分开取值（`mineru_middle._classification_hints`：ICS 按行内出现取值并剔除，残余里取 CCS 独立词元——前不接字母/数字/斜杠/点、后不接数字，排除页眉里的 `GB`、`GB/T 20001.5—2017` 这类标准代号）；② 发布机构行可能在首页页脚（`discarded_blocks` → `cover_hints`）也可能在正文封面块（`_issuer_from_cover` 扫「<机构A> 发布」行 + 紧随的机构行），两条都交 `_ISSUER_FRAGMENTS` 名录规范化，解析不出就不写（AGENTS §0.3）；③ 英文译名（GBT-C01）按**连续纯拉丁行组**拼接——组内是同一标题的排版折行（空行不切断行组、行尾破折号去掉），组间取最长；取「最长单行」会只留半句（云端把 `Directives for standardization—` 与 `Part 1` 起头的英文标题行拆成相邻两块）；④ `conformity-statement` 取封面块里整行括号包起来的拉丁长句（如 `(ISO/IEC Directives, Part 2, 2018, …, NEQ)`）。
+
+- id: GEN-102
+  stage: extract/merge
+  priority: must
+  rule: 公式 LaTeX 含 CJK 时用图资产渲染（不现场排版）：渲染端公式走 matplotlib MathText，数学字体没有汉字字形，含中文的公式会被替换成一串假字形——GB/T 20001.5-2017 示例1 的「综合差错率 = KC_A…×100%」实测印成方框，而同一块内的 MinerU 裁剪图完好（本地/云端两条路线的 interline_equation span 都常同时带 LaTeX 与 `image_path`）。`mineru_middle._equation_markdown` 判定 LaTeX 含 CJK 字符（含全角标点/假名）且有图资产时，仍输出 **formula 块**但带资产指令（`<!-- ssir:formula asset-ref="…" -->` + `$$LaTeX$$`），保住公式语义（`formula` 节点、公式编号「式(N)」、式中引用、GBT-X06 合规检查）与 LaTeX 原文；渲染端对带 `assetRef` 的公式优先画图（`pdf_renderer` 既有行为）。无图资产时仍输出 LaTeX（不猜测、不丢）。远端 `asset-ref` 由 `tools/build_ssir.py:_materialize_remote_images` 一并下载落地（否则渲染端找不到文件会退回现场排版）。与 merge 阶段「含中文公式保留 asset-ref」的裁定同源。
+
+- id: GEN-103
+  stage: render
+  priority: must
+  rule: 列宽不得窄于「左右边距 + 一个汉字宽」，超宽表整表横排（既不产出非法列宽、也不让负可用宽中止整篇渲染）：① **列宽下界**——`_table_column_widths` 在按需求分配之后对每列施加下界「2×单元格边距(4pt) + 字号」（默认一个汉字宽），不足部分从最宽列按富余量扣减（Σ 恒＝版心）；下界之和 ≥ 版心时退化为等分。列宽小于左右边距时 reportlab 的单元格可用宽为负，会以 `ValueError`（flowable given negative availWidth）中止**整篇**渲染（GB/T 5171.1-2014 表9：26 列、没有表头兜底的末列被算成 0.6pt，04_render 为空、构建退出码 2），任何表都不应产出这种列宽。② **宽表横排**——三条同时成立时把整表（含题注与单位行）旋转 90° 逆时针独占一版：a) 本容器内整表按需排不下（Σ列需求 > 容器宽）；b) 横排可用宽（页面版心高 = A4 高 − 上下边距 − Frame 内衬，模块级 `_ROTATED_TABLE_MEASURE`）能整表按需排下；c) 竖排网格在本版心内**无法分页**——跨行合并（rowspan）锁定的行组高于一页，用 reportlab 自己的 `split()` 复算（`_table_exceeds_frame`），即竖排必然 LayoutError。表头落订口一侧（左）、文字自下而上、题注排在表上方，与 GB/T 5171.1-2014 表9 的源排版同向；只在正文通栏容器内横排（示例线框内横排会穿出框线）。条件 c) 保证普通「要折行但能分页」的长表不受影响，规则不外溢。
+
+- id: GEN-104
+  stage: render
+  priority: must
+  rule: 上标还原只认抽取里存在的证据，纯数字串不猜（表格单元格/表注的拍平指数还原，GBT-X04 与 GBT-C18 执行侧）。表内拍平指数还原（`_table_cell_superscripts`，PDF/docx 同源）只保留**有证据**的分支——① 单位字母（小写拉丁/希腊）后的显式负号 `−/-` 加数字（s−1→s⁻¹、Ω−1→Ω⁻¹）；② `10` 后跟显式负号（10-2→10⁻²）；③ `10` 后跟 Unicode 上标字形（10²4→10²⁴）；④ 单位字母后平印的 2/3（N/m2→N/m²、cm3→cm³）。原「`10` 后跟 1~3 位纯数字」（1030→10³⁰）的分支**已删除**，因为抽取层对该形态没有任何字号或标签证据（MinerU markdown 不带字号，middle.json 的 span 也不带字号），「10 的正幂」与普通数值完全同形——实测把 GB/T 5171.1-2014 表1 的温度等级 105 印成 10⁵，同族还有 GB_3100-2026 的 `1024 bit` 与 `(π/10800) rad`、GB/T 10401-2023 表内数据 `107`。真正的上标在抽取里带证据（LaTeX `$10^{24}$`、`<sup>` 标签、Unicode 上标字形），走 ③ 或上游既有通道；确被拍平且无证据的真上标**不猜**，按 AGENTS §0.3 记为抽取局限（需要在 canonical 显式写 `$10^{30}$` 或 `<sup>30</sup>` 标记）。
+
+- id: GEN-105
+  stage: render
+  priority: must
+  rule: 公式的显示尺寸按其**目标字号**还原，不把像素当点（GBT-X06 的公式排版执行侧）。引擎生成的 MathText 公式图（`_formula_image`）以 `_FORMULA_IMAGE_DPI` 光栅化、字号 `_FORMULA_IMAGE_EM_PT`（默认 180dpi / 14pt，图上 em = 35px），而 reportlab 的 `Image` 默认把 1 像素当 1pt（72dpi 假设）——直接放置会把公式整体放大 DPI/72 = 2.5 倍，再被宽度上限按内容比例压缩（压缩比随公式长度变化），同一文档内公式字号因此漂移且普遍偏大（GB/T 5171.1-2014 实测式(1) em 17.4pt = 1.66× 正文、式(2) 24.8pt = 2.36× 正文，源版面 313.6/281.1pt 被拉到整个版心 455pt）。放置时必须先按 72/DPI 做单位换算，再归一到文档正文字号（profile `body.size-pt`，`_formula_image_scale`，默认 0.3），之后只保留「容器内容宽 / 140pt 高」的**只缩小**上限；正文公式与并列列内公式两处调用点同规，生成函数与换算常量同源（改 dpi/字号必须同时改常量）。MinerU 公式裁剪图（assetRef）的像素密度不在数据里，暂按原有「只缩小不放大」处理，其按源版面尺寸还原需要源几何印记（与 GEN-098 同族，见 docs/12 §3.56 遗留）。
+
+- id: GEN-106
+  stage: render
+  priority: must
+  rule: 含汉字的公式不得交给 MathText 排版（无图资产时按文本拍平）。MathText 的数学字体只有拉丁/希腊字形，**没有汉字**——含中文的公式源码会被排成一串假字形方框（GB_3100-2026 8.2.3 的「米/秒；米·秒⁻¹；米/秒」实测印成方框，而同一份文档 8.2.2 的英文对应行因带 MinerU 裁剪图正常）。渲染端按此顺序决定：① 可用的图资产（`assetRef`，经 `_resolve_asset` 向上查找，GEN-102）优先画图；② 无可用资产且公式源码含汉字/全角标点（`_latex_has_cjk`）→ **不生成图**，按既有拍平约定渲染为文本（`_latex_to_text`：`\frac{a}{b}`→`(a)/(b)`，汉字由正文宋体印出，保持公式块居中与「式(N)」引导线编号），并在渲染报告记一条 `Formula typeset as text (contains CJK and has no usable image asset)`；③ 其余照旧走生成图。正文公式与并列列内公式两处调用点同规。
+
+- id: GEN-107
+  stage: render
+  priority: must
+  rule: 原样块逐字渲染——保留换行与缩进，不按普通段落拼行（docs/07 §6.10 的 `ssir:unknown` + 围栏代码块，用于树状结构/伪代码/版式片段；GBT-X02 版式保真执行侧）。`_markup` 的常规通道把段内换行连同两侧空白归一为一个空格（CSM §3.3 软换行规则，语料 31 个多行段落依赖它，不能改），原样块必须走独立通道：① 换行 → 硬换行；② 行首空白与行内 ≥2 个连续空白 → 固定字隙（白字哨兵，两端对齐不拉伸），半角空格 0.25em、制表符 4 个半角空格，即 **4 个半角空格 = 1 个全角位**——框线字（│ ├ └ ─，U+2500 区）在 CJK 字体中恰 1em，故树状结构按「每级 4 个半角空格」书写即可与框线对齐；③ 行内单个空格保持原样（长句可折行）；④ 样式为正文号字的左对齐、无首行缩进（`verbatim`），两端对齐不得用于原样块。docx 侧本就按行断行（`splitlines()`），PDF 侧此前缺失。GB_3100-2026 4.1「国际单位制」树即为实例。
+
+- id: GEN-108
+  stage: render
+  priority: must
+  rule: canonical 强调标记按**成对配对**判定并在渲染端落实为字形（docs/07 §6.1；GB/T 20001.10-2014 表1 的字体语义「黑体=必备要素、斜体=资料性要素」即此）。① 判定：星号簇长 1/2/3 = 斜体/粗体/粗斜体，「可开」= 其后首个非空白字符存在且不是 `*`、「可闭」= 其前首个非空白字符存在且不是 `*`，同长度簇就近配对，配对忽略紧邻空白（OCR 常在闭标记前留空格）且强调区两端空白不入强调区；**未成对的星号簇与转义 `\*` 一律按字面星号输出**（负例：GB/T 1.1-2020 9.12.1 的「即 * 、 ** 、 ***」条文脚注星号、9.7.3/9.8.4 的「共*页」与「(第#页/共\*页)」）。旧实现按**邻接字符**（`(?<![A-Za-z0-9])\*+(?![A-Za-z0-9])`）判字面星号，汉字不在 `[A-Za-z0-9]` 内 → 汉字内容的强调标记全部被吞成字面星号；且只有 `**`/`*` 两条正则，`***X***`（粗斜体）无形式（`\*\*(.+?)\*\*` 会把它拆成 `<b>*X</b>*`）。② 字形：粗体 = 黑体（profile `fonts.label`，源文「必备要素」即黑体）、斜体 = 机斜字体资产（profile `fonts.italic`/`fonts.italic-file`，`tools/prepare_oblique_font.py` 按源 PDF 实测 15.8° 生成）、粗斜体 = 黑体粗机斜（`fonts.bold-italic`）；reportlab 的 `<b>`/`<i>` 只从**已注册字族**取成员（未登记时静默忽略，同 GBT-B10「cannot fake bold」），故 `render_pdf` 必须 `registerFontFamily`（normal/bold/italic/boldItalic），且机斜字体资产必须有**独立的 PostScript 名**（reportlab 按 face.name 去重，同名时后注册的机斜字体被丢弃、`<i>` 静默无效）；斜体资产缺失时退回直立字形并在渲染报告记 [GEN-108] 告警（不伪造、不静默）。
+
+- id: GEN-109
+  stage: render
+  priority: must
+  rule: 块级公式按**显示样式**排版——最外层分数用 `\dfrac`（MathText 的样式执行侧；尺寸侧仍按 GEN-105）。canonical 的 `ssir:formula` 对应 LaTeX 的 display math（`$$…$$`），而 MathText 的 `$…$` 等价于**行内（text style）**：`\frac` 的分子/分母被降为脚标号、`\sqrt{…}` 里的分数被压得更扁，块级公式因此读起来偏小（GB/T 1.1-2020 9.9.3.1 示例1「v = l/t」实测分数堆高 12.9pt，而源文同一公式 17.0pt 且分子分母与左侧字母同大；示例5「t_i = √(S_ME,i / S_MR,i)」同）。MathText 不支持 `\displaystyle`，故生成图前把**最外层**的 `\frac` 改写为 `\dfrac`（`_display_style_latex`）：样式降级只由「分数的参数」与「上/下标」触发，花括号只作分组——所以 `\sqrt{\frac{a}{b}}` 里的分数**要**提升；分数参数内与上/下标内的 `\frac` 保持原样式，`\tfrac`（作者显式要求的小分数）与已是 `\dfrac` 的不动。**不放大字号**：em 仍等于正文字号（GEN-105 的换算与 0.3 系数不变），长高只来自分数恢复字号（实测 示例1 17.1→28.2pt 高、示例5 24.6→34.5pt 高、两列内的公式同步长高，无分数的公式逐点不变，em 保持 10.5pt）。生成图的缓存文件名取**提升后**表达式的哈希：否则旧的行内样式图会一直命中缓存，修复对已渲染过的文档不生效。正文公式与并列列内公式两处调用点同规（同在 `_formula_image`）。

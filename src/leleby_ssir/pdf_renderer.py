@@ -39,6 +39,64 @@ _EXAMPLE_PADDING = 10.0  # 附录示例框单元格左右 padding（与 _example
 # 渲染端细线族统一 0.5pt（与表网格线同宽，docx 侧 w:sz=4 即 0.5pt）——框线不得
 # 粗于表线，否则示例框喧宾夺主（2026-09-11 用户裁定：默认细框线）。
 _EXAMPLE_FRAME_WIDTH = 0.5
+# 表格单元格左右边距（_append_table 的 LEFTPADDING/RIGHTPADDING），列宽下界与窄表
+# 边距压缩都以它为口径（GEN-103）。
+_TABLE_CELL_PADDING = 4.0
+# 宽表横排（GEN-103）可用宽：整表旋转 90° 后沿页面高度排布，等于正文 Frame 的可用
+# 高（A4 高 − 上下边距 − Frame 内衬）。由 render_pdf 在页边距确定后写入；None =
+# 未进入文档上下文（单表渲染 / 单测），此时不横排。
+_ROTATED_TABLE_MEASURE: float | None = None
+# 旋转 Flowable 类：reportlab 延迟导入（依赖可选），类在 render_pdf 内定义后写进本
+# 槽位（与 _LABEL_FONT 同法）；None = 不横排。
+_ROTATED_TABLE_CLASS: type | None = None
+
+
+def _register_emphasis_family(profile: dict[str, Any], *, body: str, bold: str, primary: str, warnings: list[str]) -> None:
+    """注册强调字形字族（docs/07 §6.1；GEN-108）。
+
+    reportlab 的 ``<b>``/``<i>`` **只从已注册字族取成员**：字体未登记字族时两个标签
+    被静默忽略（实测 `普通 <b>粗</b> <i>斜</i>` 出来仍是同一字体、无告警）——与
+    GBT-B10「reportlab cannot fake bold」同源，因此强调要生效必须有**真实字形资产**：
+
+    - 粗体（``**X**``）= 黑体（profile ``fonts.label``，GB/T 20001.10 表1 注解
+      「黑体表示"必备要素"」，源 PDF 该列即方正黑体）；
+    - 斜体（``*X*``）= 宋体机斜（``fonts.italic-file``，源 PDF 实测倾斜 15.8°）；
+    - 粗斜体（``***X***``）= 黑体粗机斜（``fonts.bold-italic-file``）。
+
+    斜体资产由 ``tools/prepare_oblique_font.py`` 生成；文件缺失时退回同字族的直立
+    字形并在渲染报告记一条告警（不伪造、不静默）。
+    """
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+
+    fonts = profile.get("fonts") or {}
+
+    def _member(name_key: str, file_key: str) -> str:
+        name = str(fonts.get(name_key) or "").strip()
+        if not name:
+            return ""
+        font_file = Path(str(fonts.get(file_key) or ""))
+        if not font_file.is_file():
+            warnings.append(f"[GEN-108] 强调斜体字形文件缺失：{font_file}（按直立字形渲染）")
+            return ""
+        if name not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(TTFont(name, str(font_file), subfontIndex=0))
+        return name
+
+    italic = _member("italic", "italic-file")
+    bold_italic = _member("bold-italic", "bold-italic-file")
+    if not bold:
+        bold = primary
+    if not italic:
+        italic = body
+    if not bold_italic:
+        # 粗斜体 = 黑体机斜（缺资产时按黑体直立渲染，斜体支路退回同字族直立字形）。
+        bold_italic = bold
+    # 黑体族的斜体成员用黑体机斜（粗斜体资产与 primary/label 同为黑体族）。
+    hei_italic = bold_italic or italic
+    pdfmetrics.registerFontFamily(body, normal=body, bold=bold, italic=italic, boldItalic=bold_italic)
+    for hei_name in {primary, bold}:
+        pdfmetrics.registerFontFamily(hei_name, normal=hei_name, bold=hei_name, italic=hei_italic, boldItalic=hei_italic)
 
 
 def _example_box_inner_width(doc_width: float) -> float:
@@ -168,6 +226,18 @@ def render_pdf(
     if label_font_name and label_font_name not in pdfmetrics.getRegisteredFontNames():
         pdfmetrics.registerFont(TTFont(label_font_name, str(label_font_file), subfontIndex=0))
     _LABEL_FONT = label_font_name
+    # 强调字形（docs/07 §6.1；GEN-108）：`**粗体**`→黑体、`*斜体*`→机斜资产、
+    # `***粗斜体***`→黑体粗机斜。reportlab 的 <b>/<i> 只认已注册字族成员，故必须
+    # 在渲染前把字族登记好（未登记时两个标签被静默忽略，见 GBT-B10）。
+    # 告警先收到本地列表：渲染报告对象在其下方才创建。
+    emphasis_warnings: list[str] = []
+    _register_emphasis_family(
+        profile,
+        body=body_font_name,
+        bold=label_font_name or font_name,
+        primary=font_name,
+        warnings=emphasis_warnings,
+    )
 
     page = profile["page"]
     margins = page["margin-mm"]
@@ -180,6 +250,7 @@ def render_pdf(
     # the reference is also searched upward toward the document root.
     asset_dir = Path(input_file).resolve().parent if input_file and Path(input_file).is_file() else target.parent
     report = PDFRenderReport(input_file, str(target), str(profile_file), profile["id"], str(font_file))
+    report.warnings.extend(emphasis_warnings)
     standard_no = document.get("metadata", {}).get("standard", {}).get("standardNumber", "")
     title = document["metadata"]["common"].get("title", "")
 
@@ -298,6 +369,56 @@ def render_pdf(
                 canvas.drawString(indent, y, label)
                 canvas.drawString(indent + label_width + 4, y, "." * dot_count)
                 canvas.drawRightString(self.width, y, page_text)
+
+    class _RotatedTable(Flowable):
+        """整表（含题注/单位行）旋转 90° 逆时针（GEN-103 宽表横排）。
+
+        表头落订口一侧（左）、文字自下而上，题注排在表上方（旋转后即表格左侧）——
+        与 GB/T 5171.1-2014 表9 的源排版同向。旋转后表格沿页面高度排布，可用宽 =
+        版心高（60 列以上的表也排得下）。reportlab 的 flowable 没有旋转绘图，按
+        canvas 变换实现：wrap 交换可用宽高、把若干流式对象叠成一列（题注在上、表格
+        在下），draw 先平移到右上再旋转（表顶边落旋转原点）。
+        """
+
+        def __init__(self, stack: list[Any], ssir_id: str = "") -> None:
+            super().__init__()
+            self.stack = list(stack)
+            self.ssir_id = ssir_id or str(getattr(self.stack[-1], "ssir_id", "") or "")
+            self._heights: list[float] = []
+
+        def wrap(self, available_width: float, available_height: float) -> tuple[float, float]:
+            width = 0.0
+            self._heights = []
+            for flowable in self.stack:
+                item_width, item_height = flowable.wrap(available_height, available_height)
+                width = max(width, float(item_width))
+                self._heights.append(float(item_height))
+            self.width, self.height = sum(self._heights), width
+            return self.width, self.height
+
+        def draw(self) -> None:
+            canvas = self.canv
+            canvas.saveState()
+            canvas.translate(self.width, 0)
+            canvas.rotate(90)
+            offset = 0.0
+            for flowable, height in reversed(list(zip(self.stack, self._heights))):
+                flowable.drawOn(canvas, 0, offset)
+                offset += height
+            canvas.restoreState()
+
+        def split(self, available_width: float, available_height: float) -> list[Any]:
+            # 旋转后：内块宽（列宽之和）受页高约束、内块高（题注 + 行高之和）受页宽
+            # 约束（available_width 就是版心宽）。切不出更小片段时返回空列表——
+            # reportlab 据此把整表推迟到下一页；放不下才报 "too large"。
+            pieces = self.stack[-1].split(self.height or available_height, available_width)
+            if len(pieces) < 2:
+                return []
+            return [type(self)([*self.stack[:-1], piece], self.ssir_id) for piece in pieces]
+
+    # _append_table 是模块级函数，取不到本函数的局部类；按 _LABEL_FONT 同法写进模块槽位。
+    global _ROTATED_TABLE_CLASS
+    _ROTATED_TABLE_CLASS = _RotatedTable
 
     class _IndexFlowable(Flowable):
         """Index rows with measured leaders and wrapped locator continuations."""
@@ -533,7 +654,7 @@ def render_pdf(
                         _append_marked_node(sink, child, registries, styles, font_name, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, marker_factory, PageBreak, example_default, box_inner_width=example_inner_width)
                     contents = node.get("contentElements") or []
                     if contents:
-                        _append_marked_content_sequence(sink, contents, registries, styles, font_name, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, example_inner_width, example_inner_width)
+                        _append_marked_content_sequence(sink, contents, registries, styles, font_name, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, example_inner_width, example_inner_width, enclosing=_node_clause_number(node))
                     continue
                 leading = bool(node.get("box") is not None and (sink is None or sink.active != node.get("box")))
                 _append_marked_node(sink, node, registries, styles, font_name, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, marker_factory, PageBreak, example_default, example_leading=leading, box_inner_width=example_inner_width)
@@ -554,7 +675,7 @@ def render_pdf(
                         _append_node(story, child, registries, styles, font_name, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, marker_factory, PageBreak, example_default, box_inner_width=example_inner_width)
                     contents = node.get("contentElements") or []
                     if contents:
-                        _append_content_sequence(story, contents, registries, styles, font_name, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image)
+                        _append_content_sequence(story, contents, registries, styles, font_name, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, enclosing=_node_clause_number(node))
                     continue
                 box: list[Any] = []
                 mode = str(node.get("exampleStyle") or example_default)
@@ -576,6 +697,10 @@ def render_pdf(
         return story
 
     doc_width = A4[0] - (float(margins["left"]) + float(margins["right"])) * mm
+    # 宽表横排（GEN-103）可用宽 = 正文 Frame 的可用高（A4 高 − 上下边距 − Frame 内衬）；
+    # 与 _LABEL_FONT 同法：模块级取值由 render_pdf 在页边距确定后写入。
+    global _ROTATED_TABLE_MEASURE
+    _ROTATED_TABLE_MEASURE = A4[1] - (float(margins["top"]) + float(margins["bottom"])) * mm - 2 * _FRAME_PADDING
     provisional_pages: dict[str, int] = {}
 
     def _record_pages(flowable: Any) -> None:
@@ -736,6 +861,9 @@ def _styles(base: Any, profile: dict[str, Any], font: str, body_font: str, cente
         # space on a short first line, blowing up the gap after the clause
         # number ("5.5.3" + 50pt), which OCR standards exhibit as noise.
         "body-flush": ParagraphStyle("gbt-body-flush", parent=base["BodyText"], fontName=body_font, fontSize=body["size-pt"], leading=body["leading-pt"], alignment=left, firstLineIndent=0, spaceAfter=4, wordWrap="CJK"),
+        # 原样块（docs/07 §6.10，GEN-107）：逐字保留换行与行首缩进 → 左对齐（两端
+        # 对齐会拉伸行内空格、破坏缩进列），首行不缩进，字号/行距与正文一致。
+        "verbatim": ParagraphStyle("gbt-verbatim", parent=base["BodyText"], fontName=body_font, fontSize=body["size-pt"], leading=body["leading-pt"], alignment=left, firstLineIndent=0, spaceAfter=4, wordWrap="CJK"),
         "note": ParagraphStyle("gbt-note", parent=base["BodyText"], fontName=body_font, fontSize=9, leading=15, alignment=justify, leftIndent=2 * body["size-pt"], spaceAfter=4, wordWrap="CJK"),
         # GB/T 1.1-2020 6.6.3：第一层次列项（——/a)）空两个汉字起排、
         # 回行对齐第5汉字；第二层次列项（·/1)）空四个汉字起排、回行对齐第7汉字。
@@ -853,7 +981,7 @@ def _append_nodes(story: list[Any], nodes: list[dict[str, Any]], registries: dic
                     _append_node(story, child, registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, marker_factory, PageBreak, example_default, content_width=content_width, box_inner_width=box_inner_width)
                 contents = node.get("contentElements") or []
                 if contents:
-                    _append_content_sequence(story, contents, registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, content_width=content_width)
+                    _append_content_sequence(story, contents, registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, content_width=content_width, enclosing=_node_clause_number(node))
                 continue
             box: list[Any] = []
             mode = str(node.get("exampleStyle") or example_default)
@@ -871,7 +999,7 @@ def _append_nodes(story: list[Any], nodes: list[dict[str, Any]], registries: dic
         index += 1
 
 
-def _append_content_sequence(story: list[Any], contents: list[dict[str, Any]], registries: dict[str, dict[str, dict[str, Any]]], styles: dict[str, Any], font: str, report: PDFRenderReport, asset_dir: Path, colors: Any, Table: Any, TableStyle: Any, Paragraph: Any, Spacer: Any, Image: Any, content_width: float = _BODY_MEASURE) -> None:
+def _append_content_sequence(story: list[Any], contents: list[dict[str, Any]], registries: dict[str, dict[str, dict[str, Any]]], styles: dict[str, Any], font: str, report: PDFRenderReport, asset_dir: Path, colors: Any, Table: Any, TableStyle: Any, Paragraph: Any, Spacer: Any, Image: Any, content_width: float = _BODY_MEASURE, enclosing: str | None = None) -> None:
     """Append a node's contentElements with two layout rules:
 
     1. **并列定位容器**（sideBySideGroup，pipeline 打标）：同组 content 渲染为
@@ -899,7 +1027,7 @@ def _append_content_sequence(story: list[Any], contents: list[dict[str, Any]], r
         # 图注行（图题/图）后紧跟表头名称 → 空一行/更大间距（通用要求）。
         if prev_figure_note and _is_table_caption_shape(content):
             story.append(Spacer(1, 10))
-        _append_content(story, content, registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, content_width=content_width)
+        _append_content(story, content, registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, content_width=content_width, enclosing=enclosing)
         prev_figure_note = _is_figure_note_shape(content)
         index += 1
 
@@ -974,7 +1102,8 @@ def _append_marked_content(sink: _BoxSink, content: dict[str, Any],
                            registries: dict[str, Any], styles: dict[str, Any], font: str,
                            report: PDFRenderReport, asset_dir: Path, colors: Any, Table: Any,
                            TableStyle: Any, Paragraph: Any, Spacer: Any, Image: Any,
-                           content_width: float, inner_width: float) -> None:
+                           content_width: float, inner_width: float,
+                           enclosing: str | None = None) -> None:
     """把单个内容元素作为单元送入 sink（ssir:box 显式模式；2026-09-08）。
 
     框归属只看内容元素自身的 box 字段，**不回退继承父节点**：逐块扫描时每个
@@ -989,7 +1118,7 @@ def _append_marked_content(sink: _BoxSink, content: dict[str, Any],
     scratch: list[Any] = []
     width = inner_width if box is not None else content_width
     _append_content(scratch, content, registries, styles, font, report, asset_dir, colors,
-                    Table, TableStyle, Paragraph, Spacer, Image, content_width=width)
+                    Table, TableStyle, Paragraph, Spacer, Image, content_width=width, enclosing=enclosing)
     sink.add(scratch, box, content.get("boxStyle"))
 
 
@@ -997,7 +1126,8 @@ def _append_marked_content_sequence(sink: _BoxSink, contents: list[dict[str, Any
                                     registries: dict[str, Any], styles: dict[str, Any], font: str,
                                     report: PDFRenderReport, asset_dir: Path, colors: Any, Table: Any,
                                     TableStyle: Any, Paragraph: Any, Spacer: Any, Image: Any,
-                                    content_width: float, inner_width: float) -> None:
+                                    content_width: float, inner_width: float,
+                                    enclosing: str | None = None) -> None:
     """节点内容元素序列的显式模式发射：保持并列定位组与图注-表题间距规则，
     每个单元按自身 box 归属进出框（边界可在同一条款内容中途，20001.5 引导段型）。"""
     contents = sorted(contents, key=_order)
@@ -1025,7 +1155,7 @@ def _append_marked_content_sequence(sink: _BoxSink, contents: list[dict[str, Any
             sink.add([Spacer(1, 10)], box, content.get("boxStyle"))
         _append_marked_content(sink, content, registries, styles, font, report,
                                asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image,
-                               content_width, inner_width)
+                               content_width, inner_width, enclosing=enclosing)
         prev_figure_note = _is_figure_note_shape(content)
         index += 1
 
@@ -1059,7 +1189,7 @@ def _append_marked_node(sink: _BoxSink, node: dict[str, Any], registries: dict[s
         sink.add(unit, box, box_style)
         _append_marked_content_sequence(sink, node.get("contentElements", []), registries,
                                         styles, font, report, asset_dir, colors, Table, TableStyle,
-                                        Paragraph, Spacer, Image, content_width, inner)
+                                        Paragraph, Spacer, Image, content_width, inner, enclosing=number or None)
         for child in node.get("children", []) or []:
             _append_marked_node(sink, child, registries, styles, font, report, asset_dir, colors,
                                 Table, TableStyle, Paragraph, Spacer, Image, marker_factory,
@@ -1084,7 +1214,7 @@ def _append_marked_node(sink: _BoxSink, node: dict[str, Any], registries: dict[s
     sink.add(unit, box, box_style)
     _append_marked_content_sequence(sink, node.get("contentElements", []), registries,
                                     styles, font, report, asset_dir, colors, Table, TableStyle,
-                                    Paragraph, Spacer, Image, content_width, inner)
+                                    Paragraph, Spacer, Image, content_width, inner, enclosing=number or None)
     for child in node.get("children", []) or []:
         _append_marked_node(sink, child, registries, styles, font, report, asset_dir, colors,
                             Table, TableStyle, Paragraph, Spacer, Image, marker_factory,
@@ -1306,12 +1436,22 @@ def _append_side_by_side(story: list[Any], members: list[dict[str, Any]], regist
                 if formula:
                     asset = formula.get("assetRef")
                     source_image = _resolve_asset(asset_dir, asset) if asset else Path("")
-                    image_path = source_image if source_image.is_file() else _formula_image(
-                        formula.get("latex") or formula.get("rawText", ""), asset_dir
-                    )
+                    raw_formula = str(formula.get("latex") or formula.get("rawText") or "")
+                    # 列内公式与正文公式同规：GEN-105（生成图按 72/DPI 换算 + 归一到
+                    # 正文字号）、GEN-106（含汉字且无可用资产 → 文本拍平，不交给 MathText）。
+                    image_path: Path | None
+                    if source_image.is_file():
+                        image_path, native_scale, text_fallback_reason = source_image, 1.0, ""
+                    elif _latex_has_cjk(raw_formula):
+                        image_path, native_scale = None, 1.0
+                        text_fallback_reason = "contains CJK and has no usable image asset"
+                    else:
+                        image_path = _formula_image(raw_formula, asset_dir)
+                        native_scale = _formula_image_scale(float(styles["body"].fontSize))
+                        text_fallback_reason = "could not be typeset"
                     if image_path:
                         image = Image(str(image_path))
-                        scale = min(1.0, content_width / image.imageWidth, 140 / image.imageHeight)
+                        scale = min(native_scale, content_width / image.imageWidth, 140 / image.imageHeight)
                         image.drawWidth = image.imageWidth * scale
                         image.drawHeight = image.imageHeight * scale
                         image.hAlign = "CENTER"
@@ -1320,9 +1460,9 @@ def _append_side_by_side(story: list[Any], members: list[dict[str, Any]], regist
                         widest = max(widest, image.drawWidth)
                     else:
                         report.warnings.append(
-                            f"Formula in side-by-side group could not be typeset: {formula.get('id')}"
+                            f"Formula in side-by-side group typeset as text ({text_fallback_reason}): {formula.get('id')}"
                         )
-                        fallback = _latex_to_text(str(formula.get("rawText") or formula.get("latex") or ""))
+                        fallback = _latex_to_text(raw_formula)
                         if fallback.strip():
                             cell.append(Paragraph(_markup(fallback), styles["side-cell"]))
             elif kind in {"paragraph", "note", "quote", "example", "warning"}:
@@ -1385,7 +1525,7 @@ def _append_node(story: list[Any], node: dict[str, Any], registries: dict[str, d
         if status:
             story.append(Paragraph(_markup(status), styles["annex-status"]))
         story.append(Paragraph(_markup(title), styles["annex-title"]))
-        _append_content_sequence(story, node.get("contentElements", []), registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, content_width=content_width)
+        _append_content_sequence(story, node.get("contentElements", []), registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, content_width=content_width, enclosing=number or None)
         _append_nodes(story, node.get("children", []), registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, marker_factory, PageBreak, example_default, content_width=content_width, box_inner_width=box_inner_width)
         return
     heading_style = styles["section"] if depth == 1 else styles["subclause"] if depth >= 3 else styles["clause"] if depth else styles["front"]
@@ -1404,7 +1544,7 @@ def _append_node(story: list[Any], node: dict[str, Any], registries: dict[str, d
     # 10.4.5）在 front 样式里渲染；标记仍按 GBT-B11 用黑体（_label_markup 对其余
     # 标题是恒等变换）。
     story.extend(_term_entry_flowables(node, number, title, heading, heading_style, styles, font, Paragraph))
-    _append_content_sequence(story, node.get("contentElements", []), registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, content_width=content_width)
+    _append_content_sequence(story, node.get("contentElements", []), registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, content_width=content_width, enclosing=number or None)
     children = node.get("children", [])
     if children:
         if node.get("exampleContent"):
@@ -1749,7 +1889,11 @@ def _table_cell_superscripts(text: str) -> str:
     - 旧形式 `[:^a]` / `[^a]…[^a/]` 兼容渲染（parser 会迁移为新形式，见
       CSM-STRUCT-007）；
     - GFM 条文脚注 `[^N]`（表内引用条文脚注时）→ 上标 “N)”（不变，docs/07 §6.7）；
-    - 平拍指数还原（10³⁰→10<super>30</super>、s−1、N/m2…）不变；
+    - 拍平指数还原（s−1→s⁻¹、N/m2→N/m²、10-2→10⁻²、10²4→10²⁴）只保留
+      **抽取里有证据**的分支（显式负号 / Unicode 上标字形 / 单位字母锚点）；
+      「10+纯数字」的纯猜测分支已删除（GEN-104，2026-09-15：抽取层对
+      “10 的正幂”没有任何字号或标签证据，`105`(温度等级)/`1024 bit`/
+      `107`/`10800` 这类普通数值会被整串改写成 10 的幂）；
     - 表注列项连排（同格多条注）：相邻两对标记之间**自动换行**——canonical 连排
       不写 <br>，此处按 inline_script_item_breaks 插换行哨兵（2026-09-11 用户裁定）。
     语料表注锚点/注文全部为显式标记后，单元格内字面小写字母（单位 kg/m、mm、
@@ -1769,26 +1913,33 @@ def _table_cell_superscripts(text: str) -> str:
     # 猜测（正文解释行的行首字母规则见 _footnote_superscripts，仅用于表外段落）。
     text = re.sub(r"\[\^([0-9A-Za-z_-]+)\]", lambda m: f"\x00SUP\x00{m.group(1)})\x00/SUP\x00", text)
     # 上角标还原（2026-09-02，GB_3100-2026 表2/表3/附录B 等）：MinerU 文本抽取
-    # 把上标拍平成普通字符——s−1→s⁻¹、N/m2→N/m²、1030→10³⁰、10-2→10⁻²、
-    # 10²4→10²⁴。只作用于表格单元格（上下文受限，单元格几乎必是单位/量值），
-    # 正文不做（正文的平拍指数要么带 <sup> 标签、要么是 LaTeX，各自处理）。
+    # 把上标拍平成普通字符——s−1→s⁻¹、N/m2→N/m²、10-2→10⁻²、10²4→10²⁴。
+    # 只作用于表格单元格（上下文受限，单元格几乎必是单位/量值），正文不做
+    # （正文的拍平指数要么带 <sup> 标签、要么是 LaTeX，各自处理）。
+    #
+    # 规则对应: GEN-104（上标还原只认抽取里存在的证据，纯数字串不猜）。原
+    # 「10([1-9]\d{0,2})」纯数字分支已删除——抽取层（MinerU markdown 与
+    # middle.json，span 不带字号）对「10 的正幂」没有任何证据可言，该串与
+    # 普通数值完全同形：GB/T 5171.1-2014 表1 的「105(A级)」温度等级被印成
+    # 10⁵（源 PDF p12 实测 105 与同行同为 8.25pt 普通数字）、GB_3100-2026 的
+    # 「1024 bit」「(π/10800) rad」、GB/T 10401-2023 表内数据「107」同族。
+    # 语料实测该分支命中 12 处、真阳性 0 处；真正的上标在抽取里带证据
+    # （LaTeX `$10^{24}$`、`<sup>` 标签或 Unicode 上标字形），走下列分支。
     # 1) 单位字母后 −/[-] 数字（s−1、Ω−1、s-1）——字母限定小写+希腊防误伤
     #    "A-1" 类代号；数字后不再跟数字（"s-10" 整串上标由 {1,2} 覆盖）。
     text = re.sub(r"(?<=[a-zμΩ])[−-](\d{1,2})(?![0-9])", "\x00SUP\x00−\\1\x00/SUP\x00", text)
     # 2) 10 的负幂：10-1→10⁻¹、10-30→10⁻³⁰（"10-2" 前面是数字 0，规则 1 不命中）。
+    #    负号是抽取里真实存在的证据（数字中间的减号不是数值的一部分）。
     text = re.sub(r"10[−-](\d{1,2})(?![0-9])", "10\x00SUP\x00−\\1\x00/SUP\x00", text)
-    # 3) 10 的正幂：1030→10³⁰、1024→10²⁴、109→10⁹、102→10²；100→"10"+"0"
-    #    （首位数 0）不猜（防 "100"→10⁰）。
-    text = re.sub(r"10([1-9]\d{0,2})(?![0-9])", "10\x00SUP\x00\\1\x00/SUP\x00", text)
-    # 4) 半上标混合：10²4→10²⁴、10³0→10³⁰（MinerU 部分识别 Unicode 上标）；
+    # 3) 半上标混合：10²4→10²⁴、10³0→10³⁰（MinerU 部分识别 Unicode 上标）；
     #    ²³¹ 归一为数字再进 <super>（字形本身已上标，双重缩小且与后续普通
-    #    数字混排不齐）。
+    #    数字混排不齐）。Unicode 上标字形本身即证据。
     text = re.sub(
         r"10([²³¹])(\d)",
         lambda m: f"10\x00SUP\x00{_SUP_GLYPH_TO_DIGIT[m.group(1)]}{m.group(2)}\x00/SUP\x00",
         text,
     )
-    # 5) 单位字母后平印 2/3：N/m2→N/m²、cm3→cm³（排除大写 "A2" 纸型等）。
+    # 4) 单位字母后平印 2/3：N/m2→N/m²、cm3→cm³（排除大写 "A2" 纸型等）。
     text = re.sub(r"(?<=[a-zμΩ])2(?![0-9A-Za-z])", "\x00SUP\x002\x00/SUP\x00", text)
     text = re.sub(r"(?<=[a-zμΩ])3(?![0-9A-Za-z])", "\x00SUP\x003\x00/SUP\x00", text)
     return text
@@ -1799,9 +1950,40 @@ _CLAUSE_NUMBER_RE = r"(?:\d+\.){1,4}\d+|[A-Z]\.\d+(?:\.\d+)*"
 # 引号必须包含——MinerU 常把 9.4.2.2“尽可能”这类裸条正文以引号开头，
 # 若不在集合内则该行既不顶格、编号后也不补空格（GB_T_1.1-2020 实测）。
 _CLAUSE_AFTER = r"\u4e00-\u9fff（(“”‘’「『《〈[('\""
+# 条号后接拉丁字母的形态（"4.2 SI 是采用如下常量的单位制："、"8.2.5 SI词头符号…"）：
+# 与「数值 + 单位符号」句（"3.2 kW 的电机应可靠工作。"）在文本上完全同形，单看文本
+# 无法区分，故这一类只在**文档结构确认**时才算条首（见 _clause_leading_number）。
+_CLAUSE_LATIN_AFTER_RE = re.compile(rf"^({_CLAUSE_NUMBER_RE})[ \u3000]*(?=[A-Za-z])")
 
 
-def _clause_leading_number(text: str) -> str | None:
+def _clause_parent_number(number: str) -> str:
+    """条号的父条号（"8.2.5" → "8.2"；单段编号返回空串）。"""
+    return number.rsplit(".", 1)[0] if "." in number else ""
+
+
+def _node_clause_number(node: dict[str, Any]) -> str | None:
+    """结构节点自身的条号（无编号节点如前言/目次返回 None）。
+
+    用于确认「编号后接拉丁字母」的裸条：编号必须是所在节点条号的**直接子条**
+    （4.2 在章 4 内、8.2.5 在 8.2 内），见 `_clause_leading_number`。
+    """
+    number = _heading_parts(node)[0].strip()
+    return number or None
+
+
+def _clause_head_gap(text: str, number: str) -> str:
+    """条首编号后的固定字隙（GBT-B02「编号后空一个汉字接排」的调用方补写）。
+
+    编号后接拉丁字母的条首不走 `_markup()` 的共享正则（`_CLAUSE_AFTER` 不含拉丁
+    字母，否则数值句 "3.2 kW 的电机…" 也会被认成条号并补间隔），故字隙由调用方
+    写入：消费编号后的空白、写 1 汉字宽度的白色占位字哨兵。编号后是汉字/括号时
+    原样返回——那种形态由 `_markup()` 的共享正则负责。
+    """
+    pattern = re.compile(rf"^(\s*{re.escape(number)})[ \u3000]*(?=[A-Za-z])")
+    return pattern.sub(lambda match: match.group(1) + "\x00GAP\x00", text, count=1)
+
+
+def _clause_leading_number(text: str, enclosing: str | None = None) -> str | None:
     """Return the leading clause number when a body paragraph starts with one.
 
     Untitled clauses (裸条) live in the CSM as bare paragraphs whose first
@@ -1811,13 +1993,27 @@ def _clause_leading_number(text: str) -> str | None:
     kept identical to _markup()'s clause-line normalisation so the two
     decisions stay consistent.
 
+    编号后接汉字/括号/引号（含引号族，"9.4.2.2“尽可能”"）时，形态本身足以判定。
+    编号后接**拉丁字母**（"4.2 SI 是采用如下常量的单位制："）时，文本与「数值 +
+    单位符号」句（"3.2 kW 的电机应可靠工作。"）完全同形，故只在给了结构上下文
+    ``enclosing``（所在节点的条号）且该编号是其**直接子条**时才认（4.2 在章 4
+    内）；无上下文或父条号不匹配时保守退回正文段。已知局限：更深的裸条
+    （4.2.1 直接挂在章 4 下）与落在同号章内的数值句仍无判据（docs/12 §3.59）。
+
     规则对应: GBT-B02（条编号顶格编排，编号后空一个汉字接排）。
     """
+    stripped = str(text).strip()
     match = re.match(
         rf"^({_CLAUSE_NUMBER_RE})(?=[ \u3000]*[{_CLAUSE_AFTER}])",
-        str(text).strip(),
+        stripped,
     )
-    return match.group(1) if match else None
+    if match:
+        return match.group(1)
+    if enclosing:
+        latin = _CLAUSE_LATIN_AFTER_RE.match(stripped)
+        if latin and _clause_parent_number(latin.group(1)) == str(enclosing).strip():
+            return latin.group(1)
+    return None
 
 
 # 注/示例的标记（"注："/"注1："/"示例："/"示例1："）：GB/T 1.1-2020 10.4.4.1/10.4.5
@@ -1846,7 +2042,19 @@ def _note_example_label(text: str) -> str:
     return _note_example_label_span(text)[1]
 
 
-def _append_content(story: list[Any], content: dict[str, Any], registries: dict[str, dict[str, dict[str, Any]]], styles: dict[str, Any], font: str, report: PDFRenderReport, asset_dir: Path, colors: Any, Table: Any, TableStyle: Any, Paragraph: Any, Spacer: Any, Image: Any, content_width: float = _BODY_MEASURE) -> None:
+def _unit_line_style(styles: dict[str, Any]) -> Any:
+    """单位陈述行（"单位为毫米"）样式（GEN-032）：小五号右对齐、上下无空（紧贴图/表框）。
+
+    图与表共用同一样式，避免两处各写一份（图侧见 `_append_content` 的 figure 分支）。
+    """
+    from reportlab.lib.styles import ParagraphStyle
+
+    return styles.get("table-unit") or ParagraphStyle(
+        "gbt-table-unit", parent=styles["body"], alignment=2, fontSize=9, leading=12, spaceAfter=0, firstLineIndent=0,
+    )
+
+
+def _append_content(story: list[Any], content: dict[str, Any], registries: dict[str, dict[str, dict[str, Any]]], styles: dict[str, Any], font: str, report: PDFRenderReport, asset_dir: Path, colors: Any, Table: Any, TableStyle: Any, Paragraph: Any, Spacer: Any, Image: Any, content_width: float = _BODY_MEASURE, enclosing: str | None = None) -> None:
     # 规则对应: GEN-032（表格题注拆分：居中题注 + 右对齐单位行）、GBT-B04（列项缩进）、
     # GBT-B10（注标记小五号黑体、注内容小五号宋体）、GBT-B11（示例标记小五号黑体、
     # 示例内容小五号宋体）、GBT-X06（公式另行居中、编号右对齐）、GBT-X01/B06（图与图题）。
@@ -1870,17 +2078,11 @@ def _append_content(story: list[Any], content: dict[str, Any], registries: dict[
             story.append(caption_flowable)
         elif caption_match:
             story.append(Paragraph(_markup(caption_match.group(1).strip()), styles["caption"]))
-            from reportlab.lib.styles import ParagraphStyle
-            unit_style = styles.get("table-unit") or ParagraphStyle(
-                "gbt-table-unit", parent=styles["body"], alignment=2, fontSize=9, leading=12, spaceAfter=0, firstLineIndent=0,
-            )
-            story.append(Paragraph(_markup(caption_match.group(2)), unit_style))
+            story.append(Paragraph(_markup(caption_match.group(2)), _unit_line_style(styles)))
         elif unit_only:
-            from reportlab.lib.styles import ParagraphStyle
-            unit_style = styles.get("table-unit") or ParagraphStyle(
-                "gbt-table-unit", parent=styles["body"], alignment=2, fontSize=9, leading=12, spaceAfter=0, firstLineIndent=0,
-            )
-            story.append(Paragraph(_markup(text.strip()), unit_style))
+            # 兼容路径：未被折进图/表节点的独立单位行（旧 canonical 与手写稿）仍按
+            # 右对齐渲染，只是不与图/表同组（新写出的单位行都折进节点，见 docs/12 §3.54）。
+            story.append(Paragraph(_markup(text.strip()), _unit_line_style(styles)))
         else:
             # Untitled clause paragraphs (bare text starting with the clause
             # number) render flush left per GBT-B02; ordinary body text keeps
@@ -1889,7 +2091,14 @@ def _append_content(story: list[Any], content: dict[str, Any], registries: dict[
                 # 脚注定义：占位（0 高），文本由页钩子绘到本页页脚（不占正文流位置）。
                 story.append(_FootnoteAnchor(content.get("textContent", "")))
             else:
-                style = styles["body-flush"] if _clause_leading_number(text) else styles["body"]
+                # 编号后接拉丁字母的裸条（"4.2 SI 是采用…"）需要所在节点的条号确认，
+                # 故把节点的条号（enclosing）传进判定；无上下文时退回正文段。
+                clause_number = _clause_leading_number(text, enclosing)
+                style = styles["body-flush"] if clause_number else styles["body"]
+                if clause_number:
+                    # 该类条首的字隙不由 _markup 补（共享正则不含拉丁字母），
+                    # 调用方写 1 汉字字隙哨兵（GBT-B02）；见 _clause_head_gap。
+                    text = _clause_head_gap(text, clause_number)
                 # 正文里的注/示例标记（"示例1：…"、"注2：…"，GB/T 1.1 10.4.4.1/
                 # 10.4.5）与注块同规则：标记黑体、内容宋体。
                 paragraph = Paragraph(_label_markup(_footnote_superscripts(text), font, style.fontSize), style)
@@ -1954,7 +2163,20 @@ def _append_content(story: list[Any], content: dict[str, Any], registries: dict[
         number = _formula_number_text(formula.get("number"))
         asset = formula.get("assetRef")
         source_image = _resolve_asset(asset_dir, asset) if asset else Path("")
-        image_path = source_image if source_image.is_file() else _formula_image(formula.get("latex") or formula.get("rawText", ""), asset_dir)
+        raw_formula = str(formula.get("latex") or formula.get("rawText") or "")
+        # 规则对应: GEN-105（显示尺寸按目标字号还原，不把像素当点）、GEN-106（含汉字
+        # 的公式不得交给 MathText——它没有汉字字形，会印成假字形方框）。MinerU 裁剪图
+        # （assetRef，GEN-102）优先；无可用资产且含汉字 → 按文本拍平渲染。
+        image_path: Path | None
+        if source_image.is_file():
+            image_path, native_scale, text_fallback_reason = source_image, 1.0, ""
+        elif _latex_has_cjk(raw_formula):
+            image_path, native_scale = None, 1.0
+            text_fallback_reason = "contains CJK and has no usable image asset"
+        else:
+            image_path = _formula_image(raw_formula, asset_dir)
+            native_scale = _formula_image_scale(float(styles["body"].fontSize))
+            text_fallback_reason = "could not be typeset"
         number_style = styles["body"]
         formula_flowable: Any
         if image_path:
@@ -1965,14 +2187,14 @@ def _append_content(story: list[Any], content: dict[str, Any], registries: dict[
             # the current container's content width (body / example box inner).
             # 带编号的公式还会在 _FormulaLeaderLine 里按「两个汉字间隔 + 省略号
             # 引导线 + 右端编号」的需要再收一次宽度（GBT-X06/10.4.3）。
-            scale = min(1.0, content_width / image.imageWidth, 140 / image.imageHeight)
+            scale = min(native_scale, content_width / image.imageWidth, 140 / image.imageHeight)
             image.drawWidth = image.imageWidth * scale
             image.drawHeight = image.imageHeight * scale
             image.hAlign = "CENTER"
             formula_flowable = image
         else:
-            report.warnings.append(f"Formula could not be typeset; retained as text: {formula['id']}")
-            formula_flowable = Paragraph(_markup(_latex_to_text(formula.get("rawText", ""))), styles["formula"])
+            report.warnings.append(f"Formula typeset as text ({text_fallback_reason}): {formula['id']}")
+            formula_flowable = Paragraph(_markup(_latex_to_text(raw_formula)), styles["formula"])
         if number:
             # 规则对应: GBT-X06（公式编号右端对齐、与公式以“……”连接）。
             story.append(
@@ -1990,7 +2212,7 @@ def _append_content(story: list[Any], content: dict[str, Any], registries: dict[
             image = Image(str(asset_path))
             # 图尺寸：优先使用抽取时从源 PDF 记录的原始版面尺寸
             # （sourceWidth/sourceHeight，pt；_stamp_figure_source_sizes 在
-            # 流水线 finalize 阶段写入），使渲染图与原图尺寸相当（GEN-076）。
+            # 流水线 finalize 阶段写入），使渲染图与原图尺寸相当（GEN-098）。
             # 无记录时按图片固有尺寸（72dpi）缩放，但**只缩小不放大**——
             # MinerU 裁剪图常以高于原版的像素密度导出，放大会远超原图尺寸。
             source_width = figure.get("sourceWidth")
@@ -2012,6 +2234,12 @@ def _append_content(story: list[Any], content: dict[str, Any], registries: dict[
         else:
             report.warnings.append(f"Missing figure asset retained as placeholder: {figure['id']}")
             figure_flowables = [Paragraph(_markup("[图像资产缺失]"), styles["caption"])]
+        unit_text = str(figure.get("unit") or "").strip()
+        if unit_text:
+            # 图的单位陈述（GEN-032 / GB/T 1.1-2020 9.7.4.1）：右对齐画在图上方，并放进
+            # 与图、图题同一个 KeepTogether——否则满页的图另起一面时这一行会被留在前页
+            # 末（附录 E 的"单位为毫米"本应是每张图页的第一行，见 docs/12 §3.54）。
+            figure_flowables.insert(0, Paragraph(_markup(f"单位为{unit_text}"), _unit_line_style(styles)))
         figure_number = str(figure.get("number") or "")
         figure_caption = str(figure.get("caption") or "")
         caption = f"图{figure_number} {figure_caption}".strip() if (figure_number or figure_caption) else ""
@@ -2020,8 +2248,17 @@ def _append_content(story: list[Any], content: dict[str, Any], registries: dict[
         story.append(KeepTogether(figure_flowables))
     elif kind == "other":
         unknown = registries["unknownContents"].get(content.get("unknownRef"), {})
-        report.warnings.append(f"Unknown content rendered as text: {unknown.get('id', content.get('id'))}")
-        story.append(Paragraph(_markup(unknown.get("rawContent", "")), styles["body"]))
+        # 规则对应: GEN-107（原样块逐字渲染：保留换行与行首缩进、左对齐不拉伸）。
+        # 原样块是 canonical 表达「树状结构/伪代码/版式片段」的正式通道
+        # （docs/07 §6.10），不能走 _markup 的软换行归一。
+        verbatim_style = styles.get("verbatim", styles["body"])
+        report.warnings.append(f"Unknown content rendered verbatim: {unknown.get('id', content.get('id'))}")
+        story.append(
+            Paragraph(
+                _markup(_verbatim_markup(str(unknown.get("rawContent", "")), verbatim_style.fontSize)).replace("\x00BR\x00", "<br/>"),
+                verbatim_style,
+            )
+        )
 
 
 def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any], colors: Any, Table: Any, TableStyle: Any, Paragraph: Any, *, asset_dir: Path | None = None, Image: Any = None, content_width: float = _BODY_MEASURE, label_font: str = "") -> None:
@@ -2035,8 +2272,10 @@ def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any
     unit = str(table.get("unit") or "").strip()
     # A table with neither number nor caption gets no caption line at all
     # (otherwise a lone "表" character would appear above the table).
+    # 题注/单位行先攒着：竖排放进正文流；横排（GEN-103）随表一起旋转、落在订口一侧。
+    caption_flowables: list[Any] = []
     if number or caption:
-        story.append(Paragraph(_markup(f"表{number} {caption}".strip()), styles["caption"]))
+        caption_flowables.append(Paragraph(_markup(f"表{number} {caption}".strip()), styles["caption"]))
     # GB/T 1.1 表题注块：单位行（"单位为毫米"）小号右对齐，紧贴表格上方
     # （GEN-032；table-unit 样式 alignment=2 右对齐、spaceAfter=0 贴表框）。
     if unit:
@@ -2044,7 +2283,7 @@ def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any
         unit_style = styles.get("table-unit") or ParagraphStyle(
             "gbt-table-unit", parent=styles["body"], alignment=2, fontSize=9, leading=12, spaceAfter=0, firstLineIndent=0,
         )
-        story.append(Paragraph(_markup(f"单位为{unit}"), unit_style))
+        caption_flowables.append(Paragraph(_markup(f"单位为{unit}"), unit_style))
     rows = sorted(table.get("rows", []), key=lambda row: row["rowIndex"])
 
     cell_image_re = re.compile(r"!\[(?:[^\]]*)\]\(([^)]+)\)")
@@ -2077,7 +2316,7 @@ def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any
         )
     # 表中图原始版面尺寸（pt）：_stamp_figure_source_sizes 在流水线 finalize
     # 写入 table["cellImageSizes"] = {ref: [w, h]}，渲染端按原尺寸（上限
-    # 单元格宽、不放大）显示，使表中图与原图尺寸相当（GEN-076 / GBT-X02）。
+    # 单元格宽、不放大）显示，使表中图与原图尺寸相当（GEN-098 / GBT-X02）。
     cell_image_sizes = table.get("cellImageSizes") or {}
 
     def _render_cell(cell_text: str, cell_width: float, is_header: bool = False) -> list[Any]:
@@ -2145,20 +2384,9 @@ def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any
     # 该列最宽单元格的自然宽度（CJK≈1em、拉丁≈0.55em；colspan 摊分；通栏
     # 注行/单长格不参与），按需求比例把“当前容器可用内容宽”（正文 455pt /
     # 示例框内 421.5pt，2026-09-07 修穿框）全部分配（列宽和恰等于容器宽），
-    # 保底 24pt 防空列退化。跨列单元格的图片按跨列总宽缩放。
-    col_widths = _table_column_widths(rows, col_count, styles["table"].fontSize, cell_image_sizes, cell_image_re, frame_width=content_width)
-
-    def _cell_render_width(cell: dict[str, Any]) -> float:
-        colspan = int(cell.get("colspan", 1) or 1)
-        start = cell["colIndex"]
-        return sum(col_widths[start:start + colspan])
-
-    data = [[_render_cell(cell.get("text", ""), _cell_render_width(cell), is_header=bool(row.get("isHeader"))) for cell in sorted(row.get("cells", []), key=lambda cell: cell["colIndex"])] for row in rows]
-    grid = _toc_tracked_table_class(Table)(data, colWidths=col_widths, repeatRows=sum(1 for row in rows if row.get("isHeader")))
-    # 目次「表N」行的页码来源：预检通道按 ssir_id 记录本表所在页（render_pdf 的
-    # _record_pages）。表在框内/单元格内时 afterFlowable 不触发，其行页码留 0。
-    grid.ssir_id = str(table.get("id") or "")
-    commands: list[tuple[Any, ...]] = [("GRID", (0, 0), (-1, -1), 0.5, colors.black), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("LEFTPADDING", (0, 0), (-1, -1), 4), ("RIGHTPADDING", (0, 0), (-1, -1), 4), ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]
+    # 保底 24pt 防空列退化、每列下界「左右边距 + 一个汉字宽」（GEN-103）。
+    # 跨列单元格的图片按跨列总宽缩放。
+    commands: list[tuple[Any, ...]] = [("GRID", (0, 0), (-1, -1), 0.5, colors.black), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("LEFTPADDING", (0, 0), (-1, -1), _TABLE_CELL_PADDING), ("RIGHTPADDING", (0, 0), (-1, -1), _TABLE_CELL_PADDING), ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]
     if rows and rows[0].get("isHeader"):
         commands.append(("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F2F2F2")))
     for row in rows:
@@ -2178,8 +2406,33 @@ def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any
         if len(cells) > 2 and len(filled) == 1 and len(plain_text(filled[0])) >= 20:
             r = row["rowIndex"]
             commands.append(("SPAN", (0, r), (-1, r)))
-    grid.setStyle(TableStyle(commands))
-    story.extend([grid, Spacer(1, 6)])
+
+    def _grid(widths: list[float]) -> Any:
+        """按给定列宽重建表格网格（横排重排时列宽变化 → 单元格需重新折行）。"""
+        def _cell_render_width(cell: dict[str, Any]) -> float:
+            colspan = int(cell.get("colspan", 1) or 1)
+            start = cell["colIndex"]
+            return sum(widths[start:start + colspan])
+
+        data = [[_render_cell(cell.get("text", ""), _cell_render_width(cell), is_header=bool(row.get("isHeader"))) for cell in sorted(row.get("cells", []), key=lambda cell: cell["colIndex"])] for row in rows]
+        built = _toc_tracked_table_class(Table)(data, colWidths=widths, repeatRows=sum(1 for row in rows if row.get("isHeader")))
+        # 目次「表N」行的页码来源：预检通道按 ssir_id 记录本表所在页（render_pdf 的
+        # _record_pages）。表在框内/单元格内时 afterFlowable 不触发，其行页码留 0。
+        built.ssir_id = str(table.get("id") or "")
+        built.setStyle(TableStyle(commands))
+        return built
+
+    col_widths = _table_column_widths(rows, col_count, styles["table"].fontSize, cell_image_sizes, cell_image_re, frame_width=content_width)
+    grid = _grid(col_widths)
+    # 宽表横排（GEN-103）：竖排下必然排不下的多列表整表旋转 90°（表头落订口一侧）。
+    landscape_widths = _table_landscape_widths(
+        rows, col_count, styles["table"].fontSize, cell_image_sizes, cell_image_re, content_width, grid
+    )
+    if landscape_widths is not None and _ROTATED_TABLE_CLASS is not None:
+        # 横排：题注 + 单位行 + 表格作为一个整体旋转（表头落订口一侧）。
+        story.extend([_ROTATED_TABLE_CLASS([*caption_flowables, _grid(landscape_widths)]), Spacer(1, 6)])
+        return
+    story.extend([*caption_flowables, grid, Spacer(1, 6)])
 
 
 def _cell_text_natural_width(text: str, font_size: float) -> float:
@@ -2208,31 +2461,21 @@ def _cell_text_natural_width(text: str, font_size: float) -> float:
     return widest * font_size
 
 
-def _table_column_widths(
+def _table_column_demands(
     rows: list[dict],
     col_count: int,
     font_size: float,
     cell_image_sizes: dict[str, list[float]],
     cell_image_re: re.Pattern[str],
-    frame_width: float = _BODY_MEASURE,
-    floor: float = 24.0,
-) -> list[float]:
-    """按内容分配表格列宽（2026-09-03 起；2026-09-07 四次用户裁定）。
+) -> tuple[list[float], list[float], list[float], list[int]]:
+    """每列需求（含左右边距 8pt）、表头底线、数据 80% 分位需求、有内容的列号。
 
-    需求口径（2026-09-07 四次裁定，取代“单列最大行宽”口径）：
-      · 表头行：列宽底线 = 表头自然宽 + 12pt（表头尽量不折行；仅当全部表头
-        底线之和都超出版心时（罕见）才让表头折行）；
-      · 数据行：取该列各行自然宽（<br> 多行格取最长行）的 **80% 分位数**
-        （少数派超长行/个别单长格不再独撑整列、饿死多数行——表2/表3/表4 的
-        209/329/585pt 单格即此病根）；colspan 内容按跨列数均摊进各列；
-        整行通栏注行（colspan=全部）与 OCR 丢 colspan 的单长格不挤占；
-        表格图片按原版面宽度计。
-    分配（总宽恒 = 版心 frame_width）：
-      · 内容总需求（含边距）≤ 版心时：先满足各列需求，富余空间**各列均分**
-        ——列内文字距两端表格线留距一致、疏密观感均衡，绝无临界折行；
-      · 超版心时：表头底线优先全额满足，剩余宽度按数据需求比例分给各列
-        （折行优先发生在少数派长行，且尽量不发生在表头）；
-      · 完全空列（无表头无数据）保底 floor，不参与均分。
+    列宽分配（``_table_column_widths``）与「该表能否在本容器内排下」（GEN-103
+    横排判定）共用同一口径，避免两处各算一套需求模型而漂移。
+    口径（2026-09-07 四次裁定）：表头行取自然宽 + 12pt（表头底线）；数据行取该列
+    各行自然宽（<br> 多行格取最长行）的 80% 分位数 + 8pt；colspan 内容按跨列数
+    均摊；整行通栏注行（colspan=全部）与 OCR 丢 colspan 的单长格不挤占；表格图片
+    按源版面宽度计。
     """
     def _p80(vals: list[float]) -> float:
         sv = sorted(vals)
@@ -2265,11 +2508,49 @@ def _table_column_widths(
                     hdr_nat[c] = max(hdr_nat[c], per_col)
                 else:
                     samples[c].append(per_col)
-    # 列需求 = max(表头底线, 数据 80% 分位 + 左右边距)；空列由 floor 兜底。
+    # 列需求 = max(表头底线, 数据 80% 分位 + 左右边距)；空列由调用点的 floor 兜底。
     header_min = [h + 12.0 if h > 0 else 0.0 for h in hdr_nat]
     body_need = [_p80(samples[c]) + 8.0 if samples[c] else 0.0 for c in range(col_count)]
     need = [max(header_min[c], body_need[c]) for c in range(col_count)]
     content = [c for c in range(col_count) if need[c] > 0]
+    return need, header_min, body_need, content
+
+
+def _table_column_widths(
+    rows: list[dict],
+    col_count: int,
+    font_size: float,
+    cell_image_sizes: dict[str, list[float]],
+    cell_image_re: re.Pattern[str],
+    frame_width: float = _BODY_MEASURE,
+    floor: float = 24.0,
+    min_column: float | None = None,
+) -> list[float]:
+    """按内容分配表格列宽（2026-09-03 起；2026-09-07 四次用户裁定）。
+
+    需求口径（2026-09-07 四次裁定，取代“单列最大行宽”口径）：
+      · 表头行：列宽底线 = 表头自然宽 + 12pt（表头尽量不折行；仅当全部表头
+        底线之和都超出版心时（罕见）才让表头折行）；
+      · 数据行：取该列各行自然宽（<br> 多行格取最长行）的 **80% 分位数**
+        （少数派超长行/个别单长格不再独撑整列、饿死多数行——表2/表3/表4 的
+        209/329/585pt 单格即此病根）；colspan 内容按跨列数均摊进各列；
+        整行通栏注行（colspan=全部）与 OCR 丢 colspan 的单长格不挤占；
+        表格图片按原版面宽度计。
+    分配（总宽恒 = 版心 frame_width）：
+      · 内容总需求（含边距）≤ 版心时：先满足各列需求，富余空间**各列均分**
+        ——列内文字距两端表格线留距一致、疏密观感均衡，绝无临界折行；
+      · 超版心时：表头底线优先全额满足，剩余宽度按数据需求比例分给各列
+        （折行优先发生在少数派长行，且尽量不发生在表头）；
+      · 完全空列（无表头无数据）保底 floor，不参与均分。
+    每列下界（2026-09-12，GEN-103）：列宽不得小于 ``min_column``（默认
+    「左右边距 + 一个汉字宽」）——窄于此的列连一个字都排不下，reportlab 会以
+    「负可用宽」中止**整篇**渲染（GB/T 5171.1-2014 表9：26 列、末列被分到 0.6pt）。
+    不足部分从最宽列按富余量扣减，Σ 仍恒 = 版心；Σ下界已超版心（列数极多）时
+    退化为等分，由调用点决定压缩边距或整表横排（``_append_table``）。
+    """
+    need, header_min, body_need, content = _table_column_demands(
+        rows, col_count, font_size, cell_image_sizes, cell_image_re
+    )
     if not content:
         return [frame_width / col_count] * col_count
     if len(content) == col_count and sum(need) <= 0:
@@ -2305,9 +2586,94 @@ def _table_column_widths(
                 give = min(widths[i] - floor, over)
                 widths[i] -= give
                 over -= give
+    # 每列下界（2026-09-12，GEN-103）：见 docstring。Σ下界 ≥ 版心时等分（此时
+    # 任何分配都排不下，横排/压缩边距由调用点决定），否则从最宽列扣减补足。
+    lower = float(min_column) if min_column is not None else 2 * _TABLE_CELL_PADDING + font_size
+    if lower > 0 and col_count:
+        if lower * col_count >= frame_width:
+            widths = [frame_width / col_count] * col_count
+        else:
+            deficit = sum(lower - w for w in widths if w < lower)
+            if deficit > 1e-9:
+                widths = [max(w, lower) for w in widths]
+                for i in sorted(range(col_count), key=lambda i: widths[i], reverse=True):
+                    if deficit <= 1e-9:
+                        break
+                    give = min(widths[i] - lower, deficit)
+                    widths[i] -= give
+                    deficit -= give
     # 舍入残差并入最宽列，保证 Σ == frame_width
-    widths[content[-1]] += frame_width - sum(widths)
+    widths[max(range(col_count), key=lambda i: widths[i])] += frame_width - sum(widths)
     return widths
+
+
+def _table_rotated_measure(content_width: float) -> float | None:
+    """宽表横排可用宽（GEN-103）：整表旋转 90° 后沿页面高度排布。
+
+    仅在正文通栏容器内横排——示例线框内横排会穿出框线；未进入文档上下文
+    （``_ROTATED_TABLE_MEASURE`` 为 None）时不横排。
+    """
+    rotated = _ROTATED_TABLE_MEASURE
+    if rotated is None or content_width < _BODY_MEASURE - 1.0 or rotated <= content_width + 1.0:
+        return None
+    return float(rotated)
+
+
+def _table_exceeds_frame(grid: Any, avail_width: float, frame_height: float) -> bool:
+    """竖排网格在版心内能否分页排下：用 reportlab 自己的 split() 复算一次。
+
+    跨行合并（rowspan）锁定的行组不可再分，组高超过一页时 reportlab 抛
+    LayoutError；与其另立行高模型，不如直接问它——切分结果里仍有高于一页的片段
+    即为"竖排必然排不下"（GEN-103 判据 ③）。
+    """
+    try:
+        pieces = grid.split(avail_width, frame_height)
+    except Exception:
+        return False
+    for piece in pieces or []:
+        try:
+            # reportlab 的 Table.wrap 返回 (宽, 高) 而不写 .height 属性，故取返回值。
+            _width, height = piece.wrap(avail_width, frame_height)
+        except Exception:
+            return False
+        if float(height) > frame_height + 0.5:
+            return True
+    return False
+
+
+def _table_landscape_widths(
+    rows: list[dict],
+    col_count: int,
+    font_size: float,
+    cell_image_sizes: dict[str, list[float]],
+    cell_image_re: re.Pattern[str],
+    content_width: float,
+    grid: Any,
+) -> list[float] | None:
+    """宽表横排判定（GEN-103）：需要横排时返回横排列宽，否则返回 None。
+
+    横排（整表旋转 90°、表头落订口一侧，与 GB/T 5171.1-2014 表9 源排版同向）需三条
+    同时成立：
+      ① 本容器内整表按需排不下（Σ列需求 > 容器宽）——列只能被压到折行；
+      ② 横排可用宽（页面版心高）能整表按需排下（Σ列需求 ≤ 横排可用宽）；
+      ③ 竖排网格在本版心内**无法分页**（跨行合并锁定的行组高于一页），即竖排必然
+         LayoutError，而不是"难看但能排"。
+    ② 保证横排确有收益，③ 保证普通"要折行但能分页"的长表不受影响。
+    """
+    measure = _table_rotated_measure(content_width)
+    if measure is None:
+        return None
+    need, _header_min, _body_need, _content = _table_column_demands(
+        rows, col_count, font_size, cell_image_sizes, cell_image_re
+    )
+    total_need = sum(need)
+    if total_need <= content_width or total_need > measure:
+        return None
+    if not _table_exceeds_frame(grid, content_width, measure):
+        return None
+    return _table_column_widths(
+        rows, col_count, font_size, cell_image_sizes, cell_image_re, frame_width=measure
+    )
 
 
 def _latex_sup_content(content: str) -> str:
@@ -2345,6 +2711,24 @@ _LATEX_WRAPPER = frozenset(
      "textit", "textrm", "operatorname", "boldsymbol", "rm", "it", "bf",
      "overline", "underline", "bm", "text"}
 )
+
+
+# 简单分数 \frac{a}{b} 的 Unicode 分数字形：渲染字体（思源宋体 NotoSerifCJKsc）只带
+# ½ ¼ ¾（Latin-1 Supplement），Number Forms 区（⅓ ⅔ …）在该字体里没有字形、
+# 映射过去会印成空框，故只映射这三个；其余（字母、多位、无字形）仍拍平为 (a)/(b)。
+_FRACTION_GLYPHS = {("1", "4"): "¼", ("1", "2"): "½", ("3", "4"): "¾"}
+
+
+def _flatten_fraction(numerator: str, denominator: str) -> str:
+    """``\frac{a}{b}`` 的可读文本：有分数字形用 ½ 形式，否则 (a)/(b)。
+
+    规则对应: GBT-X06（无法排版时以可读文本呈现）+ 标准表格/正文里的叠排简单分数
+    （GB/T 10401-2023 表10「½连续堵转转矩」型）。
+    """
+    num = numerator.strip()
+    den = denominator.strip()
+    glyph = _FRACTION_GLYPHS.get((num, den))
+    return glyph if glyph else f"({num})/({den})"
 
 
 def _latex_expand_nested(text: str) -> str:
@@ -2386,7 +2770,7 @@ def _latex_expand_nested(text: str) -> str:
                 if den_pair is not None:
                     den_inner, den_after = den_pair
             if num_inner is not None and den_inner is not None:
-                out.append(f"({_latex_expand_nested(num_inner)})/({_latex_expand_nested(den_inner)})")
+                out.append(_flatten_fraction(_latex_expand_nested(num_inner), _latex_expand_nested(den_inner)))
                 pos = den_after
                 continue
             out.append(text[m.start():after])
@@ -2444,10 +2828,10 @@ def _latex_to_text(latex: str) -> str:
     )
     text = re.sub(r"\s*_\s*([A-Za-z0-9])", r"\1", text)
     text = re.sub(r"\s*\^\s*([A-Za-z0-9])", lambda m: "\x00SUP\x00" + _latex_sup_content(m.group(1)) + "\x00/SUP\x00", text)
-    # 3) \frac{a}{b} -> (a)/(b).
+    # 3) \frac{a}{b} -> ½（有字形时）或 (a)/(b)。
     text = re.sub(
         r"\\frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}",
-        lambda m: f"({m.group(1).strip()})/({m.group(2).strip()})",
+        lambda m: _flatten_fraction(m.group(1), m.group(2)),
         text,
     )
     # 4) Common operators -> Unicode (leqslant before leq to avoid prefix match).
@@ -2494,7 +2878,99 @@ def _latex_to_text(latex: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-# 字面星号簇保护（GBT-C13 星号脚注、GB_T_1.1-2020 9.12.1 “*、**、***”、
+# 渲染端星号/强调语法（docs/07 §6.1：`**粗体**`、`*斜体*`、`***粗斜体***`；
+# 反斜杠转义 `\*` 表示字面星号）——**成对**才当强调，未成对的星号簇一律按字面
+# 星号输出（`即 * 、 ** 、 ***`、`共*页`、`共\*页` 等负例）。
+#
+# 2026-09-16 用户报「GB_T_20001.10-2014 表1 用 * 号定义的斜体/粗体/粗斜体都没有
+# 起作用」：旧实现只按**邻接字符**判断字面星号——`(?<![A-Za-z0-9])\*+(?![A-Za-z0-9])`
+# ——而汉字不在 `[A-Za-z0-9]` 里，于是 `***封面***`、`*目次*`、`**范围**` 的星号簇
+# 全被判为字面星号，强调标记成对出现却从未配对；且旧实现只有 `**`/`*` 两条正则
+# （无 `***` 粗斜体形式，`**\*(.+?)\*\*` 会把 `***X***` 拆成 `<b>*X</b>*`）。
+# 现在按**定界符簇配对**判定：可开 = 其后首个非空白字符存在且不是 `*`，可闭 =
+# 其前首个非空白字符存在且不是 `*`；同长度簇就近配对（1=斜体、2=粗体、3=粗斜体，
+# 4 个以上不成形式 → 字面）。配对判定忽略紧邻空白（OCR 常在闭标记前留空格，如
+# `*注、脚注 *`），配对后**去掉强调区两端空白**；未配对簇还原为等长字面星号。
+_STAR_RUN_RE = re.compile(r"\*+")
+# 强调区哨兵（escape 之后换成 reportlab 的 <b>/<i>；NUL 哨兵不被 escape 改动）。
+_EMPHASIS_OPEN = {"b": "\x00EMB\x00", "i": "\x00EMI\x00"}
+_EMPHASIS_CLOSE = {"b": "\x00/EMB\x00", "i": "\x00/EMI\x00"}
+_EMPHASIS_TAGS = {1: ("i",), 2: ("b",), 3: ("b", "i")}
+_SPACE_CHARS = " \t\u3000\u00a0"
+
+
+def _emphasis_tags(run_length: int) -> tuple[str, ...]:
+    """星号簇长度 → 强调种类（1=斜体、2=粗体、3=粗斜体；其余不成形式）。"""
+    return _EMPHASIS_TAGS.get(run_length, ())
+
+
+def _next_nonspace(text: str, index: int) -> int | None:
+    for position in range(index, len(text)):
+        if text[position] not in _SPACE_CHARS:
+            return position
+    return None
+
+
+def _prev_nonspace(text: str, index: int) -> int | None:
+    for position in range(index - 1, -1, -1):
+        if text[position] not in _SPACE_CHARS:
+            return position
+    return None
+
+
+def _resolve_emphasis(text: str) -> str:
+    """把成对强调标记换成哨兵、未成对星号簇换成字面星号哨兵。"""
+    text = text.replace("\\*", "\x00AST1\x00")
+    runs = [(match.start(), match.end(), len(match.group())) for match in _STAR_RUN_RE.finditer(text)]
+    if not runs:
+        return text
+    pending: dict[int, list[int]] = {1: [], 2: [], 3: []}
+    opener_of: dict[int, int] = {}
+    closer_of: dict[int, int] = {}
+    for index, (start, end, length) in enumerate(runs):
+        tags = _emphasis_tags(length)
+        if not tags:
+            continue
+        after = _next_nonspace(text, end)
+        before = _prev_nonspace(text, start)
+        can_open = after is not None and text[after] != "*"
+        can_close = before is not None and text[before] != "*"
+        if can_close and pending[length]:
+            opener_of[pending[length].pop()] = index
+            closer_of[index] = index
+        elif can_open:
+            pending[length].append(index)
+    if not opener_of and not closer_of:
+        return text
+    out: list[str] = []
+    cursor = 0
+    strip_leading = False
+    for index, (start, end, length) in enumerate(runs):
+        chunk = text[cursor:start]
+        if strip_leading:
+            chunk = chunk.lstrip(_SPACE_CHARS)
+            strip_leading = False
+        if index in opener_of:
+            out.append(chunk)
+            out.extend(_EMPHASIS_OPEN[tag] for tag in _emphasis_tags(length))
+            strip_leading = True
+        elif index in closer_of:
+            # 强调区右端的 OCR 空格不进强调区（`*注、脚注 *`）。
+            if chunk.strip():
+                chunk = chunk.rstrip(_SPACE_CHARS)
+            elif out:
+                out[-1] = out[-1].rstrip(_SPACE_CHARS)
+            out.append(chunk)
+            out.extend(_EMPHASIS_CLOSE[tag] for tag in reversed(_emphasis_tags(length)))
+        else:
+            out.append(chunk)
+            out.append(f"\x00AST{length}\x00")
+        cursor = end
+    out.append(text[cursor:])
+    return "".join(out)
+
+
+# 字面星号簇保护（GBT-C13 星号脚注、GB_T_1.1-2020 9.12.1 "*、**、***"、
 # 9.7.3 “共*页”）：CommonMark 转义 \*（parser 不反转义、textContent 保留
 # 反斜杠）与两侧都不是拉丁字母/数字的星号簇都是字面星号（而非 markdown
 # 强调）。先保护为 \x00AST{n}\x00 哨兵，等 bold/italic 处理完再按簇长还原，
@@ -2504,7 +2980,12 @@ _LIT_STAR_RE = re.compile(r"(?<![A-Za-z0-9])\*+(?![A-Za-z0-9])")
 
 
 def _protect_literal_stars(text: str) -> str:
-    r"""把字面星号（转义 \* 与两侧非词字符簇）编码为 AST 哨兵。"""
+    r"""把字面星号（转义 \* 与两侧非词字符簇）编码为 AST 哨兵。
+
+    仅 docx 渲染端（`docx_renderer._add_markup`）仍走本判据；PDF 侧已改用
+    `_resolve_emphasis` 的**定界符簇配对**判据（汉字内容的强调不再被误判为字面
+    星号），见其上方注释。docx 侧同步改造按文档暂停指令记为未做项。
+    """
     text = text.replace("\\*", "\x00AST1\x00")
     return _LIT_STAR_RE.sub(lambda m: f"\x00AST{len(m.group())}\x00", text)
 
@@ -2596,11 +3077,9 @@ def _markup(text: str, em_size: float | None = None) -> str:
     # digit-group separators ("2 000 W" -> "2000 W").
     text = re.sub(r" {2,}", " ", text)
     text = re.sub(r"(?<=\d) (?=\d)", "", text)
-    # 字面星号保护（CommonMark 转义 \* 与两侧非词字符簇，GB_T_1.1-2020
-    # 9.12.1 “\*、\*\*、\*\*\*”、9.7.3 “共\*页”）：parser 不反转义、
-    # textContent 保留反斜杠；先保护为哨兵，escape/bold/italic 后还原成
-    # 字面星号——防止反斜杠字面泄漏、* 被 italic 正则错配吞字。
-    text = _protect_literal_stars(text)
+    # 强调标记配对（docs/07 §6.1：`**粗体**`/`*斜体*`/`***粗斜体***`；未成对的星号簇
+    # 与转义 `\*` 走字面星号哨兵）——先编码为哨兵，escape 之后再换成 <b>/<i>。
+    text = _resolve_emphasis(text)
     # Untitled clause numbers: MinerU leaves the spacing after the number
     # irregular ("5.3.1 泵…" vs "5.3.2泵…"); normalise to one Han gap
     # (GBT-B02 编号后空一个汉字接排). reportlab 把所有空白（含 U+3000）折叠
@@ -2700,11 +3179,49 @@ def _markup(text: str, em_size: float | None = None) -> str:
     for sup_char, plain_char in (("⁰", "0"), ("⁵", "5"), ("⁶", "6"), ("⁷", "7"), ("⁸", "8"), ("⁹", "9"), ("⁻", "−"), ("⁺", "+"), ("ⁱ", "i")):
         escaped = escaped.replace(sup_char, f"<super>{plain_char}</super>")
     escaped = re.sub(r"</super><super>", "", escaped)
-    # bold/italic（markdown 强调 *word*/**word**；字面星号簇已在入口保护为
-    # AST 哨兵，此处不会错配），处理完还原哨兵为对应长度字面星号。
-    escaped = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped)
-    escaped = re.sub(r"(?<!\*)\*(.+?)\*", r"<i>\1</i>", escaped)
+    # 强调标记（docs/07 §6.1）：配对判定在 `_resolve_emphasis` 完成（已排除转义
+    # `\*` 与未成对星号簇），此处只把哨兵换成真标签——1=斜体、2=粗体、3=粗斜体
+    # （`***X***` → `<b><i>X</i></b>`，嵌套由配对顺序保证）。
+    escaped = escaped.replace("\x00EMB\x00", "<b>").replace("\x00/EMB\x00", "</b>")
+    escaped = escaped.replace("\x00EMI\x00", "<i>").replace("\x00/EMI\x00", "</i>")
     return _restore_literal_stars(escaped)
+
+
+_VERBATIM_SPACE_RUN_RE = re.compile(r"[ \t]{2,}")
+
+
+def _verbatim_gap_pt(run: str, font_size: float) -> float:
+    """原样块的空白宽度（pt）：半角空格 0.25em、制表符 4 个半角空格（GEN-107）。"""
+    return 0.25 * float(font_size) * len(str(run).replace("\t", "    "))
+
+
+def _verbatim_markup(text: str, font_size: float) -> str:
+    """原样块（docs/07 §6.10）逐字渲染：保留换行与行首/行内缩进（GEN-107）。
+
+    `_markup` 的常规通道会把段内换行连同其两侧空白归一为一个空格（CSM §3.3 的软
+    换行规则——MinerU 逐行折行的段落必须如此，语料有 31 个这样的多行段落），但原样
+    块的语义恰恰是「逐字保留原始文本」，因此这里：
+
+    - 换行 → ``\\x00BR\\x00`` 硬换行哨兵（调用方在 `_markup` 之后还原为 ``<br/>``）；
+    - 行首空白（任意长度）与行内 **≥2 个连续空白** → 固定字隙（白字哨兵，两端对齐
+      不拉伸）：每个半角空格计 **0.25em**（正文字体 U+0020 实测 0.256em）、制表符计
+      4 个半角空格 → 于是 **4 个半角空格 = 1 个全角位**；框线字（│ ├ └ ─，U+2500 区）
+      在 CJK 字体中恰为 1em，因此树状结构按「每级 4 个半角空格」书写即可与框线对齐
+      （也可直接写全角空格 U+3000 = 1em）。行内**单个**空格保持原样（reportlab 仍可
+      在此折行，长句不会溢出）；
+    - 其余文本交给 `_markup`（转义、角标、行内公式等既有机制不变）。
+    """
+    lines = str(text).replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    rendered: list[str] = []
+    for line in lines:
+        leading = re.match(r"[ \t]+", line)
+        if leading:
+            line = _fixed_gap(_verbatim_gap_pt(leading.group(0), font_size)) + line[leading.end():]
+        line = _VERBATIM_SPACE_RUN_RE.sub(
+            lambda m: _fixed_gap(_verbatim_gap_pt(m.group(0), font_size)), line
+        )
+        rendered.append(line)
+    return "\x00BR\x00".join(rendered)
 
 
 # 注/示例标记黑体哨兵（_label_markup）：与 <super>/<sub>/GAP 同机制——先写入
@@ -2748,12 +3265,113 @@ def _label_markup(text: str, label_font: str, em_size: float | None = None) -> s
     return marked.replace(_LABEL_OPEN, f'<font name="{font}">').replace(_LABEL_CLOSE, "</font>")
 
 
+# 生成公式图（MathText）的光栅参数与显示换算（GEN-105）：`_formula_image` 以
+# `_FORMULA_IMAGE_DPI` 光栅化、字号为 `_FORMULA_IMAGE_EM_PT`（pt）——图上的 em
+# 实际有 EM_PT × DPI/72 个像素（14pt@180dpi = 35px）。reportlab 的 `Image` 默认
+# 把 **1 像素当 1pt**（72dpi 假设），直接放置正好把公式放大 DPI/72 = 2.5 倍；因此
+# 放置时先按 72/DPI 做单位换算，再归一到文档正文字号（profile `body.size-pt`）。
+_FORMULA_IMAGE_DPI = 180.0
+_FORMULA_IMAGE_EM_PT = 14.0
+
+# 含汉字（或全角标点）的公式不能交给 MathText：数学字体没有汉字字形，会印出一串
+# 假字形方框（GB_3100-2026 8.2.3 的「米/秒；米·秒⁻¹；米/秒」实测）。可用的图资产
+# （MinerU 裁剪图，GEN-102）仍优先；无可用资产时按文本拍平渲染（GEN-106）。
+_CJK_IN_FORMULA_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\u3000-\u303f\uff01-\uff60]")
+
+
+def _latex_has_cjk(text: str) -> bool:
+    """公式源码是否含汉字/全角标点（判定 MathText 能否排版，GEN-106）。"""
+    return bool(_CJK_IN_FORMULA_RE.search(text or ""))
+
+
+def _formula_image_scale(font_size_pt: float) -> float:
+    """生成公式图的像素→点换算 × 目标字号比（GEN-105）。
+
+    默认正文字号 10.5pt 时 = (72/180) × (10.5/14) = **0.3**，即「生成图按正文字号
+    显示」；容器宽 / 140pt 高的上限仍在调用处用 ``min()`` 继续收窄（只缩小不放大）。
+    """
+    return (72.0 / _FORMULA_IMAGE_DPI) * (font_size_pt / _FORMULA_IMAGE_EM_PT)
+
+
+# 块级公式按**显示样式**排版（GEN-109）：canonical 的 `ssir:formula` 是 LaTeX 的 display
+# math（`$$…$$`），而 MathText 的 `$…$` 等价于**行内（text style）**——`\frac` 的分子/分母
+# 被降为脚标号、写在 `\sqrt{…}` 里的分数更小。GB/T 1.1-2020 9.9.3.1 示例1「v = l/t」实测：
+# 分数堆高只有 12.9pt（源文同一公式 17.0pt，且源文分数的分子/分母与左侧字母同大），
+# 示例5「t_i = √(S_ME,i / S_MR,i)」同理（用户报「公式看起来仍然略显小」）。
+# MathText 不支持 `\displaystyle`，但支持 `\dfrac`（display 分数），故按 TeX 的样式规则把
+# **最外层**的 `\frac` 提升为 `\dfrac`；分数参数内与上/下标内的分数保持原样式（TeX 在那里
+# 本就是 text/script style），`\tfrac`（作者显式要求小分数）不改。
+_FRAC_TOKEN_RE = re.compile(r"\\(dfrac|tfrac|frac)(?![A-Za-z])")
+
+
+def _display_style_latex(expression: str) -> str:
+    r"""把块级公式里**最外层**的 ``\frac`` 提升为 ``\dfrac``（GEN-109）。
+
+    样式降级只由两处触发：**分数的参数**与**上/下标**；普通花括号只作分组、不改变样式
+    （所以 ``\sqrt{\frac{a}{b}}`` 里的分数仍是最外层）。函数用栈跟踪当前是否处于降级区域，
+    区域内的 ``\frac`` 原样保留。
+    """
+    expression = str(expression)
+    if not _FRAC_TOKEN_RE.search(expression):
+        return expression
+    out: list[str] = []
+    downgrade_stack: list[bool] = []
+    downgraded = 0
+    pending_frac_args = 0
+    index = 0
+    while index < len(expression):
+        char = expression[index]
+        if char == "{":
+            is_downgrade = pending_frac_args > 0
+            pending_frac_args = max(0, pending_frac_args - 1)
+            downgrade_stack.append(is_downgrade)
+            downgraded += 1 if is_downgrade else 0
+            out.append(char)
+            index += 1
+            continue
+        if char == "}":
+            if downgrade_stack and downgrade_stack.pop():
+                downgraded -= 1
+            out.append(char)
+            index += 1
+            continue
+        if char in "_^":
+            out.append(char)
+            index += 1
+            if index < len(expression) and expression[index] == "{":
+                downgrade_stack.append(True)
+                downgraded += 1
+                out.append("{")
+                index += 1
+            continue
+        match = _FRAC_TOKEN_RE.match(expression, index)
+        if match:
+            name = match.group(1)
+            out.append("\\dfrac" if (name == "frac" and downgraded == 0) else match.group(0))
+            lookahead = match.end()
+            while lookahead < len(expression) and expression[lookahead] in " \t":
+                lookahead += 1
+            # 只跟踪**带花括号**的参数（`\frac12` 这类不带括号的参数不参与降级跟踪）。
+            pending_frac_args = 2 if lookahead < len(expression) and expression[lookahead] == "{" else 0
+            index = match.end()
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
 def _formula_image(latex: str, asset_dir: Path) -> Path | None:
     """Render a display formula through Matplotlib's bundled MathText engine.
 
-    规则对应: GBT-X06（数学公式另行居中编排的资产支撑）。
+    规则对应: GBT-X06（数学公式另行居中编排的资产支撑）、GEN-105（光栅参数与
+    显示换算同源——尺寸换算见 ``_formula_image_scale``，改动这里的 dpi/字号必须
+    同时改 ``_FORMULA_IMAGE_DPI`` / ``_FORMULA_IMAGE_EM_PT``）、GEN-109（块级公式
+    按显示样式排版——最外层分数为 ``\\dfrac``，见 ``_display_style_latex``）。
+
+    缓存文件按**提升后**的表达式取哈希：否则旧的（行内样式的）图会一直命中缓存，
+    修复对已渲染过的文档不生效。
     """
-    expression = latex.strip()
+    expression = _display_style_latex(latex.strip())
     if not expression:
         return None
     path = asset_dir / "assets" / "formulas" / f"{hashlib.sha256(expression.encode('utf-8')).hexdigest()}.png"
@@ -2764,10 +3382,10 @@ def _formula_image(latex: str, asset_dir: Path) -> Path | None:
         from matplotlib.figure import Figure
 
         path.parent.mkdir(parents=True, exist_ok=True)
-        figure = Figure(figsize=(6.2, 0.7), dpi=180)
+        figure = Figure(figsize=(6.2, 0.7), dpi=_FORMULA_IMAGE_DPI)
         FigureCanvasAgg(figure)
-        figure.text(0.5, 0.5, f"${expression}$", fontsize=14, ha="center", va="center")
-        figure.savefig(path, dpi=180, transparent=True, bbox_inches="tight", pad_inches=0.04)
+        figure.text(0.5, 0.5, f"${expression}$", fontsize=_FORMULA_IMAGE_EM_PT, ha="center", va="center")
+        figure.savefig(path, dpi=_FORMULA_IMAGE_DPI, transparent=True, bbox_inches="tight", pad_inches=0.04)
         return path
     except Exception:
         path.unlink(missing_ok=True)

@@ -62,7 +62,13 @@
   标准号斜杠→下划线、字母大写、空格→下划线；规则包 / 渲染 profile 与标准 ID
   同名同值（`rules/base/<ID>/`、`config/rendering/<ID>.yaml`）。规则 ID
   （GBT-C01 等）与渲染样式名属代码标识符，不随命名变更。
-- **输入优先 Word**：`corpus/golden/` 下按 docx → doc → pdf 顺序找输入；PDF 走
+- **分层与验证独立性（2026-09-12 起）**：`tools/` 只放薄壳入口——抽取
+  （`mineru_full_standard.py`，PDF → raw）、构建（`build_ssir.py`，raw 或 canonical →
+  canonical → SSIR → render.pdf；两个起点都能独立重跑）、验证（`verify_conversion.py`，
+  独立执行，构建流程默认不调用）；阶段实现集中在 `src/leleby_ssir/pipeline.py` 与 `pdf_compare.py`。
+- **输入优先 Word（暂时停用）**：Word（docx/doc）输入与 .docx 渲染产物已于 2026-09-12
+  暂时停用（docs/12 §3.47），当前只解析 `corpus/golden/` 下的 PDF；原规则为按 docx → doc → pdf
+  顺序找输入，恢复时按 docs/12 §3.47 接回。PDF 走
   MinerU（`--method auto` 带文本层质量预检 GEN-092，损坏自动切 OCR）。
 - **产物目录**：`out/mineru/<ID>/{00_source,01_extract,02_canonical,03_ssir,
   04_render,05_verify}` 为 gitignored 运行时产物；代码改动后重跑使其与代码一致，
@@ -78,8 +84,10 @@
   （helv 无中文字形 → 静默测垃圾数据）。
 - **验证命令**：`.venv/bin/python -m unittest discover`；
   `tools/verify_markdown_roundtrip.py --examples-dir corpus/golden/csm`；
-  `tools/mineru_full_standard.py <ID>`（快捷模式一次跑完）；
-  `ssir csm normalize/parse/roundtrip`、`ssir pdf render --docx-output`。
+  `tools/mineru_full_standard.py <ID>`（抽取 + 渲染，快捷模式不再自动跑回环）；
+  `tools/build_ssir.py <raw|canonical|ID>`（构建）；**回环验证是独立程序**：
+  `tools/verify_conversion.py <ID|文档根|canonical|ssir>`（含可选 PDF 对比）；
+  `ssir csm normalize/parse/roundtrip`、`ssir pdf render`（`--docx-output` 已暂时停用）。
 
 ---
 

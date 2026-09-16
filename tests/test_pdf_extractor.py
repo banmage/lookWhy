@@ -388,5 +388,53 @@ class FigureSourceSizeStampTests(unittest.TestCase):
         self.assertEqual(table["cellImageSizes"]["assets/images/img_t.png"], [100.0, 100.0])
 
 
+class FigureSourceSizeMapStampTests(unittest.TestCase):
+    """GEN-076 第二来源：无源 PDF 时用 middle.json 图块 bbox 映射打标
+
+    （raw 起点路径；资产名精确对应，不做宽高比/密度匹配，拿不到尺寸的图保持无印记）。
+    """
+
+    def setUp(self) -> None:
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+        ssir_dir = self.root / "doc" / "03_ssir"
+        ssir_dir.mkdir(parents=True)
+        self.ssir = ssir_dir / "doc.ssir.json"
+        self.ssir.write_text(json.dumps({
+            "metadata": {"common": {"title": "T"}, "standard": {"standardNumber": "GB/T 1—2026"}},
+            "figures": [
+                {"id": "f-001", "assetRef": "assets/images/ef71.jpg"},
+                {"id": "f-002", "assetRef": "assets/images/unknown.png"},
+            ],
+            "tables": [
+                {"id": "t-001", "rowCount": 1, "colCount": 1,
+                 "rows": [{"rowIndex": 0, "cells": [{"id": "c1", "rowIndex": 0, "colIndex": 0,
+                          "text": "![](assets/images/cell.png)"}]}]},
+            ],
+        }, ensure_ascii=False), encoding="utf-8")
+
+    def tearDown(self) -> None:
+        self.directory.cleanup()
+
+    def test_sizes_and_cell_images_come_from_the_map(self) -> None:
+        from mineru_full_standard import _stamp_figure_source_sizes_from_map
+        _stamp_figure_source_sizes_from_map(
+            self.ssir, {"ef71.jpg": (271.6, 361.4), "cell.png": (100.0, 100.0)})
+        data = json.loads(self.ssir.read_text(encoding="utf-8"))
+        by_ref = {fig["assetRef"].split("/")[-1]: fig for fig in data["figures"]}
+        self.assertEqual((by_ref["ef71.jpg"]["sourceWidth"], by_ref["ef71.jpg"]["sourceHeight"]),
+                         (271.6, 361.4))
+        # 映射里没有的图不猜尺寸（渲染端按默认尺寸）
+        self.assertNotIn("sourceWidth", by_ref["unknown.png"])
+        self.assertEqual(data["tables"][0]["cellImageSizes"]["assets/images/cell.png"], [100.0, 100.0])
+
+    def test_empty_map_is_a_no_op(self) -> None:
+        """空映射不改写 SSIR（保持无印记），避免写入无意义的空对象。"""
+        from mineru_full_standard import _stamp_figure_source_sizes_from_map
+        before = self.ssir.read_text(encoding="utf-8")
+        _stamp_figure_source_sizes_from_map(self.ssir, {})
+        self.assertEqual(self.ssir.read_text(encoding="utf-8"), before)
+
+
 if __name__ == "__main__":
     unittest.main()

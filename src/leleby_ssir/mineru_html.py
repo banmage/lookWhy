@@ -34,21 +34,21 @@ def html_table_to_csm(html: str, table_id: str, caption: str | None) -> str:
     规则对应: GBT-B08（题注形如"表X 题名"，编号必备）+ GEN-033（无编号且无题名不输出题注）
     + GBT-X02（合并单元格以展开网格 + ssir:table-merge 指令表达，保持列对齐）。
     """
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(_inline_equations_to_csm(html), "html.parser")
     rows: list[list[dict[str, Any]]] = []  # 每格: {text, colspan, rowspan}
     merges: list[dict[str, Any]] = []
-    pending_spans: dict[int, int] = {}     # col -> 后续行仍需覆盖的 rowspan 余量
-    for tr in soup.find_all("tr"):
+    occupied_until: dict[int, int] = {}    # col -> 被上方 rowspan 覆盖到的最后一个行号（含）
+    for row_index, tr in enumerate(soup.find_all("tr")):
         row: list[dict[str, Any]] = []
         col = 0
-        # 先补被上一行 rowspan 覆盖的空占位，保持列对齐（否则数据行整体左移错位）。
-        while pending_spans.get(col, 0) > 0:
-            row.append({"text": "", "colspan": 1, "rowspan": 1})
-            pending_spans[col] -= 1
-            if pending_spans[col] <= 0:
-                del pending_spans[col]
-            col += 1
         for cell in tr.find_all(["th", "td"], recursive=False):
+            # 被上方 rowspan 覆盖的列在 HTML 行里没有对应 <td>，且空位可能出现在行中
+            # **任何**位置（表10 寿命的「运行方式」列在第 2~5 行都由首行 rowspan="5"
+            # 覆盖）——因此每个单元格落位前都要按列号跳过被覆盖列、补空占位，否则其后
+            # 单元格整体左移、列错位（GBT-X02：展开网格必须保持列对齐）。
+            while occupied_until.get(col, -1) >= row_index:
+                row.append({"text": "", "colspan": 1, "rowspan": 1})
+                col += 1
             # 单元格内嵌图（GBT-X02 表中图）：MinerU 把表单元格里的 <img> 以
             # markdown 图片语法附在单元格文本后（如 表2 锋利度试验区域 的
             # 试验区域分割/插入角度列示意图），随文本一起流转 CSM/SSIR，
@@ -71,7 +71,8 @@ def html_table_to_csm(html: str, table_id: str, caption: str | None) -> str:
             for _ in range(colspan - 1):
                 row.append({"text": "", "colspan": 1, "rowspan": 1})
             if rowspan > 1:
-                pending_spans[col] = rowspan - 1
+                for covered in range(col, col + colspan):
+                    occupied_until[covered] = row_index + rowspan - 1
             col += colspan
         if row:
             rows.append(row)
@@ -184,12 +185,51 @@ def formula_assets_index(source: Path) -> dict[str, list[str]]:
     return result
 
 
+_PLACEHOLDER_IMAGE_ALT_RE = re.compile(r"^(?:image|img|picture|图片|图像)\d*$", re.IGNORECASE)
+# MinerU HTML 片段里的行内公式标记（内容为 LaTeX）；见 _inline_equations_to_csm（GEN-097）。
+_INLINE_EQ_RE = re.compile(r"<eq\b[^>]*>(.*?)</eq>", re.IGNORECASE | re.DOTALL)
+
+
+def _drop_placeholder_image_alt(line: str) -> str:
+    """把 MinerU 的占位替代文本清空：``![image](x)`` → ``![](x)``（GEN-096）。
+
+    规则对应: docs/07 §6.5（图片替代文本必须包含图号和图题——占位串不是题名）
+    + GBT-B09（图题注）。只处理整行图片语法且替代文本恰为通用占位串的情况：
+    真实题名（``![图 1 接线图](x)``、``![接线图](x)``）与页内其它文本一律不动。
+    """
+    match = re.match(r"^(\s*)!\[(.*?)\]\((.*)\)(\s*)$", line)
+    if not match:
+        return line
+    indent, alt, target, tail = match.groups()
+    if not _PLACEHOLDER_IMAGE_ALT_RE.match(alt.strip()):
+        return line
+    return f"{indent}![]({target}){tail}"
+
+
+def _inline_equations_to_csm(markdown: str) -> str:
+    """MinerU 的 ``<eq>…</eq>`` 行内公式标记 → CSM 行内公式 ``$…$``（GEN-097）。
+
+    ``<eq>`` 出现在 MinerU 的 HTML 片段里（表格单元格为主，如 表10 寿命的
+    ``<eq>\\frac{1}{2}</eq>连续堵转转矩``），内容是 LaTeX。原样保留时表解析会把标签
+    当普通文本剥掉、只留裸 LaTeX 源码 → 渲染端不识别、把 ``\\frac{1}{2}`` 印进 PDF。
+    统一转成 CSM 的行内公式定界形式（docs/07 §6.6），由既有行内公式通道处理；
+    已是 ``$…$`` 的内容不会被重复包装。空公式（``<eq></eq>``）删除。
+    """
+    def _replace(match: re.Match[str]) -> str:
+        latex = " ".join(match.group(1).split())
+        return f"${latex}$" if latex else ""
+
+    return _INLINE_EQ_RE.sub(_replace, markdown)
+
+
 def convert_mineru_markup(raw: str, part_prefix: str, formula_assets: dict[str, list[str]] | None = None, gbt_1_1_quirks: bool = False) -> str:
     """Adapt MinerU HTML tables and relative image paths without altering prose.
 
     规则对应: GEN-004（资产相对路径重写）、GEN-032/033（表格题注拆分与孤立题注抑制）、
-    GBT-X06（公式资产绑定）。
+    GBT-X06（公式资产绑定）、GEN-096（占位替代文本 image/img/… 不是图题名，清空）、
+    GEN-097（HTML 行内公式 `<eq>` → CSM `$…$`；GBT-X02 展开网格保持列对齐）。
     """
+    raw = _inline_equations_to_csm(raw)
     table_index = 0
     output: list[str] = []
     position = 0
@@ -260,7 +300,11 @@ def convert_mineru_markup(raw: str, part_prefix: str, formula_assets: dict[str, 
             cleaned.extend(lines[index + 1:caption_at])
             index = caption_at + 1
         else:
-            cleaned.append(lines[index])
+            # GEN-096：MinerU（云端 markdown）对没有题注的插图一律写占位替代文本
+            # （`![image](…)`/`![image1](…)`）。按 docs/07 §6.5，图片替代文本必须
+            # 包含图号和图题——占位串不是题名，若原样进 CSM 渲染端会印出「图 image」。
+            # 此处只把它清成空替代文本（图片块与资产引用保持不变），真实题名不动。
+            cleaned.append(_drop_placeholder_image_alt(lines[index]))
             index += 1
     converted = "\n".join(cleaned)
     if gbt_1_1_quirks:

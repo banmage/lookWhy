@@ -979,6 +979,10 @@
         "altText": {
           "type": "string"
         },
+        "unit": {
+          "type": "string",
+          "description": "图单位陈述（如“单位为毫米”，GEN-032）：由 canonical 单位行折进图节点，渲染端右对齐画在图上方并与图同组（分页时不与图分离）。"
+        },
         "sourceAnchors": {
           "type": "array",
           "items": {

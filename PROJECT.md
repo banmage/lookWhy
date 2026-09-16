@@ -87,14 +87,19 @@ lookWhy/
 │   ├── report.py               # 转换报告（SHA-256、issue 列表、修复动作）
 │   ├── compliance.py           # 三层合规验证（GEN→GBT→P10），写 findings
 │   ├── standard_name.py        # ★ 标准名称解析：类型（GBT-N01）与主对象（GBT-N02）
+│   ├── mineru_middle.py        # MinerU middle.json → CSM raw Markdown（raw 起点工具用）
+│   ├── pipeline.py             # ★ 构建/验证阶段库：normalize→canonical→SSIR→印记→render→manifest
+│   ├── pdf_compare.py          # 源 PDF 与渲染 PDF 的版面/文本量对比（验证程序用）
 │   ├── pdf_extractor.py        # PDF→CSM：MinerU 首选、PyMuPDF 文本层回退
 │   ├── pdf_renderer.py         # SSIR → 标准风格 PDF（reportlab，封面/目次/正文/附录）
 │   └── ssir.schema.json        # SSIR JSON Schema（元数据键必须在此登记）
 ├── tools/
-│   ├── mineru_full_standard.py # ★ PDF 全流程工具（分块抽取→合并→normalize→parse→roundtrip→render）
+│   ├── mineru_full_standard.py # ★ PDF 抽取工具（分块抽取→合并；--stage all 时续 normalize→parse→render）
 │   ├── parse_standard_names.py # 批量解析标准名称 CSV → 类型/主对象/场合 TSV
 │   │   ├── verify_markdown_roundtrip.py  # 批量 roundtrip 回归（corpus/golden/csm）
-│   │   ├── reprocess_canonical.py  # ★ canonical 半程重跑：改 canonical → parse/roundtrip/render 刷新
+│   │   ├── reprocess_canonical.py  # canonical 半程重跑（已被 build_ssir.py 的同款入口覆盖）
+│   │   ├── build_ssir.py          # ★ 构建入口：raw(json/md) 或 canonical → canonical → SSIR → render（验证独立）
+│   │   ├── verify_conversion.py    # ★ 独立验证：canonical ↔ SSIR 往返回环（+ 可选 PDF 对比），只读产物
 │   │   └── extract_schema.py       # schema 工具
 ├── config/
 │   ├── rendering/GB_T_1.1-2020.yaml   # 渲染 profile：字体/字号/边距/emblems 徽标映射
@@ -163,13 +168,39 @@ lookWhy/
 - **半程重跑**（手工编辑 canonical 后刷新下游，**不重跑 normalize、不覆盖 canonical**）：
   `.venv/bin/python tools/reprocess_canonical.py GB_T_1.1-2020`——以
   `02_canonical/GB_T_1.1-2020.canonical.md` 为输入跑 parse → roundtrip → render
-  （PDF+docx）→ compare → manifest；共享 mineru_full_standard 的阶段路径/版面印记/对比逻辑。
+  （仅 PDF）→ compare → manifest；共享 src/leleby_ssir/pipeline.py 的阶段路径/版面印记/对比逻辑。
 - **自动半程续跑**：`mineru_full_standard.py` 检测到 `02_canonical/<ID>.canonical.md`
   已存在时，同一快捷命令自动跳过 OCR/PDF 抽取、合并与 normalize，直接从 canonical
   续跑（与 reprocess_canonical.py 功能等同，canonical 不被覆盖）；
   显式 `--stage extract/merge/finalize` 仍按原语义执行。
+- **raw 起点（跳过抽取）**：完整步骤（含「改 canonical → 只重渲下游」的走法 B、
+产物清单与验收清单）见 README §4『全流程详解：raw(JSON) → canonical →（可选人工修改）→ PDF』。
+- **raw 起点（跳过抽取）**：抽取稿已存在时用
+  `.venv/bin/python tools/build_ssir.py <raw.md|middle.json 或 裸ID> [--source-pdf <pdf>]`——
+  从 raw 跑 normalize → canonical → SSIR → render（PDF）→ manifest（验证另用 verify_conversion.py）→
+  manifest，产物布局与全流程工具完全一致（复用同一批阶段路径/印记/尾部函数）。
+  裸 raw（无 YAML front matter，如 <ID>/01_extract 之外的人工稿、云端 MinerU 结果）
+  会先做 MinerU 标记适配（`convert_mineru_markup`：HTML 表格 → `ssir:table` 指令、HTML 行内公式
+  `<eq>…</eq>` → `$…$`、资产
+  路径与图题注归一、占位替代文本 `![image](…)` 清空、公式资产绑定——与 merge 同一套、
+  幂等）、封面/横幅与附录标题归位，再从封面区恢复 front matter 字段并推导标题（取不到留空，
+  不猜——AGENTS.md §0.3）；输入为 MinerU `middle.json` 时先经 `src/leleby_ssir/mineru_middle.py`
+  翻成同形 raw（标题层级/段落 CJK 拼接/表格 HTML/图片与公式；首页页眉页脚的 ICS/CCS 与发布机构
+  另行恢复为 front matter 字段）；raw 里的远程图片（cdn-mineru URL）下载到 `assets/images/`
+  并改写为相对链接，失败保持原链接并记入 provenance 的 `imageFailures`。已存在
+  `02_canonical/<ID>.canonical.md` 时默认改为从 canonical 续跑下游（不覆盖人工基线，
+  AGENTS.md §2），需重建才用 `--overwrite-canonical`；`--source-pdf` 可选（缺省查
+  `corpus/golden/<ID>.pdf`）：图源尺寸（GEN-098）在有源 PDF 时取源 PDF 图元矩形，源 PDF
+  不在场时（如只给 `middle.json`）取 MinerU 图块 bbox（同坐标系，实测偏差 0.2%~5%）——
+  因此 raw 起点不必依赖 `corpus/golden/` 的 PDF 即可还原图尺寸；仍只由源 PDF 提供的是
+  条文脚注回收（CSM-OCR-014）、示例框样式（GBT-B11）与 PDF 渲染对比统计。
 
-### 5.3 关键阶段函数（tools/mineru_full_standard.py，约 1240 行）
+### 5.3 关键阶段函数（工具层薄壳 + `src/leleby_ssir/pipeline.py` 2254 行阶段库）
+
+下游构建/验证阶段（`finalize`、`_post_parse_verify_render`、`_run_from_existing_canonical`、版面印记、
+脚注/表注回收、`_stage_paths`/`_write_manifest`）自 2026-09-12 起位于 `src/leleby_ssir/pipeline.py`，
+抽取工具只保留扫描/合并（`extract`/`merge`/hybrid/docx 导入已停用）并 re-export 旧名以免破坏既有 import。
+表内列出的是抽取侧函数：
 | 函数 | 职责 |
 |---|---|
 | `standard_filename` / `standard_number_from_text` | 编号识别 + 命名规范化（**位于 src/leleby_ssir/naming.py**，Q/、SJ/T 等前缀） |
@@ -180,7 +211,7 @@ lookWhy/
 | `_classification_codes` | content_list 回收 ICS/CCS（MinerU 丢成页眉） |
 | `merge` / `finalize` / `compare` | 合并→normalize→parse→渲染对比 |
 
-## 6. 渲染器要点（pdf_renderer.py，1113 行）
+## 6. 渲染器要点（pdf_renderer.py，3377 行）
 
 - **封面**：`_cover_story` 按 metadata 绘制（ICS/CCS、横幅、编号、标题、英文名、
   日期、发布机构）；缺失字段以 `××` 占位并记 warning（GBT-C01）；横幅按标准号
@@ -189,8 +220,14 @@ lookWhy/
   优先）→ `config/emblems/<file>`，缺文件回退 default，再缺不绘制；**不再使用**
   SSIR 里的 coverBadge 字段（兼容保留）。
 - **正文**：documentBlock 无编号→front 样式；section 按深度→section/clause/
-  subclause；`_clause_leading_number` 检测无标题条款首行编号→`body-flush` 顶格
-  样式（不用 justify——reportlab justify 会撑大短行空格）。
+  subclause；`_clause_leading_number(text, enclosing)` 检测无标题条款首行编号→
+  `body-flush` 顶格样式（不用 justify——reportlab justify 会撑大短行空格）。
+  谓词默认只认「编号后跟汉字/括号/引号」；**编号后接拉丁字母**的裸条
+  （`4.2 SI 是采用如下常量的单位制：`）与「数值 + 单位」句（`3.2 kW 的电机…`）
+  完全同形，因此这一类必须由**所在节点的条号**确认（`enclosing`，渲染时取
+  `_heading_parts(node)[0]`）：编号是该节点的**直接子条**才顶格，否则退回正文段；
+  顶格那一类的 1 汉字字隙由 `_clause_head_gap` 在调用方补写（`_markup` 的共享
+  正则不含拉丁字母，见 docs/12 §3.59）。
 - **表格**：`_append_table` 处理 rowspan/colspan；OCR 丢失整行注 colspan 时
   单长文本单元格跨整行（GEN-080）；题注"表 N"无题名也合法（GBT-X02）。
 - **内联公式**：`_latex_to_text` 把 `$K_{...}$` 展平成可读文本，CSM/SSIR 保留
@@ -282,10 +319,76 @@ lookWhy/
     个汉字位，而白字占位符的**字号就是字隙宽**（26pt 的行框会把该行撑高、与相邻行框
     重叠）。docx 用 `_list_indent`（缩进随层次变，制表位 = 文字列），级别判定与 PDF
     共用 `_list_is_sub_level`。
+16. **表格列宽有下界，超宽表横排——列宽分配不能产出「容不下一个字」的列**（GEN-103）：
+    `_table_column_widths` 把版心按需求比例分完，超版心时余量按数据需求摊给各列；**没有表头兜底
+    的列**（表头 colspan 没盖到，如 GB/T 5171.1-2014 表9 26 列里的第 26 列）会分到 ≈0.6pt，
+    而 reportlab 的单元格可用宽 = 列宽 − 左右边距(4+4) → 负值直接 `ValueError` 中止**整篇**渲染
+    （`error: SSIR PDF renderer failed`、退出码 2、`04_render/` 为空），连别的页也一起没了。
+    现在每列至少「2×边距 + 一个汉字宽」，不足从最宽列扣减（Σ 恒＝版心）。但**列宽修正并不能让
+    超宽表排下**：26 列挤进 455pt 后每行一字折行、行高 150~200pt，跨行合并（rowspan）锁定的行组
+    切分后仍高于一页 → `LayoutError`。这类表按 GEN-103 整表旋转 90°（表头落订口一侧、题注随表、
+    可用宽＝版心高）：判据是「Σ列需求 > 容器宽 且 ≤ 版心高 且竖排 `split()` 后仍有片段高于一页」，
+    第三条保证普通「要折行但能分页」的长表不被横排。手改列宽/字号前先看这条。
+17. **「编号 + 拉丁字母」的裸条只能靠文档结构确认，不要把 `_CLAUSE_AFTER` 放宽到含拉丁字母**
+    （GBT-B02；docs/12 §3.59）：`_clause_leading_number()` 原先只认「编号后跟汉字/括号/引号」的行
+    → `4.2 SI 是采用如下常量的单位制：`、`8.2.5 SI词头符号…` 这类裸条被当正文段空两个汉字起排
+    （实测左边界 106.37 vs 顶格 85.37），编号后的 1 汉字字隙也没补、反被 GBT-B12 的数值-单位规则
+    压成 2.62pt。判据必须是**形状之外**的证据：`enclosing`（所在节点条号，`_node_clause_number(node)`）
+    ——编号是它的直接子条才顶格，所以这个参数要从节点渲染路径一路传到 `_append_content`
+    （正文/附录、`_append_nodes`、`ssir:box` 显式路径 `_append_marked_node`、`make_story` 题注内容
+    四处，漏一处就静默退回旧行为）。**别把拉丁字母直接加进 `_CLAUSE_AFTER`**：它有负例夹具
+    （`"3.2 kW 的电机应可靠工作。"` 必须判为正文段），放宽后每个「数值 + 单位」句都会顶格。字隙由
+    `_clause_head_gap()` 在调用方写（`_markup()` 的共享正则**不动** → 其余文本零漂移）。验收口径：
+    同一 SSIR 新旧代码 A/B 只准那 4 行左边界变化（`out/probe-3100/ab_acceptance.py`）+ 跨语料判定
+    审计（2493 段中仅 4 段变化）；全量单测 **479 绿**。
+18. **术语行判据只能有一份：`parser.term_entry_pair`（CSM-OCR-003/007；docs/12 §3.60）**。术语行的字符类
+    曾在 parser（间隙归一 `restore_term_entry_gap`、条目形态归一 `_repair_term_entry_headings`）与
+    builder（`term`/`englishTerm` 抽取）**各写一份**，宽窄不一：术语本体限 `[\u4e00-\u9fff]{1,24}`、
+    英文对应词类不含逗号 → 「SI词头　SI prefix」（术语带拉丁缩写）与「国际单位制　International
+    System of Units, SI」（英文含逗号）在**两种抽取形态**下都抽不出 `term`/`englishTerm`，目次标签
+    （`_toc_nodes` 用 `node["term"]` 合成，2 段条目编号不走 `_term_entry_text` 的两行版式判据）只剩
+    条目编号（GB_3100-2026 3.8/3.13）。新增判据是**单源**的，改字符类时三处一起变；两条守卫不能
+    省：术语本体须含 **≥1 个汉字**（纯拉丁行是正文或英文标题换行，如 `structure and drafting of ISO
+    and IEC documents,NEQ)`）、英文段**不得含汉字**（定义段不是术语行）。`restore_term_entry_gap` 的
+    **无间隙形态**必须留在**纯汉字术语**上：放宽后的术语类含拉丁字母，空间隔会让贪婪匹配把英文词尾
+    吞进术语（`标准化文件standardizing document` → 术语 `标准化文件standardizing`）。验收口径：同一
+    canonical 新旧代码 A/B 只准目次那两行变化（文本行 1030/1030、页数 25/25、警告集相同）+ 跨语料
+    13 份 canonical 判定审计（11 份逐字节不变）；全量单测 **487 绿**。
+19. **强调标记（`**粗体**`/`*斜体*`/`***粗斜体***`）有一套自己的坑（GEN-108；docs/12 §3.61）**：
+    ① **判据不能按邻接字符**。旧实现把「两侧都不是 `[A-Za-z0-9]` 的星号簇」当字面星号
+    （`(?<![A-Za-z0-9])\*+(?![A-Za-z0-9])`），而**汉字不在该字符类里** → `***封面***`、`*目次*`、
+    `**范围**` 这类汉字内容的强调标记**成对出现也被吞成字面星号**（拉丁内容的 `**bold**` 一直正常，
+    所以这个缺口只表现为「汉字加粗/斜体无效」）。现按**定界符簇配对**判定：簇长 1/2/3 = 斜体/粗体/
+    粗斜体，「可开」= 其后首个非空白字符存在且不是 `*`、「可闭」= 其前首个非空白字符存在且不是 `*`，
+    同长度簇就近配对，**未配对簇一律按字面星号输出**（负例：GB/T 1.1-2020 9.12.1 的「即 * 、 ** 、 ***」、
+    9.7.3/9.8.4 的「共*页」；字面星号需确定时写 `\*`）。改这套判据前先看负例夹具。
+    ② **reportlab 的 `<b>`/`<i>` 只从已注册字族取成员**——字体没登记字族时两个标签被**静默忽略**
+    （同陷阱族里的「cannot fake bold」）。`render_pdf` 必须 `registerFontFamily` 才能让标签生效。
+    ③ **中文「斜体」是机斜，必须是真实字体资产**，且 `tools/prepare_oblique_font.py` 生成的机斜字体
+    **PostScript 名必须与直立体不同**：reportlab 在 `pdfmetrics.registerFont` 里按 `face.name`
+    （name 表 ID 6）去重，同名时后注册的机斜字体被**丢弃并复用直立体对象**——字形已机斜、PDF 里
+    却仍是直立体字体名、`<i>` 依旧静默无效（实测踩到；改 name 表 ID 1/2/4/6/16/17 即可）。字形缺失时
+    渲染报告会记 `[GEN-108] 强调斜体字形文件缺失`，看到这条告警说明 profile 的 `fonts.italic-file`
+    或 `fonts.bold-italic-file` 没生成（先跑 `tools/prepare_oblique_font.py`）。
+    验收口径：同一 SSIR 旧/新 A/B 只准强调行变化（20001.10 实测 23/619 行、页数 22/22、x/y 不变；
+    1.1-2020 0/2677 行）；**判据级审计**用 `inspect.getsource(_markup)` 把改动在进程内退回，别用
+    `git show HEAD:`——工作区常带其它会话的未提交改动，HEAD 不等于「当前树减去我的改动」。
+
+20. **块级公式是 display math，分数别写成行内样式（GEN-109；docs/12 §3.62）**：canonical 的
+    `ssir:formula`（`$$…$$`）在源文里按**显示样式**排版（分数分子分母与基准字母同大），而 MathText 的
+    `$…$` 等价 LaTeX 的**行内 text style**——`\frac` 的分子分母被降成脚标号、`\sqrt{…}` 里的分数被
+    压得更扁，公式因此"看起来偏小"（1.1-2020 9.9.3.1 示例1 实测分数堆高 12.9pt，源文 17.0pt）。
+    MathText **不支持** `\displaystyle`，只能靠源码改写：`_formula_image` 生成图前调
+    `_display_style_latex()` 把**最外层**的 `\frac` 改写为 `\dfrac`。改写规则的两条易错点：
+    ① **花括号只作分组、不改变样式**（TeX），所以 `\sqrt{\frac{a}{b}}` 里的分数**必须**提升，别按
+    "括号深度 0" 判断；样式降级只由**分数的参数**与**上/下标**触发；② 修的是**样式不是字号**——
+    em 仍等于正文字号（GEN-105 的换算与 0.3 系数不动），长高只来自分数恢复字号；想放大字号是另一个
+    话题（先看 docs/12 §3.56 的墨迹口径证据）。另有缓存坑：生成图文件名取表达式的哈希，改动必须在
+    提升**之后**取哈希，否则旧的行内样式图一直命中缓存、修复对已渲染过的文档不生效。
 
 ## 9. 测试与验证惯例
 
-- 改完代码跑 `./.venv/bin/python -m unittest discover`（全量单测，当前 286 例）。
+- 改完代码跑 `./.venv/bin/python -m unittest discover`（全量单测，当前 506 例）。
 - 全流程验证用金标准 PDF：`corpus/golden/Q_003.pdf`（企业标准 6 页，快）、
   `JB_T_14425-2023.pdf`（OCR 型 21 页）、`GB_T_25141-2022.pdf`（国标 18 页）。
 - 验证清单：roundtrip passed、渲染 warnings 数量合理（企业标准 ICS/CCS 缺失

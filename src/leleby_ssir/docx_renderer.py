@@ -1,5 +1,7 @@
 """SSIR JSON → docx（最终渲染 Word 产物，doc_1）。
 
+【暂时停用（2026-09-12）】本模块的接线已从流水线、CLI 与文档中移除：当前既不接受 .docx 作为源文档，也不产出 .docx 渲染产物。模块本身保留（未删除、单测仍在），恢复方式是重新接回 `ssir pdf render --docx-output` 与 Word 输入分支——见 docs/12 §3.46。
+
 与 ``render.pdf`` 同源（同一个 SSIR document），保证**技术内容等价**：
 封面信息（标准号/名称/英文名/机构/日期/代替关系）、目次、正文全部元素
 （标题层级、段落、注、列项、表格含合并单元格与重复表头、图、公式、
@@ -1148,6 +1150,11 @@ class _DocxBuilder:
         caption = str(figure.get("caption") or "")
         paragraph = self._container_paragraph()
         paragraph.alignment = self.docx["ALIGN"].CENTER
+        # 单位陈述行（GEN-032）：与表同型右对齐画在图上方，与图、图题同属一个示例/正文组。
+        unit = str(figure.get("unit") or "").strip()
+        if unit:
+            unit_paragraph = self._container_paragraph(style=STYLE_UNIT)
+            _run_fonts(unit_paragraph, f"单位为{unit}", self.docx, size_pt=9)
         image_path = _resolve_asset(self.asset_dir, asset) if asset else Path("")
         if asset and image_path.is_file():
             _add_picture(paragraph, image_path, self.docx)

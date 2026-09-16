@@ -139,19 +139,64 @@ def restore_standard_number_spacing(text: str) -> str:
     return _STANDARD_NUMBER_GAP_RE.sub(lambda m: f"{m.group(1)} ", text)
 
 
-# 术语条目行（CSM-OCR-003）：术语「中文」与英文对应词之间空一个汉字（10.3.5）。
-# 接受两种形态——裸术语行「标准化文件 standardizing document」与带条目编号的术语
-# 条目标题行「3.1.2 标准 standard」（条目编号在 SSIR 里是独立字段，术语行只承载
-# 术语与英文对应词）。英文对应词段沿用原判据（以拉丁字母开头、其余不限），中文
-# 术语限定 1~24 个汉字；行内出现中文标点即不认（定义/正文不是术语行）。
+# 术语条目行（CSM-OCR-003、CSM-OCR-007）：术语行 = 术语 + 间隔 + 英文对应词，中英文之间
+# 空一个汉字（GB/T 1.1-2020 8.7.3.1、10.3.5）。接受两种载体——裸术语行「标准化文件
+# standardizing document」与带条目编号的术语条目标题行「3.1.2 标准 standard」（条目编号
+# 在 SSIR 里是独立字段，术语行只承载术语与英文对应词）。
+#
+# **字符类只在本文件写一份**：parser 的间隙归一（restore_term_entry_gap）、条目形态归一
+# （_repair_term_entry_headings）与 builder 的 term/englishTerm 抽取（term_entry_pair）共用
+# 同一判据。三处各写一份曾把字符类写宽窄不一：术语本体被限成**纯汉字串**、英文对应词不含
+# 逗号，于是「SI词头　SI prefix」（术语带拉丁缩写）与「国际单位制　International System of
+# Units, SI」（英文对应词带逗号）在两种形态下都识别不出（GB_3100-2026 3.13/3.8：SSIR 缺
+# term/englishTerm，目次行只剩条目编号）。
+#
+# 判据的两条守卫：术语本体**至少含一个汉字**（纯拉丁行是正文或英文标题的换行，不是术语行，
+# 如 GB_T_1.1-2020 前置部分 "structure and drafting of ISO and IEC documents,NEQ)"）；
+# 英文对应词段不得含汉字（定义段不是术语行）。行内出现中文标点即不认。
+TERM_ENTRY_TERM_PATTERN = r"[\u4e00-\u9fffA-Za-z0-9（）()·\-—]{1,24}"
+TERM_ENTRY_ENGLISH_PATTERN = r"[A-Za-z][A-Za-z0-9 &()（）·.,\-—/:;'’]*"
+_TERM_ENTRY_HAN_RE = re.compile(r"[\u4e00-\u9fff]")
+_TERM_LINE_PUNCT_RE = re.compile(r"[，。；：？！、”“‘’《》【】（）…]")
+
+# 术语行本体（不含行首条目编号）。
+TERM_ENTRY_LINE_RE = re.compile(
+    rf"^(?P<term>{TERM_ENTRY_TERM_PATTERN})"
+    rf"[ \u3000\u200b]+(?P<english>{TERM_ENTRY_ENGLISH_PATTERN})$"
+)
+
+
+def term_entry_pair(text: str) -> tuple[str, str] | None:
+    """把术语行拆成 (术语, 英文对应词)；不是术语行时返回 None。
+
+    规则对应: CSM-OCR-003、CSM-OCR-007、GB/T 1.1-2020 8.7.3.1/10.3.5。parser 与 builder
+    共用本判据（单源），使得「术语行被识别为条目」与「term/englishTerm 被抽出来」同步，
+    不会各自随字符类漂移。
+    """
+    match = TERM_ENTRY_LINE_RE.match(text.strip())
+    if not match or not _TERM_ENTRY_HAN_RE.search(match.group("term")):
+        return None
+    return match.group("term"), match.group("english")
+
+
 _TERM_ENTRY_GAP_RE = re.compile(
+    r"^(?P<lead>\s*)"
+    r"(?:(?P<number>\d+(?:\.\d+)*)(?P<number_gap>[ \u3000]+))?"
+    rf"(?P<term>{TERM_ENTRY_TERM_PATTERN})"
+    r"(?P<gap>[ \u3000\u200b]+)"
+    rf"(?P<english>{TERM_ENTRY_ENGLISH_PATTERN})$"
+)
+# 纯汉字术语形态（旧判据，术语与英文对应词之间可无间隔）：**先于**上面放宽判据试匹配。
+# 放宽后的术语类含拉丁字母，先按「间隔必须存在」切分时 "标准化文件standardizing document"
+# 只有一个空格、只能切成 术语="标准化文件standardizing" + 英文="document"（把英文词尾吞进
+# 术语）；纯汉字术语类没有这个歧义。两形态输出同为「术语 + U+3000 + 英文对应词」。
+_TERM_ENTRY_GAP_HAN_ONLY_RE = re.compile(
     r"^(?P<lead>\s*)"
     r"(?:(?P<number>\d+(?:\.\d+)*)(?P<number_gap>[ \u3000]+))?"
     r"(?P<term>[\u4e00-\u9fff]{1,24})"
     r"(?P<gap>[ \u3000\u200b]*)"
     r"(?P<english>[A-Za-z].*)$"
 )
-_TERM_LINE_PUNCT_RE = re.compile(r"[，。；：？！、”“‘’《》【】（）…]")
 
 
 def restore_term_entry_gap(line: str) -> str:
@@ -159,7 +204,7 @@ def restore_term_entry_gap(line: str) -> str:
 
     规则对应: CSM-OCR-003、GB/T 1.1-2020 8.7.3.1/10.3.5（英文对应词与术语之间空
     一个汉字）。行首空白、条目编号与术语之间原有的空白、行尾换行原样保留，只重写
-    中英文间隙；不是术语行（含中文标点、无英文对应词、汉字串超长）时原样返回。
+    中英文间隙；不是术语行（含中文标点、无英文对应词、术语整行为纯拉丁）时原样返回。
     是否属于「术语和定义」要素由调用方判定（parser 用 in_terms 跟踪、回放工具用
     行级章跟踪）。
     """
@@ -167,7 +212,11 @@ def restore_term_entry_gap(line: str) -> str:
         return line
     body = line.rstrip("\r\n")
     ending = line[len(body):]
-    match = _TERM_ENTRY_GAP_RE.match(body)
+    match = _TERM_ENTRY_GAP_HAN_ONLY_RE.match(body)
+    if not match:
+        match = _TERM_ENTRY_GAP_RE.match(body)
+        if match and not _TERM_ENTRY_HAN_RE.search(match.group("term")):
+            match = None
     if not match:
         return line
     number = match.group("number") or ""
@@ -775,6 +824,8 @@ class CSMParser:
         pending: dict[str, Directive] = {}
         pending_table_caption: tuple[str, str] | None = None
         pending_table_unit: str | None = None
+        # 图/表单位陈述行的挂起态（GEN-032）：单位行折进紧随的图/表节点，见 docs/12 §3.54。
+        pending_figure_unit: str | None = None
         directive_ids: set[str] = set()
         last_table: Block | None = None
         box_open_line: int | None = None  # ssir:box 配对状态（未闭合开标记的行号）
@@ -1120,9 +1171,10 @@ class CSMParser:
                         end_line=line_no(i),
                         text=image.group(1),
                         directive=pending.pop("figure", None),
-                        data={"asset_ref": image.group(2)},
+                        data={"asset_ref": image.group(2), "unit": pending_figure_unit},
                     )
                 )
+                pending_figure_unit = None
                 i += 1
                 continue
 
@@ -1261,19 +1313,34 @@ class CSMParser:
                     i += 1
                     continue
 
-            # "单位为毫米" 等单位行（GEN-032：右对齐置于表格上方紧贴表框）：
-            # 独立成段且后随（可跨空行）ssir:table directive 时折进 unit 属性，
-            # 否则它会渲染成题注上方的正文段落（位置错误）。
+            # "单位为毫米" 等单位行（GEN-032：右对齐置于图/表上方紧贴框线）：独立成段
+            # 且后随（可跨空行，可隔一个 ssir:figure 指令行）图/表时折进该图/表的
+            # unit —— 否则它渲染成题注上方的独立段落，分页时会被留在前页末（满页的
+            # 图另起一面时，"单位为毫米" 本应是新页第一行，见 docs/12 §3.54）。
             unit_line = TABLE_UNIT_LINE_RE.match(line.strip())
             if unit_line:
                 lookahead = i + 1
                 while lookahead < len(lines) and not lines[lookahead].strip():
                     lookahead += 1
                 next_line = lines[lookahead].strip() if lookahead < len(lines) else ""
+                if next_line.startswith("<!-- ssir:figure "):
+                    # 指令形态的图（`ssir:figure` 指令行 + 图片行）：单位行仍写在指令之前。
+                    lookahead += 1
+                    while lookahead < len(lines) and not lines[lookahead].strip():
+                        lookahead += 1
+                    next_line = lines[lookahead].strip() if lookahead < len(lines) else ""
                 if next_line.startswith("<!-- ssir:table "):
                     pending_table_unit = unit_line.group(1)
                     warnings.append(
                         f"line {line_no(i)}: table unit line was folded into the table "
+                        f"(unit={unit_line.group(1)!r})."
+                    )
+                    i += 1
+                    continue
+                if IMAGE_RE.match(next_line):
+                    pending_figure_unit = unit_line.group(1)
+                    warnings.append(
+                        f"line {line_no(i)}: figure unit line was folded into the figure "
                         f"(unit={unit_line.group(1)!r})."
                     )
                     i += 1
@@ -1882,13 +1949,9 @@ class CSMParser:
         """
         pure_number = re.compile(r"^(\d+(?:\.\d+){2,})$")
         bare_number = re.compile(r"^(\d+(?:\.\d+)*)$")
-        # 术语行标题：中文（可含括注/连接号）+ 间隙（全角/半角空格）+ 英文对应词。
-        # 刻意要求英文部分以拉丁字母开头，避免把「概述」「示例」等无编号标题误并。
-        term_title = re.compile(
-            r"^([\u4e00-\u9fffA-Za-z0-9（）()·、,，；;：:/／+\-]{1,60})"
-            r"[\u3000 ]{1,4}"
-            r"([A-Za-z][A-Za-z0-9 &/（）()\-.,，。]{1,90})$"
-        )
+        # 术语行判据（term_entry_pair，与 CSM-OCR-003 间隙归一、builder 的 term/englishTerm
+        # 抽取同一份字符类）：刻意要求英文部分以拉丁字母开头且不含汉字，避免把「概述」
+        # 「示例」等无编号标题、定义段误并。
         term_gap = "\u3000"
         chapter_re = re.compile(r"^\d+\s+\S")
         # 「术语和定义」要素内的块下标（供段落形态判据用；与 _repair_text_spacing
@@ -1921,9 +1984,9 @@ class CSMParser:
                 promote = number_match is not None
             if number_match:
                 second_text = second.text.strip()
-                title_match = term_title.match(second_text) if not pure_number.match(second_text) else None
-                if title_match:
-                    merged = f"{number_match.group(1)} {title_match.group(1)}{term_gap}{title_match.group(2)}"
+                pair = term_entry_pair(second_text) if not pure_number.match(second_text) else None
+                if pair:
+                    merged = f"{number_match.group(1)} {pair[0]}{term_gap}{pair[1]}"
                     merges.append((i, merged, promote))
                     i += 2
                     continue

@@ -331,6 +331,25 @@ def _inline_equation_block(formula: str, text: str, bbox: list[float]) -> dict:
     }
 
 
+def _latex_equation_block(latex: str, bbox: list[float]) -> dict:
+    """云端路线的公式块：只有 LaTeX，没有裁剪图资产（image_path）。"""
+    return {
+        "type": "interline_equation",
+        "bbox": bbox,
+        "lines": [{"bbox": bbox, "spans": [{"bbox": bbox, "type": "interline_equation", "content": latex}]}],
+    }
+
+
+def _latex_columns_ssir() -> dict:
+    """公式节点只有 latex（无 assetRef）的并列夹具——云端路线形态。"""
+    data = _columns_ssir()
+    data["formulas"] = [
+        {"id": "ssir:T/formula/l", "latex": r"v = 3.6 \times \frac{l}{t}"},
+        {"id": "ssir:T/formula/r", "latex": r"\rho = \frac{m}{V}"},
+    ]
+    return data
+
+
 def _duplicate_column_ssir() -> dict:
     """示例5 型：两列各有重复「式中：」与同形变量解释行（含行内公式）。"""
     def paragraph(identifier: str, order: int, text: str) -> dict:
@@ -502,6 +521,115 @@ class GeometryStampTests(unittest.TestCase):
         contents = stamped["structuralRoot"]["children"][0]["contentElements"]
         self.assertFalse(any(c.get("sideBySideGroup") for c in contents))
 
+    def test_whole_document_middle_json_is_a_geometry_source(self) -> None:
+        """raw 起点（云端抽取产物）用整份 middle.json 作几何来源，不依赖 parts/ 分片目录。"""
+        pages = [{
+            "page_idx": 36,  # 0 基绝对页号：第 37 页
+            "preproc_blocks": [
+                _text_block("正确：", [78, 457, 105, 469]),
+                _equation_block("left.jpg", [159, 473, 192, 493]),
+                _text_block("不正确：", [308, 457, 344, 469]),
+                _equation_block("right.jpg", [380, 471, 434, 495]),
+            ],
+        }]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            middle = root / "std_middle.json"
+            _write_middle(middle, pages)
+            ssir_path = root / "t.ssir.json"
+            ssir_path.write_text(json.dumps(_columns_ssir(), ensure_ascii=False), encoding="utf-8")
+            # 没有 parts/ 目录，只有整份 middle.json
+            mfs._stamp_side_by_side_layout(ssir_path, root / "parts", middle_json=middle)
+            stamped = json.loads(ssir_path.read_text(encoding="utf-8"))
+        contents = stamped["structuralRoot"]["children"][0]["contentElements"]
+        self.assertEqual({c.get("sideBySideGroup") for c in contents}, {"p037-c00"})
+
+    def test_no_geometry_source_is_a_no_op(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ssir_path = root / "t.ssir.json"
+            ssir_path.write_text(json.dumps(_columns_ssir(), ensure_ascii=False), encoding="utf-8")
+            mfs._stamp_side_by_side_layout(ssir_path, root / "parts")
+            stamped = json.loads(ssir_path.read_text(encoding="utf-8"))
+        contents = stamped["structuralRoot"]["children"][0]["contentElements"]
+        self.assertFalse(any(c.get("sideBySideGroup") for c in contents))
+
+    def test_latex_only_geometry_matches_latex_only_formulas(self) -> None:
+        """云端路线：几何与 SSIR 公式都只有 LaTeX（没有裁剪图资产）时仍能成组。"""
+        pages = [{
+            "page_idx": 36,
+            "preproc_blocks": [
+                _text_block("正确：", [78, 457, 105, 469]),
+                _latex_equation_block(r"v = 3.6 \times \frac{l}{t}", [159, 473, 192, 493]),
+                _text_block("不正确：", [308, 457, 344, 469]),
+                _latex_equation_block(r"\rho = \frac{m}{V}", [380, 471, 434, 495]),
+            ],
+        }]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            middle = root / "std_middle.json"
+            _write_middle(middle, pages)
+            ssir_path = root / "t.ssir.json"
+            ssir_path.write_text(json.dumps(_latex_columns_ssir(), ensure_ascii=False), encoding="utf-8")
+            mfs._stamp_side_by_side_layout(ssir_path, root / "parts", middle_json=middle)
+            stamped = json.loads(ssir_path.read_text(encoding="utf-8"))
+        contents = stamped["structuralRoot"]["children"][0]["contentElements"]
+        self.assertEqual({c.get("sideBySideGroup") for c in contents}, {"p037-c00"})
+        self.assertEqual([c.get("sideBySideColumn") for c in contents], [0, 0, 1, 1])
+
+    def test_latex_key_ignores_spacing_differences(self) -> None:
+        """两条路线的同一公式只在空格/分词上不同，归一后仍匹配。"""
+        pages = [{
+            "page_idx": 36,
+            "preproc_blocks": [
+                _text_block("正确：", [78, 457, 105, 469]),
+                _latex_equation_block(r"v=3.6\times \frac {l}{t}", [159, 473, 192, 493]),
+                _text_block("不正确：", [308, 457, 344, 469]),
+                _latex_equation_block(r"\rho =\frac{m}{V}", [380, 471, 434, 495]),
+            ],
+        }]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            middle = root / "std_middle.json"
+            _write_middle(middle, pages)
+            ssir_path = root / "t.ssir.json"
+            ssir_path.write_text(json.dumps(_latex_columns_ssir(), ensure_ascii=False), encoding="utf-8")
+            mfs._stamp_side_by_side_layout(ssir_path, root / "parts", middle_json=middle)
+            stamped = json.loads(ssir_path.read_text(encoding="utf-8"))
+        contents = stamped["structuralRoot"]["children"][0]["contentElements"]
+        self.assertEqual({c.get("sideBySideGroup") for c in contents}, {"p037-c00"})
+
+    def test_asset_matching_still_wins_when_both_forms_are_present(self) -> None:
+        """资产与 LaTeX 都在场时按资产匹配（本地路线行为不变）。
+
+        两列公式的 LaTeX 键相同（``x=1``，只靠 LaTeX 会去重成单列），资产名不同——
+        能成组即证明匹配仍按资产优先。
+        """
+        pages = [{
+            "page_idx": 36,
+            "preproc_blocks": [
+                _text_block("正确：", [78, 457, 105, 469]),
+                _equation_block("left.jpg", [159, 473, 192, 493]),
+                _text_block("不正确：", [308, 457, 344, 469]),
+                _equation_block("right.jpg", [380, 471, 434, 495]),
+            ],
+        }]
+        data = _latex_columns_ssir()
+        data["formulas"] = [
+            {"id": "ssir:T/formula/l", "assetRef": "assets/images/left.jpg", "latex": "x=1"},
+            {"id": "ssir:T/formula/r", "assetRef": "assets/images/right.jpg", "latex": "x=1"},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            middle = root / "std_middle.json"
+            _write_middle(middle, pages)
+            ssir_path = root / "t.ssir.json"
+            ssir_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            mfs._stamp_side_by_side_layout(ssir_path, root / "parts", middle_json=middle)
+            stamped = json.loads(ssir_path.read_text(encoding="utf-8"))
+        contents = stamped["structuralRoot"]["children"][0]["contentElements"]
+        self.assertEqual({c.get("sideBySideGroup") for c in contents}, {"p037-c00"})
+
     def test_manual_declaration_is_not_overwritten(self) -> None:
         pages = [{
             "page_idx": 0,
@@ -526,6 +654,228 @@ class GeometryStampTests(unittest.TestCase):
             stamped = json.loads(ssir_path.read_text(encoding="utf-8"))
         groups = {c.get("sideBySideGroup") for c in stamped["structuralRoot"]["children"][0]["contentElements"]}
         self.assertEqual(groups, {"columns-1"})
+
+
+def _identical_latex_column_ssir() -> dict:
+    """示例4 型：右列「或」前后两条公式排版相同 → 共享同一 LaTeX 键、两个 SSIR 节点。"""
+    def paragraph(identifier: str, order: int, text: str) -> dict:
+        return {"id": identifier, "presentationType": "paragraph", "sortOrder": order,
+                "textContent": text, "parentNodeId": "ssir:T/block-1"}
+
+    def formula(identifier: str, order: int, ref: str) -> dict:
+        return {"id": identifier, "presentationType": "formula", "sortOrder": order,
+                "formulaRef": ref, "parentNodeId": "ssir:T/block-1"}
+
+    return {
+        "structuralRoot": {
+            "id": "ssir:T/document", "nodeType": "document", "sortOrder": 0,
+            "children": [{
+                "id": "ssir:T/block-1", "nodeType": "documentBlock", "sortOrder": 0,
+                "contentElements": [
+                    paragraph("ssir:T/content/0", 0, "正确："),
+                    formula("ssir:T/content/1", 1, "ssir:T/formula/l"),
+                    paragraph("ssir:T/content/2", 2, "不正确："),
+                    formula("ssir:T/content/3", 3, "ssir:T/formula/r1"),
+                    paragraph("ssir:T/content/4", 4, "或"),
+                    formula("ssir:T/content/5", 5, "ssir:T/formula/r2"),
+                ],
+            }],
+        },
+        "figures": [],
+        "formulas": [
+            {"id": "ssir:T/formula/l", "latex": r"\dim (E) = \dim (F) \times \dim (l)"},
+            {"id": "ssir:T/formula/r1", "latex": r"\dim (\text { 能量 }) = \dim (\text { 力 }) \times \dim (\text { 长度 })"},
+            {"id": "ssir:T/formula/r2", "latex": r"\dim (\text { 能量 }) = \dim (\text { 力 }) \times \dim (\text { 长度 })"},
+        ],
+    }
+
+
+def _inline_latex_spelling_ssir() -> dict:
+    """示例5 型：SSIR 变量解释行保留 LaTeX 拼写（``\\mathrm{ME}``），MinerU span 是朴素拼写。"""
+    def paragraph(identifier: str, order: int, text: str) -> dict:
+        return {"id": identifier, "presentationType": "paragraph", "sortOrder": order,
+                "textContent": text, "parentNodeId": "ssir:T/block-1"}
+
+    return {
+        "structuralRoot": {
+            "id": "ssir:T/document", "nodeType": "document", "sortOrder": 0,
+            "children": [{
+                "id": "ssir:T/block-1", "nodeType": "documentBlock", "sortOrder": 0,
+                "contentElements": [
+                    paragraph("ssir:T/content/0", 0, "正确："),
+                    {"id": "ssir:T/content/1", "presentationType": "formula", "sortOrder": 1,
+                     "formulaRef": "ssir:T/formula/l", "parentNodeId": "ssir:T/block-1"},
+                    paragraph("ssir:T/content/2", 2, "不正确："),
+                    {"id": "ssir:T/content/3", "presentationType": "formula", "sortOrder": 3,
+                     "formulaRef": "ssir:T/formula/r", "parentNodeId": "ssir:T/block-1"},
+                    paragraph("ssir:T/content/4", 4, "式中："),
+                    paragraph("ssir:T/content/5", 5, r"$S _ { \mathrm { M E } , i }$ ———系统i的残差均方；"),
+                    paragraph("ssir:T/content/6", 6, r"$M S E _ { i }$——系统 i 的残差均方；"),
+                ],
+            }],
+        },
+        "figures": [],
+        "formulas": [
+            {"id": "ssir:T/formula/l", "assetRef": "assets/images/left.jpg"},
+            {"id": "ssir:T/formula/r", "assetRef": "assets/images/right.jpg"},
+        ],
+    }
+
+
+def _half_width_punctuation_ssir() -> dict:
+    """9.9.3.3 示例3 型：MinerU 几何块把全角逗号写成半角（「在数学公式中,使用」）。"""
+    def paragraph(identifier: str, order: int, text: str) -> dict:
+        return {"id": identifier, "presentationType": "paragraph", "sortOrder": order,
+                "textContent": text, "parentNodeId": "ssir:T/block-1"}
+
+    def formula(identifier: str, order: int, ref: str) -> dict:
+        return {"id": identifier, "presentationType": "formula", "sortOrder": order,
+                "formulaRef": ref, "parentNodeId": "ssir:T/block-1"}
+
+    return {
+        "structuralRoot": {
+            "id": "ssir:T/document", "nodeType": "document", "sortOrder": 0,
+            "children": [{
+                "id": "ssir:T/block-1", "nodeType": "documentBlock", "sortOrder": 0,
+                "contentElements": [
+                    paragraph("ssir:T/content/0", 0, "在数学公式中，使用"),
+                    formula("ssir:T/content/1", 1, "ssir:T/formula/l"),
+                    paragraph("ssir:T/content/2", 2, "而不使用"),
+                    formula("ssir:T/content/3", 3, "ssir:T/formula/r"),
+                ],
+            }],
+        },
+        "figures": [],
+        "formulas": [
+            {"id": "ssir:T/formula/l", "assetRef": "assets/images/left.jpg"},
+            {"id": "ssir:T/formula/r", "assetRef": "assets/images/right.jpg"},
+        ],
+    }
+
+
+class MatchFoldTests(unittest.TestCase):
+    """并列版式匹配归一（``pipeline._fold_match_text``，GEN-095）。只用于匹配，不改数据。"""
+
+    def test_fold_rules(self) -> None:
+        from leleby_ssir.pipeline import _fold_match_text as fold
+
+        # 全/半角标点、空白、行内公式定界符、破折号族
+        self.assertEqual(fold("在数学公式中，使用"), "在数学公式中,使用")
+        self.assertEqual(fold("t ——时间间隔。"), "t—时间间隔。")
+        self.assertEqual(fold("t———时间间隔。"), fold("t ——时间间隔。"))
+        # 行内 LaTeX 字体命令脱壳（MinerU 侧是朴素拼写）
+        self.assertEqual(
+            fold(r"$S _ { \mathrm { M E } , i }$ ———系统i的残差均方；"),
+            "S_{ME,i}—系统i的残差均方;",
+        )
+        # 嵌套命令循环脱壳
+        self.assertEqual(fold(r"\mathrm{\text{ME}}"), "ME")
+        # 不同变量不得因脱壳而混同
+        self.assertNotEqual(fold(r"$S_{\mathrm{ME},i}$——甲；"), fold(r"$S_{\mathrm{MR},i}$——甲；"))
+        self.assertEqual(fold(""), "")
+
+
+class GeometryMatchingKeyTests(unittest.TestCase):
+    """几何打标的三类匹配键缺陷（GB/T 1.1-2020 9.9.3.1 示例4/5、9.9.3.3 示例3）：
+
+    ① 同一 LaTeX 键对应多个 SSIR 节点时，候选必须逐个消费——否则第二个几何块拿不到
+       节点，组内 sortOrder 出现空洞 → 整组回滚；
+    ② SSIR 的变量解释行保留 LaTeX 拼写（``$S_{\\mathrm{ME},i}$``），MinerU 行内 span 是
+       朴素拼写（``S_{ME,i}``）：归一须脱壳字体命令；
+    ③ MinerU 几何块把全角标点写成半角：归一须折叠标点宽度。
+    """
+
+    def _run(self, ssir: dict, pages: list[dict], *, part: str = "pages-037-054") -> dict:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parts = root / "parts"
+            _write_middle(parts / part / "std" / "auto" / "std_middle.json", pages)
+            ssir_path = root / "t.ssir.json"
+            ssir_path.write_text(json.dumps(ssir, ensure_ascii=False), encoding="utf-8")
+            mfs._stamp_side_by_side_layout(ssir_path, parts)
+            return json.loads(ssir_path.read_text(encoding="utf-8"))
+
+    def test_identical_latex_formulas_consume_both_nodes(self) -> None:
+        # 右列「或」前后两条同形公式只有「节点」不同（LaTeX 键相同）：两个几何块各占一个
+        # 节点才算匹配成功；一对一映射会让第二块无节点可用 → 缺 sortOrder 5 → 整组回滚。
+        pages = [{
+            "page_idx": 0,
+            "preproc_blocks": [
+                _text_block("正确：", [79, 540, 104, 552]),
+                _latex_equation_block(r"\dim (E) = \dim (F) \times \dim (l)", [95, 555, 211, 566]),
+                _text_block("不正确：", [308, 540, 344, 552]),
+                _latex_equation_block(r"\dim (\text { 能量 }) = \dim (\text { 力 }) \times \dim (\text { 长度 })",
+                                      [332, 554, 481, 567]),
+                _text_block("或", [309, 569, 321, 581]),
+                _latex_equation_block(r"\dim (\text { 能量 }) = \dim (\text { 力 }) \times \dim (\text { 长度 })",
+                                      [334, 582, 480, 596]),
+            ],
+        }]
+        stamped = self._run(_identical_latex_column_ssir(), pages)
+        contents = stamped["structuralRoot"]["children"][0]["contentElements"]
+        self.assertEqual({c.get("sideBySideGroup") for c in contents}, {"p037-c00"})
+        self.assertEqual([c.get("sideBySideColumn") for c in contents], [0, 0, 1, 1, 1, 1])
+
+    def test_inline_latex_spelling_still_matches(self) -> None:
+        # 变量解释行：SSIR「$S _ { \mathrm { M E } , i }$ ———系统i…」对 MinerU 行内 span
+        # 「S_{ME,i}」+ 文本 span「  ——系统 i …」：脱壳 + 破折号归一后仍须命中，
+        # 否则该节点缺失（sortOrder 5）→ 整组回滚。右列变量行只有一处，普通形态。
+        ssir = _inline_latex_spelling_ssir()
+        pages = [{
+            "page_idx": 0,
+            "preproc_blocks": [
+                _text_block("正确：", [79, 666, 104, 677]),
+                _equation_block("left.jpg", [147, 682, 203, 706]),
+                _text_block("不正确：", [308, 666, 344, 678]),
+                _equation_block("right.jpg", [376, 682, 436, 705]),
+                _inline_equation_block("S_{ME,i}", "  ——系统i 的残差均方；", [96, 723, 207, 735]),
+                _inline_equation_block("MSE_{i}", "——系统 i 的残差均方；", [326, 723, 439, 735]),
+            ],
+        }]
+        # 「式中：」在 SSIR 里只有一条，几何侧没有对应块 —— 但空缺落在中间会触发回滚，
+        # 故此处把「式中：」放进几何（真实版面左列有该行）。
+        pages[0]["preproc_blocks"].insert(4, _text_block("式中：", [96, 708, 123, 720]))
+        stamped = self._run(ssir, pages)
+        contents = stamped["structuralRoot"]["children"][0]["contentElements"]
+        self.assertEqual({c.get("sideBySideGroup") for c in contents}, {"p037-c00"})
+        self.assertEqual(len(contents), 7)
+
+    def test_half_width_punctuation_still_matches(self) -> None:
+        # 几何坐标取自源页（9.9.3.3 示例3）：左列标题 x85–167、公式 x111–257，
+        # 右列「而不使用」x316–357、公式 x350–481；几何侧标题是全角→半角逗号变体。
+        pages = [{
+            "page_idx": 0,
+            "preproc_blocks": [
+                _text_block("在数学公式中,使用", [85, 218, 167, 230]),
+                _equation_block("left.jpg", [111, 232, 257, 255]),
+                _text_block("而不使用", [316, 218, 357, 230]),
+                _equation_block("right.jpg", [350, 232, 481, 275]),
+            ],
+        }]
+        stamped = self._run(_half_width_punctuation_ssir(), pages)
+        contents = stamped["structuralRoot"]["children"][0]["contentElements"]
+        self.assertEqual({c.get("sideBySideGroup") for c in contents}, {"p037-c00"})
+        self.assertEqual([c.get("sideBySideColumn") for c in contents], [0, 0, 1, 1])
+
+    def test_fold_does_not_over_match_near_miss_variable(self) -> None:
+        # 反例（防归一过度）：SSIR 的 ME 变量行不得被 MinerU 的 MR 行匹配。空缺落在组中
+        # （sortOrder 2）→ 整组回滚、不留半组。
+        ssir = _inline_latex_spelling_ssir()
+        pages = [{
+            "page_idx": 0,
+            "preproc_blocks": [
+                _text_block("正确：", [79, 666, 104, 677]),
+                _equation_block("left.jpg", [147, 682, 203, 706]),
+                _inline_equation_block("S_{MR,i}", "  ——系统i 的残差均方；", [96, 700, 207, 712]),
+                _text_block("不正确：", [308, 666, 344, 678]),
+                _equation_block("right.jpg", [376, 682, 436, 705]),
+                _text_block("式中：", [96, 720, 123, 732]),
+                _inline_equation_block("MSE_{i}", "——系统 i 的残差均方；", [326, 723, 439, 735]),
+            ],
+        }]
+        stamped = self._run(ssir, pages)
+        contents = stamped["structuralRoot"]["children"][0]["contentElements"]
+        self.assertFalse(any(c.get("sideBySideGroup") for c in contents))
 
 
 class LegacyUntouchedTests(unittest.TestCase):

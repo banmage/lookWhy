@@ -114,8 +114,44 @@ class HtmlTableToCsmTests(unittest.TestCase):
         self.assertNotIn("rowspan=\"9\"", out)
         self.assertIn('ssir:table-merge table="mineru-table-t2" row="1" column="1" rowspan="1" colspan="2"', out)
 
+    def test_inner_rowspan_columns_stay_aligned(self):
+        """表10 寿命型：被覆盖的列出现在行中（运行方式列跨 2 行），其后单元格不得左移（GBT-X02）。"""
+        html = (
+            "<table>"
+            "<tr><td>机座号</td><td>轴伸位置</td><td>运行方式</td><td>试验时间h</td><td>温度°C</td></tr>"
+            '<tr><td rowspan="3">90及以下</td><td>水平</td><td rowspan="2">空载</td><td>32±1</td><td>L</td></tr>'
+            '<tr><td>垂直向上</td><td>12±1</td><td rowspan="2">H</td></tr>'
+            "<tr><td>向上45°</td><td>空载</td><td>12±1</td></tr>"
+            "</table>"
+        )
+        out = html_table_to_csm(html, "t10", "表 10 寿命")
+        widths = {line.count("|") - 1 for line in out.splitlines() if line.startswith("|")}
+        self.assertEqual(widths, {5})
+        # 空载（column 3）跨行时，后面的试验时间/温度列必须留在第 4/5 列。
+        self.assertIn("|  | 垂直向上 |  | 12±1 | H |", out)
+        self.assertIn("|  | 向上45° | 空载 | 12±1 |  |", out)
+        self.assertIn('ssir:table-merge table="mineru-table-t10" row="1" column="3" rowspan="2" colspan="1"', out)
+        self.assertIn('ssir:table-merge table="mineru-table-t10" row="2" column="5" rowspan="2" colspan="1"', out)
+
+    def test_inline_eq_marker_becomes_csm_inline_math(self):
+        """GEN-097：MinerU 的 <eq> 行内公式标记 → CSM `$…$`（表10 的 \\frac{1}{2} 型）。"""
+        html = (
+            "<table>"
+            "<tr><td>运行方式</td><td>试验时间h</td></tr>"
+            "<tr><td><eq>\\frac{1}{2}</eq>连续堵转转矩</td><td>170±1</td></tr>"
+            "</table>"
+        )
+        out = html_table_to_csm(html, "t1", None)
+        self.assertIn("$\\frac{1}{2}$连续堵转转矩", out)
+        self.assertNotIn("<eq>", out)
+
 
 class ConvertMineruMarkupTests(unittest.TestCase):
+    def test_inline_eq_in_body_text_becomes_csm_inline_math(self):
+        out = convert_mineru_markup("转速为 <eq>n_{1}</eq> 时, 波动不大于 5%。\n", "p001", {})
+        self.assertIn("$n_{1}$", out)
+        self.assertNotIn("<eq>", out)
+
     def test_tables_images_and_formulas_are_adapted(self):
         raw = (
             "## 4.7 电动机的输入功率\n\n"
@@ -133,6 +169,29 @@ class ConvertMineruMarkupTests(unittest.TestCase):
         self.assertNotIn("表1 配套扇叶规格的电动机输入功率\n\n<!-- ssir:table", out)
         # 图片路径改写为 assets/，标签按"图 N 题名"规范化。
         self.assertIn("![图 1 示意图](assets/images/fig-001.png)", out)
+
+    def test_placeholder_image_alt_is_dropped(self):
+        """GEN-096：MinerU 的通用占位替代文本不是图题名（docs/07 §6.5）。"""
+        out = convert_mineru_markup("![image](assets/images/fig-001.png)\n\n正文。\n", "p001", {})
+        self.assertIn("![](assets/images/fig-001.png)", out)
+        self.assertNotIn("[image]", out)
+
+    def test_placeholder_variants_dropped_and_real_alt_kept(self):
+        raw = (
+            "![接线图](images/fig-001.png)\n\n"
+            "![image1](images/fig-002.png)\n\n"
+            "![图片](images/fig-003.png)\n\n"
+            "段末不是整行图片语法的 ![image](images/fig-004.png) 不动。\n"
+        )
+        out = convert_mineru_markup(raw, "p001", {})
+        self.assertIn("![接线图](assets/images/fig-001.png)", out)
+        self.assertIn("![](assets/images/fig-002.png)", out)
+        self.assertIn("![](assets/images/fig-003.png)", out)
+        self.assertIn("段末不是整行图片语法的 ![image](assets/images/fig-004.png) 不动。", out)
+
+    def test_figure_caption_still_wins_over_placeholder_alt(self):
+        out = convert_mineru_markup("![image](images/fig-001.png)\n\n图1 接线图\n", "p001", {})
+        self.assertIn("![图 1 接线图](assets/images/fig-001.png)", out)
 
     def test_formula_assets_are_bound_from_content_list(self):
         with tempfile.TemporaryDirectory() as directory:

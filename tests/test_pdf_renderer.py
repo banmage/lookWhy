@@ -2,13 +2,14 @@ import re
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 import yaml
 
 # GBT-B12 数值-单位固定字隙（正文五号 10.5pt 的 1/4 汉字）：_markup 输出的白字哨兵。
 _UNIT_GAP = '<font size="2.625" color="white">中</font>'
 
-from leleby_ssir.pdf_renderer import _TABLE_NOTE_CELL_RE, _BODY_MEASURE, _EXAMPLE_FRAME_WIDTH, _append_nodes, _cell_text_natural_width, _clause_leading_number, _example_box, _example_box_inner_width, _footnote_superscripts, _heading_depth, _heading_parts, _label_markup, _latex_to_text, _list_marker, _list_marker_gap, _mark_note_example_labels, _markup, _note_example_label, _note_example_label_span, _ocr_l_one, _split_table_note_parts, _starts_new_page, _strip_pagebreaks, _table_cell_superscripts, _table_column_widths, _toc_label
+from leleby_ssir.pdf_renderer import _TABLE_NOTE_CELL_RE, _BODY_MEASURE, _EXAMPLE_FRAME_WIDTH, _FORMULA_IMAGE_DPI, _FORMULA_IMAGE_EM_PT, _append_nodes, _cell_text_natural_width, _clause_head_gap, _clause_leading_number, _node_clause_number, _display_style_latex, _example_box, _example_box_inner_width, _formula_image, _formula_image_scale, _footnote_superscripts, _heading_depth, _heading_parts, _label_markup, _latex_has_cjk, _latex_to_text, _list_marker, _list_marker_gap, _mark_note_example_labels, _markup, _note_example_label, _note_example_label_span, _ocr_l_one, _split_table_note_parts, _starts_new_page, _strip_pagebreaks, _table_cell_superscripts, _table_column_widths, _toc_label
 
 TABLE_FIXTURE = {
     "id": "t1", "number": "1", "caption": "系统性能要求",
@@ -81,6 +82,21 @@ class LatexToTextTests(unittest.TestCase):
     def test_operators_map_to_unicode(self):
         self.assertEqual(_latex_to_text(r"a \cdot b \times c \leq d"), "a·b×c≤d")
         self.assertEqual(_latex_to_text(r"\leqslant 1"), "≤1")
+
+    def test_simple_fractions_use_the_glyph_the_font_carries(self):
+        """¼ ½ ¾ 用分数字形（思源宋体只带这三个分数字形；GB/T 10401-2023 表10 型）。"""
+        self.assertEqual(_latex_to_text(r"\frac{1}{4}"), "¼")
+        self.assertEqual(_latex_to_text(r"\frac{1}{2}"), "½")
+        self.assertEqual(_latex_to_text(r"\frac{3}{4}"), "¾")
+        self.assertEqual(_latex_to_text(r"\frac { 1 } { 2 }"), "½")
+
+    def test_fractions_without_a_glyph_still_flatten(self):
+        # Number Forms 区（⅓ ⅔ ⅕…）在渲染字体里缺字形，字母/多位分数同样不适用字形。
+        self.assertEqual(_latex_to_text(r"\frac{2}{3}"), "(2)/(3)")
+        self.assertEqual(_latex_to_text(r"\frac{1}{5}"), "(1)/(5)")
+        self.assertEqual(_latex_to_text(r"\frac{10}{20}"), "(10)/(20)")
+        self.assertEqual(_latex_to_text(r"\frac{V}{\mathrm{km/h}}"), "(V)/(km/h)")
+        self.assertEqual(_latex_to_text(r"\frac{\frac{1}{2}}{3}"), "(½)/(3)")
         self.assertEqual(_markup(_latex_to_text(r"\mathrm { m ^ { 3 } / h }")), "m<super>3</super>/h")
 
 
@@ -241,6 +257,341 @@ class FormulaNumberLineTests(unittest.TestCase):
         self.assertLess(image_box[2] - image_box[0], 600)
         self.assertLessEqual(image_box[2], number[0][1] - 2 * 10.5)
         self.assertAlmostEqual(number[-1][2], 6 + line.avail, delta=1.5)
+
+
+def _formula_story(latex: str, body_size: float, content_width: float = _BODY_MEASURE, font_name: str = "Helvetica"):
+    """把单个公式内容元素过一遍渲染端，返回 (story, report)（公式尺寸/回退类夹具共用）。"""
+    import tempfile
+
+    from reportlab.lib import colors
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.platypus import Image, Paragraph, Spacer, Table, TableStyle
+
+    from leleby_ssir.pdf_renderer import PDFRenderReport, _append_content_sequence
+
+    asset_dir = Path(tempfile.mkdtemp())
+    styles = {}
+    for name in ("example-label", "example-title", "example-content", "body", "body-flush",
+                 "caption", "table-unit", "table", "table-body", "note", "list", "list-sub",
+                 "formula", "section", "subclause", "clause", "front", "side-cell"):
+        styles[name] = ParagraphStyle(name, fontName=font_name, fontSize=body_size if name == "body" else 10)
+    report = PDFRenderReport(input_file="t.pdf", output_file="t.render.pdf", profile_file="", profile_id="", font_file="")
+    story: list = []
+    _append_content_sequence(
+        story, [{"presentationType": "formula", "formulaRef": "f1", "sortOrder": 0}],
+        registries={"tables": {}, "figures": {}, "formulas": {"f1": {"id": "f1", "latex": latex}}},
+        styles=styles, font="Helvetica", report=report, asset_dir=asset_dir,
+        colors=colors, Table=Table, TableStyle=TableStyle, Paragraph=Paragraph,
+        Spacer=Spacer, Image=Image, content_width=content_width,
+    )
+    return story, report
+
+
+class FormulaImageSizeTests(unittest.TestCase):
+    """GEN-105：生成的公式图按正文字号显示，不把像素当点。
+
+    背景（GB/T 5171.1-2014 式(1)/式(2)）：`_formula_image` 以 180dpi 光栅化、字号
+    14pt（图上 em = 35px），而 reportlab 的 `Image` 默认把 1px 当 1pt → 公式被整体
+    放大 2.5 倍，再被宽度上限按内容比例压缩：同一文档内公式字号随长度漂移
+    （实测式(1) 1.66×、式(2) 2.36× 正文字号）且被拉伸到整个版心 455pt，而源版面
+    只有 313.6 / 281.1pt。
+    """
+
+    def test_scale_is_unit_conversion_times_target_ratio(self) -> None:
+        # (72/180) × (10.5/14) = 0.3：正文字号 10.5pt 时生成图按 30% 像素宽显示。
+        self.assertAlmostEqual(_formula_image_scale(10.5), (72.0 / _FORMULA_IMAGE_DPI) * (10.5 / _FORMULA_IMAGE_EM_PT), places=9)
+        self.assertAlmostEqual(_formula_image_scale(10.5), 0.3, places=9)
+        # 显示尺寸跟随 profile 正文字号（不是写死的常数）：字号 ×4/3 → 尺寸 ×4/3。
+        self.assertAlmostEqual(_formula_image_scale(14.0), 0.4, places=9)
+
+    def _formula_flowable(self, latex: str, body_size: float, content_width: float = _BODY_MEASURE):
+        story, _report = _formula_story(latex, body_size, content_width)
+        self.assertEqual(len(story), 1, f"期望单个流对象，实际 {[type(s).__name__ for s in story]}")
+        return story[0]
+
+    def test_generated_formula_is_drawn_at_the_body_size(self) -> None:
+        latex = r"\Delta t = \frac {R_{2} - R_{1}}{R _{1}} (k + t_{1}) - (t_{2} - t_{1})"
+        flowable = self._formula_flowable(latex, body_size=10.5)
+        # px × scale：生成图的 em 恰为正文字号 10.5pt（修前是 35px × 0.497 上限缩放）。
+        self.assertAlmostEqual(flowable.drawWidth, flowable.imageWidth * _formula_image_scale(10.5), places=6)
+        self.assertAlmostEqual(flowable.drawHeight, flowable.imageHeight * _formula_image_scale(10.5), places=6)
+        # 不再被拉伸到整个版心（源版面 313.6pt；旧实现恒为 455.0pt）。
+        self.assertLess(flowable.drawWidth, _BODY_MEASURE * 0.8)
+
+    def test_formula_size_follows_the_body_font_size(self) -> None:
+        latex = r"\Delta t = \frac {R_{2} - R_{1}}{R _{1}} (k + t_{1}) - (t_{2} - t_{1})"
+        small = self._formula_flowable(latex, body_size=10.5)
+        large = self._formula_flowable(latex, body_size=14.0)
+        self.assertAlmostEqual(large.drawWidth / small.drawWidth, 14.0 / 10.5, places=3)
+
+
+class FormulaDisplayStyleTests(unittest.TestCase):
+    """GEN-109：块级公式按**显示样式**排版——最外层分数为 `\\dfrac`。
+
+    背景（2026-09-16 用户报告「9.9.3.1 的几个公式（如示例1、示例5）渲染后看起来仍然略显
+    小」）：canonical 的 `ssir:formula` 是 LaTeX 的 display math（`$$…$$`），而 MathText 的
+    `$…$` 等价于行内（text style）——`\\frac` 的分子/分母被降为脚标号（实测分数堆高只有
+    12.9pt，而源文同一公式 17.0pt 且分子分母与左侧字母同大；示例5 的 `\\sqrt{\\frac{…}{…}}`
+    被压得更扁）。修法不是放大字号（那会把字母本身放大到源文的 2 倍），而是按 TeX 的样式
+    规则把**最外层**的 `\\frac` 写成 `\\dfrac`：分数参数内与上/下标内保持原样式。
+    """
+
+    def test_outermost_fraction_is_promoted(self) -> None:
+        self.assertEqual(_display_style_latex(r"v = \frac {l}{t}"), r"v = \dfrac {l}{t}")
+        self.assertEqual(
+            _display_style_latex(r"K = \frac{T_{Lmax} - T_{Lmin}}{T_{Lmax} + T_{Lmin}} × 100%"),
+            r"K = \dfrac{T_{Lmax} - T_{Lmin}}{T_{Lmax} + T_{Lmin}} × 100%",
+        )
+
+    def test_fraction_inside_a_radical_is_promoted(self) -> None:
+        # 示例5：`\sqrt{…}` 的花括号只作分组、不改变样式 → 里面的分数仍是最外层。
+        self.assertEqual(
+            _display_style_latex(r"t_{i} =\sqrt {\frac {S_{ME,i}}{S_{MR, i}}}"),
+            r"t_{i} =\sqrt {\dfrac {S_{ME,i}}{S_{MR, i}}}",
+        )
+
+    def test_nested_fraction_and_script_fraction_keep_their_style(self) -> None:
+        self.assertEqual(_display_style_latex(r"\frac{a}{\frac{b}{c}}"), r"\dfrac{a}{\frac{b}{c}}")
+        self.assertEqual(_display_style_latex(r"x^{\frac{a}{b}}"), r"x^{\frac{a}{b}}")
+        # `\tfrac` 是作者显式要求的小分数，`\dfrac` 已是显示样式：都不动。
+        self.assertEqual(_display_style_latex(r"\tfrac{a}{b}"), r"\tfrac{a}{b}")
+        self.assertEqual(_display_style_latex(r"\dfrac{a}{b}"), r"\dfrac{a}{b}")
+
+    def test_formula_without_a_fraction_is_untouched(self) -> None:
+        latex = r"dim (E) =  dim (F) ×  dim (l)"
+        self.assertEqual(_display_style_latex(latex), latex)
+
+    def _display_vs_inline(self, latex: str) -> tuple[Any, Any]:
+        """同一公式在「显示样式」与「行内样式（把提升退回）」下的渲染流对象。"""
+        import leleby_ssir.pdf_renderer as module
+
+        display = self._flowable(latex)
+        saved = module._display_style_latex
+        try:
+            module._display_style_latex = lambda expression: expression
+            inline = self._flowable(latex)
+        finally:
+            module._display_style_latex = saved
+        return display, inline
+
+    def _flowable(self, latex: str):
+        story, _report = _formula_story(latex, body_size=10.5)
+        self.assertEqual(len(story), 1, f"期望单个流对象，实际 {[type(s).__name__ for s in story]}")
+        return story[0]
+
+    def test_display_fraction_is_taller_without_changing_the_font_size(self) -> None:
+        display, inline = self._display_vs_inline(r"v = \frac {l}{t}")
+        # 显示样式只在垂直方向长高（分子分母恢复字号），宽度几乎不变。
+        self.assertGreater(display.drawHeight, inline.drawHeight * 1.5)
+        self.assertLess(display.drawWidth, inline.drawWidth * 1.2)
+        # em 不变：仍是正文字号（没有放大字号——「不要过分」）。
+        self.assertAlmostEqual(display.drawWidth, display.imageWidth * _formula_image_scale(10.5), places=6)
+        self.assertAlmostEqual(inline.drawHeight, inline.imageHeight * _formula_image_scale(10.5), places=6)
+
+    def test_radical_fraction_also_grows(self) -> None:
+        display, inline = self._display_vs_inline(r"t_{i} =\sqrt {\frac {S_{ME,i}}{S_{MR, i}}}")
+        self.assertGreater(display.drawHeight, inline.drawHeight * 1.3)
+        self.assertGreater(display.drawWidth, inline.drawWidth)
+        # 宽度上限仍然生效（容器宽/140pt 高，只缩小不放大）。
+        self.assertLessEqual(display.drawHeight, 140)
+
+    def test_cache_key_follows_the_promoted_expression(self) -> None:
+        # 缓存文件按提升后的表达式取哈希：否则旧的行内样式图会一直被命中，
+        # 修复对已渲染过的文档不生效（见 `_formula_image` 的 docstring）。
+        import hashlib
+        import tempfile
+
+        from leleby_ssir.pdf_renderer import _formula_image
+
+        latex = r"v = \frac {l}{t}"
+        directory = Path(tempfile.mkdtemp())
+        first = _formula_image(latex, directory)
+        self.assertIsNotNone(first)
+        self.assertEqual(first.name, hashlib.sha256(r"v = \dfrac {l}{t}".encode("utf-8")).hexdigest() + ".png")
+        self.assertEqual(_formula_image(latex, directory), first)  # 幂等：第二次命中缓存
+
+
+class CjkFormulaTextFallbackTests(unittest.TestCase):
+    """GEN-106：含汉字的公式不得交给 MathText（数学字体无汉字字形 → 假字形方框）。
+
+    背景（GB_3100-2026 8.2.3）：源 PDF 的中文单位行「米/秒；米·秒⁻¹；＋ 米/秒 分数」被
+    MinerU 判成 **text 块**（8.2.2 的英文对应行是 interline_equation 并带裁剪图），
+    canonical 里这一行是含汉字的 LaTeX 公式块且**没有图资产** → MathText 把「米/秒」印成
+    一串方框。规则：无可用图资产且含汉字时按文本拍平渲染；有资产仍优先资产（GEN-102）。
+    """
+
+    def test_cjk_detection(self) -> None:
+        self.assertTrue(_latex_has_cjk(r"米/秒;  米·秒⁻¹; \frac {米}{秒}"))
+        self.assertTrue(_latex_has_cjk(r"\mathrm{密度} = \frac {\mathrm{质量}}{\mathrm{体积}}"))
+        self.assertTrue(_latex_has_cjk("（米）"))  # 全角标点同样没有字形
+        self.assertFalse(_latex_has_cjk(r"\mathrm{m/s;m} \cdot \mathrm{s} ^ {- 1}; \quad \frac {m}{s}"))
+        self.assertFalse(_latex_has_cjk(r"J = 7.98 P_{N}^{1.15} /n_{N}^{2}"))
+        self.assertFalse(_latex_has_cjk(""))
+
+    def test_cjk_formula_without_asset_is_typeset_as_text(self) -> None:
+        from reportlab.platypus import Image, Paragraph
+
+        latex = r"米/秒;  米·秒⁻¹; \frac {米}{秒}"
+        story, report = _formula_story(latex, body_size=10.5)
+        self.assertEqual(len(story), 1)
+        flowable = story[0]
+        # 不是 MathText 图（旧行为），而是正常文本：汉字由宋体印出，分数按既有约定拍平。
+        self.assertIsInstance(flowable, Paragraph)
+        self.assertNotIsInstance(flowable, Image)
+        self.assertIn("米/秒", flowable.text)
+        self.assertIn("(米)/(秒)", flowable.text)
+        self.assertTrue(any("CJK" in w for w in report.warnings), report.warnings)
+
+    def test_ascii_formula_still_uses_a_generated_image(self) -> None:
+        from reportlab.platypus import Image
+
+        story, report = _formula_story(r"\mathrm{m/s;m} \cdot \mathrm{s} ^ {- 1}; \quad \frac {m}{s}", body_size=10.5)
+        self.assertIsInstance(story[0], Image)
+        self.assertEqual(report.warnings, [])
+
+    def test_cjk_formula_text_reaches_the_pdf_text_layer(self) -> None:
+        # 真 PDF 断言：汉字必须作为**文本**出现在文本层（MathText 图里没有任何字符可取）。
+        try:
+            import pymupdf
+        except ImportError:  # pragma: no cover
+            self.skipTest("pymupdf unavailable")
+        import tempfile
+
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        from reportlab.platypus import SimpleDocTemplate
+
+        font_asset = Path(__file__).resolve().parents[1] / "config" / "rendering" / "fonts" / "NotoSerifCJKsc-Regular.ttf"
+        if not font_asset.is_file():
+            self.skipTest("body font asset missing")
+        name = "CjkFormulaBody"
+        if name not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(TTFont(name, str(font_asset)))
+        # 段落字体必须在**构造前**给定（reportlab 在构造时按 style 拆字/定字体）。
+        story, _report = _formula_story(r"米/秒;  米·秒⁻¹; \frac {米}{秒}", body_size=10.5, font_name=name)
+        target = Path(tempfile.mkdtemp()) / "cjk.pdf"
+        SimpleDocTemplate(str(target), pagesize=(456, 200), leftMargin=0, rightMargin=0,
+                          topMargin=0, bottomMargin=0).build([story[0]])
+        page = pymupdf.open(str(target))[0]
+        text = page.get_text()
+        self.assertIn("米/秒", text)
+        spans = [s for b in page.get_text("dict")["blocks"] if b.get("type") == 0
+                 for l in b["lines"] for s in l["spans"]]
+        # reportlab 内嵌的是字体真实名（NotoSerifCJKsc-Regular），不是注册别名；
+        # 关键是汉字 span 用的是 CJK 字体、而非 Helvetica 回退。
+        cjk_spans = [s for s in spans if "米" in s["text"] or "秒" in s["text"]]
+        self.assertTrue(cjk_spans)
+        self.assertTrue(all("Helvetica" not in s["font"] for s in cjk_spans), [s["font"] for s in cjk_spans])
+
+
+class VerbatimBlockRenderingTests(unittest.TestCase):
+    """GEN-107：原样块（docs/07 §6.10）逐字渲染——保留换行与缩进。
+
+    背景（GB_3100-2026 4.1）：canonical 里「国际单位制」树写成 6 行纯文本，但
+    `_markup` 的软换行规则（CSM §3.3，语料 31 个多行段落依赖它）把每行拼成一段，
+    渲染稿里树被糊成一行。原样块（`ssir:unknown` + 围栏代码块）必须逐字保留；
+    docx 侧一直按行渲染（`.splitlines()`），PDF 侧此前没有。
+    """
+
+    TREE = "国际单位制\n  ├─ SI 单位\n  │    ├─ SI 基本单位（见表 1）\n  └─ SI 单位的倍数单位和分数单位"
+
+    def test_verbatim_markup_keeps_newlines_and_indent(self) -> None:
+        from leleby_ssir.pdf_renderer import _fixed_gap, _verbatim_gap_pt, _verbatim_markup
+
+        self.assertEqual(_verbatim_markup("a b", 10.5), "a b")  # 行内单空格原样（仍可折行）
+        self.assertEqual(_verbatim_markup("", 10.5), "")
+        out = _verbatim_markup(self.TREE, 10.5)
+        self.assertEqual(out.count("\x00BR\x00"), 3)  # 4 行 → 3 个硬换行哨兵
+        self.assertIn(_fixed_gap(5.25) + "├─ SI 单位", out)  # 行首 2 空格 = 0.5em
+        self.assertIn(_fixed_gap(5.25) + "│" + _fixed_gap(10.5) + "├─", out)  # 行内 ≥2 空格 = 1em
+        # 字体实测：U+0020 = 0.256em、框线字 ├│└─ = 1.000em → 4 个半角空格 = 1 个全角位。
+        self.assertAlmostEqual(_verbatim_gap_pt("    ", 10.5), 10.5, places=6)
+        self.assertAlmostEqual(_verbatim_gap_pt("\t", 10.5), 10.5, places=6)
+
+    def test_verbatim_block_lines_and_columns_in_a_real_pdf(self) -> None:
+        records = self._render_block("other")
+        self.assertEqual(len(records), 4, records)  # 4 行逐行保留（修前：1 行）
+        texts = [self._strip_sentinels(text) for text, _marks in records]
+        self.assertEqual(texts[0], "国际单位制")
+        self.assertIn("SI 基本单位（见表 1）", texts[2])
+        # 第 2/4 行的分支字符（├ / └）应同列；第 3 行的竖线与该列对齐；下一级分支右移 2em。
+        self.assertEqual(records[1][1][0][0], "├")
+        self.assertEqual(records[3][1][0][0], "└")
+        self.assertAlmostEqual(records[1][1][0][1], records[3][1][0][1], places=2)
+        level2 = dict(records[2][1])
+        self.assertAlmostEqual(level2["│"], records[1][1][0][1], places=2)
+        self.assertAlmostEqual(level2["├"] - records[1][1][0][1], 2 * 10.5, places=1)
+
+    def test_plain_paragraph_still_collapses_soft_wraps(self) -> None:
+        # 对照：同一段文本作为普通段落（语料 31 个多行段落的形态）必须继续归一为空格、
+        # 排成一行，否则 MinerU 逐行折行的正文会全部多出硬换行。
+        records = self._render_block("paragraph")
+        self.assertEqual(len(records), 1, records)
+        self.assertEqual(len(records[0][1]), 7, records)  # 7 个框线字符全挤在这一行
+        self.assertIn("国际单位制", records[0][0])
+
+    @staticmethod
+    def _strip_sentinels(text: str) -> str:
+        """去掉字隙哨兵字形（不可见的白色「中」，见 _fixed_gap）便于比较文本。"""
+        return text.replace("中", "").strip()
+
+    def _render_block(self, presentation_type: str):
+        """把一个内容元素过真实渲染流程并导出（文本, 框线字符 x 列表）。"""
+        try:
+            import pymupdf
+        except ImportError:  # pragma: no cover
+            self.skipTest("pymupdf unavailable")
+        import tempfile
+
+        import yaml
+        from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+        from leleby_ssir.pdf_renderer import PDFRenderReport, _append_content_sequence, _styles
+
+        root = Path(__file__).resolve().parents[1]
+        font_asset = root / "config" / "rendering" / "fonts" / "NotoSerifCJKsc-Regular.ttf"
+        profile_asset = root / "config" / "rendering" / "GB_T_1.1-2020.yaml"
+        if not font_asset.is_file() or not profile_asset.is_file():
+            self.skipTest("font/profile asset missing")
+        name = "VerbatimBody"
+        if name not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(TTFont(name, str(font_asset)))
+        profile = yaml.safe_load(profile_asset.read_text(encoding="utf-8"))
+        # 真实风格表（含 GEN-107 新增的 verbatim 样式），字号随 profile 正文 10.5pt。
+        styles = _styles(getSampleStyleSheet(), profile, name, name, TA_CENTER, TA_JUSTIFY, TA_LEFT)
+        report = PDFRenderReport(input_file="t.pdf", output_file="t.render.pdf", profile_file="", profile_id="", font_file="")
+        content = {"presentationType": presentation_type, "sortOrder": 0, "textContent": self.TREE}
+        if presentation_type == "other":
+            content["unknownRef"] = "u1"
+        story: list = []
+        _append_content_sequence(
+            story, [content],
+            registries={"tables": {}, "figures": {}, "formulas": {},
+                        "unknownContents": {"u1": {"id": "u1", "rawContent": self.TREE, "typeHint": "layout-fragment"}}},
+            styles=styles, font=name, report=report, asset_dir=Path(tempfile.mkdtemp()),
+            colors=__import__("reportlab.lib.colors", fromlist=["colors"]), Table=Table, TableStyle=TableStyle,
+            Paragraph=Paragraph, Spacer=Spacer, Image=Image, content_width=_BODY_MEASURE,
+        )
+        target = Path(tempfile.mkdtemp()) / "verbatim.pdf"
+        SimpleDocTemplate(str(target), pagesize=(600, 400), leftMargin=40, rightMargin=40,
+                          topMargin=40, bottomMargin=40).build(story)
+        page = pymupdf.open(str(target))[0]
+        records = []
+        for block in page.get_text("rawdict")["blocks"]:
+            if block.get("type") != 0:
+                continue
+            for line in block["lines"]:
+                chars = [c for span in line["spans"] for c in span["chars"]]
+                text = "".join(c["c"] for c in chars)
+                if not text.strip():
+                    continue
+                marks = [(c["c"], round(c["bbox"][0], 2)) for c in chars if c["c"] in "├└│─"]
+                records.append((text, marks))
+        return records
 
 
 class UnitGapRenderingTests(unittest.TestCase):
@@ -468,6 +819,48 @@ class UntitledClauseFlushTests(unittest.TestCase):
         self.assertEqual(_clause_leading_number("5.3.1 泵应选用与介质适宜的轴封。"), "5.3.1")
         self.assertEqual(_clause_leading_number("B.1.3.1抽样"), "B.1.3.1")
         self.assertEqual(_clause_leading_number("A.2 试验应在 20 ℃ 下进行。"), "A.2")
+
+    def test_latin_after_number_is_a_clause_head_only_when_the_structure_confirms_it(self):
+        """编号后接拉丁字母：与「数值+单位」句同形，须由所在节点条号确认（GBT-B02）。
+
+        2026-09-15（GB_3100-2026 4.2/4.3/6.1/8.2.5）：这四条正文以 "SI…" 起排，
+        编号后不是汉字，此前被当作正文段落空两个汉字起排；源 PDF 与其余条号同列顶格。
+        """
+        # 结构确认：编号是所在节点条号的直接子条（4.2 在章 4 内、8.2.5 在 8.2 内）。
+        self.assertEqual(_clause_leading_number("4.2 SI 是采用如下常量的单位制：", "4"), "4.2")
+        self.assertEqual(_clause_leading_number("4.3 SI单位是…", "4"), "4.3")
+        self.assertEqual(_clause_leading_number("6.1 SI 单位的十进倍数和分数单位…", "6"), "6.1")
+        self.assertEqual(_clause_leading_number("8.2.5 SI词头符号一律用正体字母，…", "8.2"), "8.2.5")
+        # 无结构上下文 → 保守退回正文段（既有行为，先前的 3.2 kW 负例仍成立）。
+        self.assertIsNone(_clause_leading_number("4.2 SI 是采用如下常量的单位制："))
+        self.assertIsNone(_clause_leading_number("3.2 kW 的电机应可靠工作。", "4"))
+        self.assertIsNone(_clause_leading_number("3.2 kW 的电机应可靠工作。"))
+        # 父条号不匹配（正文段在自己的章外）→ 仍是正文段。
+        self.assertIsNone(_clause_leading_number("4.2 SI 是采用如下常量的单位制：", "5"))
+        # 已知局限：更深的裸条（4.2.1 直接挂在章 4 下）无结构确认 → 保持正文段。
+        self.assertIsNone(_clause_leading_number("4.2.1 SI 单位的符号…", "4"))
+        # 汉字/括号形态不受影响（结构化上下文可有可无）。
+        self.assertEqual(_clause_leading_number("5.3.1 泵应选用与介质适宜的轴封。", "5"), "5.3.1")
+
+    def test_clause_head_gap_writes_one_han_gap_only_for_the_latin_form(self):
+        """编号后接拉丁字母的条首由调用方补 1 汉字字隙；其余形态原样（GBT-B02）。"""
+        self.assertEqual(
+            _clause_head_gap("4.2 SI 是采用如下常量的单位制：", "4.2"),
+            "4.2\x00GAP\x00SI 是采用如下常量的单位制：",
+        )
+        self.assertEqual(_clause_head_gap("8.2.5\u3000SI词头符号…", "8.2.5"), "8.2.5\x00GAP\x00SI词头符号…")
+        # 编号后是汉字 → 归 _markup 的共享正则管，此处不得二次写入字隙。
+        self.assertEqual(_clause_head_gap("4.1 国际单位制（SI）…", "4.1"), "4.1 国际单位制（SI）…")
+        # 编号不匹配（别的段落的编号）→ 不动。
+        self.assertEqual(_clause_head_gap("4.3 SI单位是…", "4.2"), "4.3 SI单位是…")
+
+    def test_node_clause_number_reads_the_structure_node(self):
+        self.assertEqual(_node_clause_number({"number": "4", "title": "国际单位制的构成"}), "4")
+        self.assertEqual(_node_clause_number({"number": "8.2", "title": "单位符号"}), "8.2")
+        self.assertEqual(_node_clause_number({"number": "A.1", "title": "秒"}), "A.1")
+        self.assertEqual(_node_clause_number({"title": "4 国际单位制的构成"}), "4")  # 编号在标题里
+        self.assertIsNone(_node_clause_number({"title": "前言"}))
+        self.assertIsNone(_node_clause_number({}))
 
     def test_list_marker_normalisation_maps_ocr_dashes(self) -> None:
         # GB/T 1.1-2020 6.6.3：破折号族（-、—、——、———、– 等 OCR 长度变体）
@@ -736,6 +1129,114 @@ class NestedExampleContentTests(unittest.TestCase):
                         f"5.2 标题缺失: {texts!r}")
 
 
+class UntitledClauseLatinGeometryTests(unittest.TestCase):
+    """GBT-B02：编号后接拉丁字母的裸条顶格起排，且编号后空一个汉字。
+
+    GB_3100-2026 4.2「SI 是采用如下常量的单位制：」/ 4.3 / 6.1 / 8.2.5 四条，
+    源 PDF 与其余条号同列顶格。判定需要所在节点的条号，故从 `_append_nodes`
+    入口渲染（节点带 number），并以 PDF 内部对象（字形原点坐标）验证：编号同列、
+    编号→正文首字的推进宽为 1 个汉字（修前为 2 汉字缩进 + 1/4 汉字数值-单位字隙）。
+    """
+
+    EM = 10.5  # profile 正文五号（config/rendering/GB_T_1.1-2020.yaml）
+    ROOT = Path(__file__).resolve().parents[1]
+
+    @classmethod
+    def _render_lines(cls, nodes):
+        try:
+            import pymupdf
+        except ImportError:  # pragma: no cover - 环境缺 pymupdf 时跳过
+            raise unittest.SkipTest("pymupdf unavailable")
+        import tempfile
+
+        from reportlab.lib import colors
+        from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+        from leleby_ssir.pdf_renderer import PDFRenderReport, _styles
+
+        font_asset = cls.ROOT / "config" / "rendering" / "fonts" / "NotoSerifCJKsc-Regular.ttf"
+        profile_asset = cls.ROOT / "config" / "rendering" / "GB_T_1.1-2020.yaml"
+        if not font_asset.is_file() or not profile_asset.is_file():
+            raise unittest.SkipTest("font/profile asset missing")
+        name = "ClauseHeadBody"
+        if name not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(TTFont(name, str(font_asset)))
+        profile = yaml.safe_load(profile_asset.read_text(encoding="utf-8"))
+        styles = _styles(getSampleStyleSheet(), profile, name, name, TA_CENTER, TA_JUSTIFY, TA_LEFT)
+        report = PDFRenderReport(input_file="t.pdf", output_file="t.render.pdf",
+                                 profile_file="", profile_id="", font_file="")
+        story: list = []
+        _append_nodes(
+            story, nodes,
+            registries={"tables": {}, "figures": {}, "formulas": {}},
+            styles=styles, font=name, report=report, asset_dir=Path(tempfile.mkdtemp()),
+            colors=colors, Table=Table, TableStyle=TableStyle, Paragraph=Paragraph,
+            Spacer=Spacer, Image=Image, marker_factory=None, PageBreak=None,
+            example_default="frame",
+        )
+        target = Path(tempfile.mkdtemp()) / "clause-head.pdf"
+        SimpleDocTemplate(str(target), pagesize=(600, 400), leftMargin=40, rightMargin=40,
+                          topMargin=40, bottomMargin=40).build(story)
+        page = pymupdf.open(str(target))[0]
+        records = []
+        for block in page.get_text("rawdict")["blocks"]:
+            if block.get("type") != 0:
+                continue
+            for line in block["lines"]:
+                chars = [c for span in line["spans"] for c in span["chars"]]
+                text = "".join(c["c"] for c in chars)
+                if text.strip():
+                    records.append((text, [(c["c"], round(c["origin"][0], 2)) for c in chars]))
+        return records
+
+    @staticmethod
+    def _node(number, title, paragraphs):
+        return {
+            "id": f"n-{number}", "nodeType": "section", "number": number, "title": title,
+            "contentElements": [
+                {"presentationType": "paragraph", "sortOrder": index, "textContent": text}
+                for index, text in enumerate(paragraphs)
+            ],
+            "children": [],
+        }
+
+    @staticmethod
+    def _line(records, prefix):
+        for text, chars in records:
+            if text.startswith(prefix):
+                return text, chars
+        raise AssertionError(f"line {prefix!r} not found in {[text for text, _ in records]}")
+
+    def test_latin_clause_head_is_flush_and_keeps_one_han_gap(self) -> None:
+        nodes = [self._node("4", "国际单位制的构成", [
+            "4.1 国际单位制（SI）是国际计量大会（CGPM）采用和推荐的一贯单位制。",
+            "4.2 SI 是采用如下常量的单位制：",
+        ])]
+        records = self._render_lines(nodes)
+        _, cjk = self._line(records, "4.1")
+        _, latin = self._line(records, "4.2")
+        # 顶格：两条编号同列（修前 4.2 比 4.1 右移 2 汉字 = 21pt）。
+        self.assertAlmostEqual(latin[0][1], cjk[0][1], places=2)
+        # 字隙：编号后恰为 1 汉字（修前 4.2 落进数值-单位规则，只有 1/4 汉字 ≈ 2.6pt）。
+        self.assertAlmostEqual(cjk[4][1] - cjk[3][1], self.EM, delta=0.3)
+        self.assertAlmostEqual(latin[4][1] - latin[3][1], self.EM, delta=0.3)
+
+    def test_latin_paragraph_under_a_foreign_clause_stays_indented(self) -> None:
+        nodes = [
+            self._node("5", "SI 单位", ["4.2 SI 是采用如下常量的单位制："]),
+            self._node("6", "SI 单位及其十进倍数和分数单位的应用", ["普通正文段落，空两个汉字起排。"]),
+        ]
+        records = self._render_lines(nodes)
+        _, body = self._line(records, "普通正文段落")
+        _, foreign = self._line(records, "4.2")
+        # 章 5 里的 "4.2 SI…" 不是本章的条号（父条号 3 ≠ 5）→ 与普通正文同列。
+        self.assertAlmostEqual(foreign[0][1], body[0][1], places=2)
+
+
 class TableCellLineBreakTests(unittest.TestCase):
     """表单元格行结构（<br>，merge 阶段从源文本层恢复）渲染为真实换行。
 
@@ -783,15 +1284,27 @@ class Gb3100SuperscriptTableNoteTests(unittest.TestCase):
         self.assertEqual(_markup("米·秒⁻¹"), "米·秒<super>−</super>¹")
 
     def test_table_cell_flat_exponents_recovered(self) -> None:
-        # Fix E：GB_3100-2026 表2/表3/附录B 平拍上标还原（1030→10³⁰、
-        # s−1→s⁻¹、N/m2→N/m²、10-2→10⁻²、10²4→10²⁴；100 不猜）。
-        self.assertEqual(_markup(_table_cell_superscripts("1030")), "10<super>30</super>")
+        # Fix E：GB_3100-2026 表2/表3/附录B 拍平上标还原（s−1→s⁻¹、N/m2→N/m²、
+        # 10-2→10⁻²、10²4→10²⁴）——只保留抽取里带证据的分支（GEN-104）。
         self.assertEqual(_markup(_table_cell_superscripts("10-2")), "10<super>−2</super>")
         self.assertEqual(_markup(_table_cell_superscripts("10²4")), "10<super>24</super>")
         self.assertEqual(_markup(_table_cell_superscripts("1 Hz = 1 s−1")), f"1{_UNIT_GAP}Hz = 1{_UNIT_GAP}s<super>−1</super>")
         self.assertEqual(_markup(_table_cell_superscripts("1 Pa = 1 N/m2")), f"1{_UNIT_GAP}Pa = 1{_UNIT_GAP}N/m<super>2</super>")
         self.assertEqual(_markup(_table_cell_superscripts("100")), "100")
         self.assertEqual(_markup(_table_cell_superscripts("centi")), "centi")
+
+    def test_table_cell_plain_numbers_are_not_exponents(self) -> None:
+        # GEN-104（2026-09-15）：删除「10+纯数字」猜测分支。抽取层对「10 的正幂」
+        # 没有任何证据（MinerU markdown 无字号信息，middle.json 的 span 也不带字号），
+        # 该形态与普通数值完全同形——不得改写成 10 的幂。
+        # 语料实测（GB/T 5171.1-2014 表1「105(A级)」温度等级印成 10⁵，源 PDF p12
+        # 实测 105 与同行同为 8.25pt 普通数字；GB_3100-2026「1024 bit」「(π/10800) rad」；
+        # GB/T 10401-2023 表内数据「107」）。
+        for text in ("1030", "105", "105(A级)", "100", "1024", "1024 bit", "107", "10800",
+                     "1' = (1/60) = (π/10800) rad", "60(50)"):
+            with self.subTest(text=text):
+                self.assertEqual(_table_cell_superscripts(text), text)
+                self.assertNotIn("\x00SUP\x00", _table_cell_superscripts(text))
 
     def test_latex_emits_sentinels_and_markup_restores_tags(self) -> None:
         # Fix F：4.2 常量行 LaTeX → 可读文本 + 上标哨兵；数字逐字空格收紧；
@@ -1282,6 +1795,209 @@ language: zh-CN
             content_ink = sum(ink(glyph[2], page) for glyph in content_glyphs) / len(content_glyphs)
             document.close()
             self.assertGreater(label_ink, content_ink * 1.3, (label_ink, content_ink))
+
+
+class WideTableLandscapeTests(unittest.TestCase):
+    """宽表横排（GEN-103，2026-09-12；用户裁定方案 A）。
+
+    现象（GB/T 5171.1-2014 表9）：26 列表在竖排版心下超需求，列宽分配器把末列算成
+    0.6pt，reportlab 以「负可用宽」中止**整篇**渲染（04_render 为空、构建退出码 2）。
+    修复两段：① 列宽下界 = 左右边距 + 一个汉字宽（不足从最宽列扣减），任何表都不再
+    产出非法列宽；② 竖排必然排不下（跨行合并锁定的行组高于一页）而横排排得下时，整表
+    旋转 90°（表头落订口一侧、题注随表），与源 PDF 表9 的横排同向。
+
+    夹具 tests/fixtures/wide_table.canonical.md：表9 的 26 列 × 15 行原样（含 rowspan
+    锁定行组）+ 同文档一张 3 列窄表（反例：必须保持竖排）。断言基于 PDF 内部对象
+    （pymupdf 文本行 dir、网格线坐标），非视觉比对。
+    """
+
+    ROOT = Path(__file__).resolve().parents[1]
+    FIXTURE = ROOT / "tests" / "fixtures" / "wide_table.canonical.md"
+    FONT_SIZE = 9.0
+    PADDING = 4.0
+
+    def _tables(self) -> list[dict]:
+        from leleby_ssir.builder import SSIRBuilder
+        from leleby_ssir.parser import CSMParser
+
+        return SSIRBuilder().build(CSMParser().read(str(self.FIXTURE)))["tables"]
+
+    _IMG = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
+
+    def test_wide_table_columns_never_narrower_than_padding_and_glyph(self) -> None:
+        """列宽下界（GEN-103 ①）：26 列表的每一列都容得下一个字，且总宽恒 = 版心。
+
+        修复前该表末列 = 0.6pt（< 左右边距 8pt），reportlab 负可用宽直接中止渲染；
+        下界 = 2×边距(4) + 一个汉字宽(9pt 字号 → 9pt) = 17pt。
+        """
+        tables = {t.get("number"): t for t in self._tables()}
+        wide = tables["9"]
+        self.assertEqual(wide["colCount"], 26)
+        widths = _table_column_widths(wide["rows"], wide["colCount"], self.FONT_SIZE, {}, self._IMG)
+        lower = 2 * self.PADDING + self.FONT_SIZE
+        self.assertGreaterEqual(min(widths), lower - 1e-6, widths)
+        self.assertAlmostEqual(sum(widths), _BODY_MEASURE, delta=1e-3)
+        # 崩溃条件本身：任何列都不得窄于左右边距（availableWidth = 列宽 − 2×边距）
+        self.assertGreater(min(widths), 2 * self.PADDING)
+
+    def test_wide_table_rotates_with_caption_and_narrow_table_stays_upright(self) -> None:
+        try:
+            import pymupdf
+        except ImportError:  # pragma: no cover - 环境缺 pymupdf 时跳过
+            self.skipTest("pymupdf unavailable")
+        font = self.ROOT / "config" / "rendering" / "fonts" / "NotoSerifCJKsc-Regular.ttf"
+        if not font.is_file():
+            self.skipTest("body font asset missing")
+        import json
+        from leleby_ssir.builder import SSIRBuilder
+        from leleby_ssir.parser import CSMParser
+        from leleby_ssir.pdf_renderer import render_pdf_file
+
+        with tempfile.TemporaryDirectory() as directory:
+            ssir = Path(directory) / "t.ssir.json"
+            ssir.write_text(
+                json.dumps(SSIRBuilder().build(CSMParser().read(str(self.FIXTURE))), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            target = Path(directory) / "t.pdf"
+            render_pdf_file(str(ssir), str(target), toc_depth=None)
+            document = pymupdf.open(str(target))
+            rotated: dict[str, tuple] = {}
+            upright: list[str] = []
+            table_span = 0.0
+            columns = 0
+            for page in document:
+                for block in page.get_text("dict")["blocks"]:
+                    for line in block.get("lines", []):
+                        text = "".join(span["text"] for span in line["spans"]).strip()
+                        if line["dir"] == (0.0, -1.0) and text in {"表9", "轴承类别", "声功率级/dB(A)"}:
+                            rotated.setdefault(text, tuple(line["bbox"]))
+                        elif text in {"表10", "试验方法"}:
+                            upright.append(text)
+                ys = [
+                    drawing["rect"].y0
+                    for drawing in page.get_drawings()
+                    if drawing["rect"].height < 1.5 and drawing["rect"].width > 20
+                ]
+                if ys and "表9" in rotated and not table_span:
+                    table_span = max(ys) - min(ys)
+                    columns = len(set(ys)) - 1
+            document.close()
+        # ① 横排表：整表（含题注）旋转 90°，表头与题注都读作自下而上（与源排版同向）
+        self.assertCountEqual(list(rotated), ["声功率级/dB(A)", "轴承类别", "表9"])
+        caption_bbox = rotated["表9"]
+        header_bbox = rotated["轴承类别"]
+        self.assertLess(caption_bbox[0], header_bbox[0], (caption_bbox, header_bbox))  # 题注在表格左侧（订口一侧）
+        # ② 横排后 26 列沿页面高度排布，网格总高 ≈ 版心高（竖排时只有版心宽 455pt）
+        self.assertGreater(table_span, _BODY_MEASURE)
+        self.assertLessEqual(table_span, 700.0)
+        self.assertEqual(columns, 26)  # 26 列 → 27 条列分隔线（含表格左右外框）
+        # ③ 反例：同文档的 3 列窄表保持竖排（规则不外溢）
+        self.assertCountEqual(upright, ["表10", "试验方法"])
+
+
+class FigureUnitLineTests(unittest.TestCase):
+    """图的单位陈述行（GEN-032 / GB/T 1.1-2020 9.7.4.1，"单位为毫米"）。
+
+    现象（2026-09-13，GB_T_1.1-2020 附录 E）：canonical 里单位陈述行是图前的独立
+    段落，满页的图另起一面时它被留在**前页末**（源文件里它本应是该图页的第一行）。
+    修复后单位行折进图节点并在渲染端与图同组，断言取真实 PDF 的字符/图像坐标。
+    """
+
+    ROOT = Path(__file__).resolve().parents[1]
+
+    def _render(self, *, filler: int, unit_line: bool):
+        try:
+            import pymupdf
+        except ImportError:  # pragma: no cover
+            self.skipTest("pymupdf unavailable")
+        from PIL import Image as PILImage
+        import json
+
+        from leleby_ssir.builder import SSIRBuilder
+        from leleby_ssir.parser import CSMParser
+        from leleby_ssir.pdf_renderer import render_pdf_file
+
+        font = self.ROOT / "config" / "rendering" / "fonts" / "NotoSerifCJKsc-Regular.ttf"
+        label_font = self.ROOT / "config" / "rendering" / "fonts" / "NotoSansCJKsc-Bold.ttf"
+        if not font.is_file() or not label_font.is_file():
+            self.skipTest("font assets missing")
+        directory = tempfile.mkdtemp()
+        asset = Path(directory) / "e2.png"
+        PILImage.new("RGB", (500, 500), (255, 255, 255)).save(asset)
+        body = ["填满版心的一行说明性文字，用于把图挤到下一页。" * 2 for _ in range(filler)]
+        unit = "单位为毫米\n\n" if unit_line else ""
+        canon = (
+            "---\n"
+            "csm-version: 1.0\n"
+            "document-type: standard\n"
+            "document-identifier: GB_T_1.1-2020\n"
+            "standard-number: GB/T 1.1—2020\n"
+            "title: 标准化工作导则\n"
+            "language: zh-CN\n"
+            "---\n\n"
+            "# 标准化工作导则\n\n"
+            "## 附录 E（规范性） 文件格式\n\n"
+            + "\n\n".join(body) + "\n\n"
+            + unit
+            + f"![图 E.2 双数页格式]({asset})\n"
+        )
+        source = Path(directory) / "t.canonical.md"
+        source.write_text(canon, encoding="utf-8")
+        ssir_path = Path(directory) / "t.ssir.json"
+        ssir = SSIRBuilder().build(CSMParser().read(str(source)))
+        ssir_path.write_text(json.dumps(ssir, ensure_ascii=False), encoding="utf-8")
+        target = Path(directory) / "t.pdf"
+        render_pdf_file(str(ssir_path), str(target), toc_depth=None)
+        document = pymupdf.open(str(target))
+        unit_glyphs: list[tuple[str, tuple, int]] = []
+        for page in document:
+            for block in page.get_text("rawdict")["blocks"]:
+                for line in block.get("lines", []):
+                    text = "".join(char["c"] for span in line["spans"] for char in span["chars"])
+                    if "单位为毫米" in text:
+                        unit_glyphs.append((text.strip(), tuple(line["bbox"]), page.number))
+        images = [
+            (page.number, tuple(info["bbox"]))
+            for page in document
+            for info in page.get_image_info()
+        ]
+        # 封面徽标（GBT-L02）也是图片：只取面积最大的一张（= 本测试的图 E.2 资产）。
+        figure_image = max(images, key=lambda item: (item[1][2] - item[1][0]) * (item[1][3] - item[1][1]))
+        result = (ssir, unit_glyphs, figure_image, document)
+        return result
+
+    def test_unit_line_is_folded_and_stays_with_the_figure(self) -> None:
+        ssir, unit_glyphs, figure_image, document = self._render(filler=26, unit_line=True)
+        # ① 解析层：单位行折进图节点，不再残留为段落
+        self.assertEqual(ssir["figures"][0].get("unit"), "毫米")
+        paragraphs = [
+            element.get("textContent", "")
+            for node in ssir["structuralRoot"].get("children", [])
+            for element in node.get("contentElements", [])
+            if element.get("presentationType") == "paragraph"
+        ]
+        self.assertNotIn("单位为毫米", paragraphs)
+        # ② 渲染层：图确实另起了一面（不在第 1 页），单位行与图同页同组
+        image_page, image_bbox = figure_image
+        self.assertGreater(image_page, 0, figure_image)
+        unit_pages = {page for _, _, page in unit_glyphs}
+        self.assertEqual(unit_pages, {image_page}, (unit_glyphs, figure_image))
+        unit_bbox = unit_glyphs[0][1]
+        # ③ 位置：单位行在图上方（y 更小）且右对齐（右缘贴版心右缘；字形墨迹与版心
+        # 右缘有亚字宽的空隙，取一个汉字宽的容差）
+        self.assertLess(unit_bbox[3], image_bbox[1], (unit_bbox, image_bbox))
+        self.assertGreater(unit_bbox[2], document[image_page].rect.width / 2 + 100, unit_bbox)
+        self.assertLessEqual(abs(unit_bbox[2] - image_bbox[2]), 12, (unit_bbox, image_bbox))
+        document.close()
+
+    def test_unit_line_absent_keeps_old_layout(self) -> None:
+        # 反例：canonical 没有单位行时图照旧居中渲染（规则不外溢）
+        ssir, unit_glyphs, figure_image, document = self._render(filler=26, unit_line=False)
+        self.assertIsNone(ssir["figures"][0].get("unit"))
+        self.assertEqual(unit_glyphs, [])
+        self.assertGreater(figure_image[0], 0)
+        document.close()
 
 
 if __name__ == "__main__":

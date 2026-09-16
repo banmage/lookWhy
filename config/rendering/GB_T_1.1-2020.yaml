@@ -29,6 +29,16 @@ fonts:
   # tools/prepare_label_font.py 一键生成）。留空则退回 primary。
   label: NotoSansCJKsc-Bold
   label-file: config/rendering/fonts/NotoSansCJKsc-Bold.ttf
+  # 强调字形（docs/07 §6.1 CSM 强调标记；GEN-108）：`**X**`→黑体（同 label）、
+  # `*X*`→宋体机斜、`***X***`→黑体粗机斜。reportlab 的 <b>/<i> 只能从**已注册
+  # 字族**取成员（未登记时标签被静默忽略），故强调必须有真实字形资产：两份机斜
+  # 由 tools/prepare_oblique_font.py 由上两行字体按剪切矩阵生成（倾斜角取自源
+  # PDF 实测 15.8°，GB_T_20001.10-2014 表1「目次」）。文件缺失时退回直立字形
+  # 并在渲染报告记 [GEN-108] 告警。
+  italic: NotoSerifCJKsc-Oblique
+  italic-file: config/rendering/fonts/NotoSerifCJKsc-Oblique.ttf
+  bold-italic: NotoSansCJKsc-BoldOblique
+  bold-italic-file: config/rendering/fonts/NotoSansCJKsc-BoldOblique.ttf
 styles:
   body: {size-pt: 10.5, leading-pt: 18, first-line-indent-em: 2, alignment: justify}
   section: {size-pt: 16, leading-pt: 22, alignment: center}
