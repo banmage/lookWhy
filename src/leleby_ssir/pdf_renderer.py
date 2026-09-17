@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, field
 from html import escape
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 from typing import Any
@@ -385,12 +386,18 @@ def render_pdf(
             self.stack = list(stack)
             self.ssir_id = ssir_id or str(getattr(self.stack[-1], "ssir_id", "") or "")
             self._heights: list[float] = []
+            # 旋转后内块的稳定可用宽 = 横排可用宽（页高口径），与当前页剩多少无关：
+            # wrap 曾经用「本页剩余高」当内块宽，表在页面下方时被压窄→折行变高→
+            # 沿页宽方向的尺寸变大，reportlab 拿到一个本页放不下的片段后
+            # Splitting error(n==2) 中止整篇（GB/T 30819-2024 表2/表4）。
+            self._measure = _ROTATED_TABLE_MEASURE
 
         def wrap(self, available_width: float, available_height: float) -> tuple[float, float]:
+            inner_width = float(self._measure or available_height)
             width = 0.0
             self._heights = []
             for flowable in self.stack:
-                item_width, item_height = flowable.wrap(available_height, available_height)
+                item_width, item_height = flowable.wrap(inner_width, inner_width)
                 width = max(width, float(item_width))
                 self._heights.append(float(item_height))
             self.width, self.height = sum(self._heights), width
@@ -409,9 +416,17 @@ def render_pdf(
 
         def split(self, available_width: float, available_height: float) -> list[Any]:
             # 旋转后：内块宽（列宽之和）受页高约束、内块高（题注 + 行高之和）受页宽
-            # 约束（available_width 就是版心宽）。切不出更小片段时返回空列表——
-            # reportlab 据此把整表推迟到下一页；放不下才报 "too large"。
-            pieces = self.stack[-1].split(self.height or available_height, available_width)
+            # 约束（available_width 就是版心宽）。两个「放不下」的判断：
+            #  ① 旋转后的垂直尺寸（= 内块宽）高于本页剩余高 → 本页放不下，返回空列表
+            #     让 reportlab 把整表推迟到下一页；此时若返回片段，该片段同样放不下，
+            #     reportlab 直接抛 Splitting error(n==2) 中止整篇。
+            #  ② 内块切不出更小片段 → 同样返回空列表（放下不才报 "too large"）。
+            if self.height > available_height + 0.5:
+                return []
+            budget = available_width - sum(self._heights[:-1])
+            if budget <= 1.0:
+                return []
+            pieces = self.stack[-1].split(self.height or available_height, budget)
             if len(pieces) < 2:
                 return []
             return [type(self)([*self.stack[:-1], piece], self.ssir_id) for piece in pieces]
@@ -1370,13 +1385,75 @@ def _is_table_caption_shape(content: dict[str, Any]) -> bool:
     return False
 
 
+def _flowable_natural_width(flowable: Any) -> float:
+    """并列列内容的一行自然宽（pt）——GEN-111 的列宽依据。
+
+    段落按 reportlab **自己解析出的片段**（``Paragraph.frags``）用同一套字宽表累加：
+    `_markup` 生成的字体切换、上下标（缩小字号）、黑体标签都算进去，与最终排版同源
+    （实测「正确：」31.5pt、「dim (能量) = dim (力)×dim (长度)」166.4pt，与渲染出的
+    文本行宽一致）。图片用绘制宽（``drawWidth``，与列宽上限收窄同口径）。其余
+    flowable（Spacer 等）不参与，返回 0。
+    """
+    draw_width = getattr(flowable, "drawWidth", None)
+    if draw_width:
+        return float(draw_width)
+    frags = getattr(flowable, "frags", None)
+    if not frags:
+        return 0.0
+    from reportlab.pdfbase import pdfmetrics
+
+    total = 0.0
+    for frag in frags:
+        for item in (frag if isinstance(frag, list) else [frag]):
+            text = getattr(item, "text", "")
+            if not text:
+                continue
+            try:
+                total += pdfmetrics.stringWidth(text, item.fontName, item.fontSize)
+            except Exception:                   # 字体未注册等不该拖垮整篇渲染
+                continue
+    return total
+
+
+def _side_by_side_widths(needs: list[float], avail: float) -> list[float]:
+    """并列组列宽（GEN-111）：先**等分**（对照型「正确/不正确」并列保持对称），
+    再把排不下的列的缺口从有余量的列按余量比例补过去（让宽），直到每列都容得下
+    自己的内容、或再无可让。
+
+    与旧口径（只按图/公式绘制宽比例分）的区别：① 文字内容（含 GEN-106 拍平的
+    含汉字公式）也计入需求——旧口径对无图列给 60pt 占位，GB/T 1.1-2020 9.9.3.1
+    示例4 右栏因此只有 131pt，把「dim (能量) = dim (力)×dim (长度)」挤成两行；
+    ② 总量够时每列都拿到自身所需（不会出现「版心明明够却折行」），且对称性不被
+    内容长短打破（示例4 源排版即约 226/235 的近等分）。
+    """
+    count = len(needs)
+    if count == 0:
+        return []
+    widths = [avail / count] * count
+    for _ in range(4 * count + 8):
+        shortfall = [max(0.0, need - width) for need, width in zip(needs, widths)]
+        surplus = [max(0.0, width - need) for need, width in zip(needs, widths)]
+        total_shortfall = sum(shortfall)
+        total_surplus = sum(surplus)
+        if total_shortfall <= 1e-9 or total_surplus <= 1e-9:
+            break
+        give = min(total_shortfall, total_surplus)
+        for index, value in enumerate(shortfall):
+            if value > 0:
+                widths[index] += give * value / total_shortfall
+        for index, value in enumerate(surplus):
+            if value > 0:
+                widths[index] -= give * value / total_surplus
+    return widths
+
+
 def _append_side_by_side(story: list[Any], members: list[dict[str, Any]], registries: dict[str, dict[str, dict[str, Any]]], styles: dict[str, Any], font: str, report: PDFRenderReport, asset_dir: Path, colors: Any, Table: Any, TableStyle: Any, Paragraph: Any, Spacer: Any, Image: Any, content_width: float = _BODY_MEASURE) -> None:
     """Render a side-by-side group as one borderless table row (div 定位等价物)。
 
     每列是一个单元格（flowables 垂直堆叠）：图按 sourceWidth 原尺寸居中，公式图
     按原尺寸居中（列宽上限内只缩小不放大），图内标注/说明文字用 side-cell 样式列内
     居中。无 GRID/BOX 命令 → 无表格线。列宽按 ssir:columns 的 widths 比例（缺省按
-    各列内容最宽比例，再退化等分）分配当前容器可用内容宽。
+    GEN-111：等分起步、按各列内容的**实测自然宽**互补让宽）。
     """
     from reportlab.platypus import KeepTogether
 
@@ -1403,7 +1480,6 @@ def _append_side_by_side(story: list[Any], members: list[dict[str, Any]], regist
     formula_images: list[tuple[Any, int]] = []
     for col in col_keys:
         cell: list[Any] = []
-        widest = 0.0
         for content in sorted(columns[col], key=_order):
             kind = content.get("presentationType")
             if kind == "figure":
@@ -1426,7 +1502,6 @@ def _append_side_by_side(story: list[Any], members: list[dict[str, Any]], regist
                     image.drawHeight = draw_h
                     image.hAlign = "CENTER"
                     cell.append(image)
-                    widest = max(widest, draw_w)
                 else:
                     report.warnings.append(f"Missing figure asset in side-by-side group: {figure.get('id')}")
             elif kind == "formula":
@@ -1457,7 +1532,6 @@ def _append_side_by_side(story: list[Any], members: list[dict[str, Any]], regist
                         image.hAlign = "CENTER"
                         cell.append(image)
                         formula_images.append((image, col_index[col]))
-                        widest = max(widest, image.drawWidth)
                     else:
                         report.warnings.append(
                             f"Formula in side-by-side group typeset as text ({text_fallback_reason}): {formula.get('id')}"
@@ -1475,18 +1549,18 @@ def _append_side_by_side(story: list[Any], members: list[dict[str, Any]], regist
                     marker = _list_marker(str(item.get("marker", "-")))
                     cell.append(Paragraph(_markup(f"{marker} {item.get('text', '')}".strip()), styles["side-cell"]))
         col_flowables.append(cell)
-        natural_widths.append(widest)
-    # 列宽：显式 widths 比例优先；否则按各列最宽图/公式原尺寸比例分配当前容器
-    # 可用内容宽（content_width），无图无公式列给保底宽度（正文 455pt / 示例框内
-    # 421.5pt，表/图不穿容器框线）；全为文字时等分。
+        # 列需求（GEN-111）：该列所有内容的一行自然宽（图/公式绘制宽、文字实测行宽），
+        # 不是「最宽图」——GEN-106 拍平成文字的含汉字公式与「正确：」这类标签同样计入。
+        natural_widths.append(max((_flowable_natural_width(item) for item in cell), default=0.0))
+    # 列宽：显式 widths 比例优先；否则按 GEN-111 分配——等分起步、按各列实测需求
+    # 互补让宽（总量够时每列都容得下自己的内容；示例框内宽 421.5pt 亦然）。
+    # 无内容列给保底宽度（60pt），避免零宽列。
     avail = content_width - 8 * len(col_keys)  # 单元格左右 padding
     if ratios:
         total_ratio = sum(ratios)
         col_widths = [avail * value / total_ratio for value in ratios]
     else:
-        widths = [w or 60 for w in natural_widths]
-        total = sum(widths)
-        col_widths = [w * avail / total for w in widths]
+        col_widths = _side_by_side_widths([w or 60.0 for w in natural_widths], avail)
     # 公式图按所在列可用宽收窄（保留纵横比）：显式 ratios 比内容窄时不穿列。
     for image, position in formula_images:
         limit = col_widths[position] - 8
@@ -2261,6 +2335,114 @@ def _append_content(story: list[Any], content: dict[str, Any], registries: dict[
         )
 
 
+def _table_note_style(styles: dict[str, Any]) -> Any:
+    """表注行样式（2026-09-02，GB_3100-2026 表1/表4 注行）：GB/T 1.1 表内注居左、
+    首行空两格、小五号；GBT-B09 的"表内文字居中"对注行是例外。"""
+    from reportlab.lib.styles import ParagraphStyle
+
+    return ParagraphStyle(
+        "gbt-table-note",
+        parent=styles["table"],
+        alignment=0,
+        firstLineIndent=2 * styles["table"].fontSize,
+        leftIndent=0,
+        spaceAfter=0,
+    )
+
+
+def _table_note_hang_style(styles: dict[str, Any], part: str, base: Any) -> Any:
+    """注行悬挂缩进（2026-09-07 用户裁定）：首行「注N：」仍从两字处起排，
+    续行（折行文字）左缩进到「注N：」冒号后的文字对齐位置。前缀宽度按
+    字形实测（_cell_text_natural_width），避免中文冒号/空格宽度偏差。
+    """
+    prefix = re.match(r"^(注\s*\d*\s*[:：])", part)
+    if not prefix:
+        return base
+    label_width = _cell_text_natural_width(prefix.group(1), styles["table"].fontSize)
+    return base.clone(
+        "gbt-table-note-hang",
+        leftIndent=2 * styles["table"].fontSize + label_width,
+        firstLineIndent=-label_width,
+    )
+
+
+def _table_cell_flowables(
+    cell_text: str,
+    cell_width: float,
+    is_header: bool,
+    *,
+    styles: dict[str, Any],
+    cell_image_sizes: dict[str, list[float]],
+    cell_image_re: re.Pattern[str],
+    label_font: str = "",
+    asset_dir: Path | None = None,
+    Image: Any = None,
+) -> list[Any]:
+    """单元格内容 → 流式对象（列宽分配的折行测量与渲染共用同一实现）。
+
+    表头行居中、数据行居左（2026-09-07 用户裁定；表内注行另行居左排版）。
+    单元格行结构（merge 阶段从源文本层恢复的 <br>，如 表1 "术语和定义<br>……"）
+    在 _markup 转义后恢复为真实 <br/>，使省略号等独占一行（GBT-B08 表格版式）。
+    表中图（GBT-X02）：mineru_html 把单元格内 <img> 附成
+    "![](assets/images/<hash>.jpg)" 文本，此处拆出为单元格内 Image flowable
+    （优先按原版面尺寸、上限单元格宽缩放、不放大），图片前后文本各自成段。
+    表注行（2026-09-02，GB_3100-2026 表1/表4）：单元格以「注N：」开头时，把合并
+    进同一格的 注1：…注2：…（以及跨页吸收回表内的续注，<br> 分隔）拆成每条注独立
+    一段，居左、首行空两格（GB/T 1.1 表内注版式）。
+
+    2026-09-17：从 ``_append_table`` 的内嵌函数提为模块级——列宽分配（GEN-110）
+    需要按同一实现测量「文本 × 列宽 → 折行行数」，测量与渲染必须是同一份代码。
+    """
+    from reportlab.platypus import Paragraph
+
+    cell_style = styles["table"] if is_header else styles["table-body"]
+    flowables: list[Any] = []
+    stripped_note = cell_image_re.sub("", cell_text).strip()
+    if _TABLE_NOTE_CELL_RE.match(stripped_note):
+        base = _table_note_style(styles)
+        for note_part in _split_table_note_parts(cell_text):
+            note_style = _table_note_hang_style(styles, note_part, base)
+            flowables.append(
+                Paragraph(
+                    # 表内注标记黑体、注内容小五号宋体（GBT-B10；附录F 序号44/45）。
+                    _label_markup(_table_cell_superscripts(note_part), label_font, em_size=note_style.fontSize).replace("\x00BR\x00", "<br/>"),
+                    note_style,
+                )
+            )
+        return flowables
+    position = 0
+    for match in cell_image_re.finditer(cell_text):
+        text_part = cell_text[position:match.start()]
+        if text_part.strip():
+            marked = text_part.replace("<br>", "\x00BR\x00")
+            flowables.append(Paragraph(_label_markup(_table_cell_superscripts(marked), label_font, em_size=cell_style.fontSize).replace("\x00BR\x00", "<br/>"), cell_style))
+        if Image is not None and asset_dir is not None:
+            image_path = _resolve_asset(asset_dir, match.group(1))
+            if image_path.is_file():
+                image = Image(str(image_path))
+                src = cell_image_sizes.get(match.group(1))
+                if src:
+                    scale = min(
+                        1.0,
+                        src[0] / image.imageWidth,
+                        src[1] / image.imageHeight,
+                        (cell_width - 8) / image.imageWidth,
+                        200 / image.imageHeight,
+                    )
+                else:
+                    scale = min(1.0, (cell_width - 8) / image.imageWidth, 200 / image.imageHeight)
+                image.drawWidth = image.imageWidth * scale
+                image.drawHeight = image.imageHeight * scale
+                image.hAlign = "CENTER"
+                flowables.append(image)
+        position = match.end()
+    tail = cell_text[position:]
+    if tail.strip() or not flowables:
+        marked = tail.replace("<br>", "\x00BR\x00")
+        flowables.append(Paragraph(_label_markup(_table_cell_superscripts(marked), label_font, em_size=cell_style.fontSize).replace("\x00BR\x00", "<br/>"), cell_style))
+    return flowables
+
+
 def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any], colors: Any, Table: Any, TableStyle: Any, Paragraph: Any, *, asset_dir: Path | None = None, Image: Any = None, content_width: float = _BODY_MEASURE, label_font: str = "") -> None:
     # 规则对应: GBT-B07（表编号表题居中置于表上、表头框线、数字小五号宋体）、
     # GBT-X02（不准许分表/表中套表；转页重复表头 repeatRows；表中图）、GEN-033（无编号无题名不输出题注）、
@@ -2287,95 +2469,19 @@ def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any
     rows = sorted(table.get("rows", []), key=lambda row: row["rowIndex"])
 
     cell_image_re = re.compile(r"!\[(?:[^\]]*)\]\(([^)]+)\)")
-    # 表注行样式（2026-09-02，GB_3100-2026 表1/表4 注行）：GB/T 1.1 表内注
-    # 居左、首行空两格、小五号；GBT-B09 的"表内文字居中"对注行是例外。
-    from reportlab.lib.styles import ParagraphStyle
-
-    table_note_style = ParagraphStyle(
-        "gbt-table-note",
-        parent=styles["table"],
-        alignment=0,
-        firstLineIndent=2 * styles["table"].fontSize,
-        leftIndent=0,
-        spaceAfter=0,
-    )
-
-    def _table_note_hang(part: str) -> ParagraphStyle:
-        """注行悬挂缩进（2026-09-07 用户裁定）：首行「注N：」仍从两字处起排，
-        续行（折行文字）左缩进到「注N：」冒号后的文字对齐位置。前缀宽度按
-        字形实测（_cell_text_natural_width），避免中文冒号/空格宽度偏差。
-        """
-        prefix = re.match(r"^(注\s*\d*\s*[:：])", part)
-        if not prefix:
-            return table_note_style
-        label_width = _cell_text_natural_width(prefix.group(1), styles["table"].fontSize)
-        return table_note_style.clone(
-            "gbt-table-note-hang",
-            leftIndent=2 * styles["table"].fontSize + label_width,
-            firstLineIndent=-label_width,
-        )
     # 表中图原始版面尺寸（pt）：_stamp_figure_source_sizes 在流水线 finalize
     # 写入 table["cellImageSizes"] = {ref: [w, h]}，渲染端按原尺寸（上限
     # 单元格宽、不放大）显示，使表中图与原图尺寸相当（GEN-098 / GBT-X02）。
     cell_image_sizes = table.get("cellImageSizes") or {}
 
     def _render_cell(cell_text: str, cell_width: float, is_header: bool = False) -> list[Any]:
-        # 表头行居中、数据行居左（2026-09-07 用户裁定；表内注行另行居左排版）。
-        cell_style = styles["table"] if is_header else styles["table-body"]
-        # 单元格行结构（merge 阶段从源文本层恢复的 <br>，如 表1 "术语和定义
-        # <br>……<br>程序确立…"）在 _markup 转义后恢复为真实 <br/>，使省略号
-        # 等独占一行（GBT-B08 表格版式）。\x00BR\x00 哨兵走 _markup 不被转义。
-        # 表中图（GBT-X02）：mineru_html 把单元格内 <img> 附成
-        # "![](assets/images/<hash>.jpg)" 文本，此处拆出为单元格内 Image
-        # flowable（优先按原版面尺寸、上限单元格宽缩放、不放大），图片前后
-        # 文本各自成段。
-        flowables: list[Any] = []
-        # 表注行（2026-09-02，GB_3100-2026 表1/表4）：单元格以「注N：」开头时，
-        # 把合并进同一格的 注1：…注2：…（以及跨页吸收回表内的续注，<br> 分隔）
-        # 拆成每条注独立一段，居左、首行空两格（GB/T 1.1 表内注版式）。
-        stripped_note = cell_image_re.sub("", cell_text).strip()
-        if _TABLE_NOTE_CELL_RE.match(stripped_note):
-            for note_part in _split_table_note_parts(cell_text):
-                note_style = _table_note_hang(note_part)
-                flowables.append(
-                    Paragraph(
-                        # 表内注标记黑体、注内容小五号宋体（GBT-B10；附录F 序号44/45）。
-                        _label_markup(_table_cell_superscripts(note_part), label_font, em_size=note_style.fontSize).replace("\x00BR\x00", "<br/>"),
-                        note_style,
-                    )
-                )
-            return flowables
-        position = 0
-        for match in cell_image_re.finditer(cell_text):
-            text_part = cell_text[position:match.start()]
-            if text_part.strip():
-                marked = text_part.replace("<br>", "\x00BR\x00")
-                flowables.append(Paragraph(_label_markup(_table_cell_superscripts(marked), label_font, em_size=cell_style.fontSize).replace("\x00BR\x00", "<br/>"), cell_style))
-            if Image is not None and asset_dir is not None:
-                image_path = _resolve_asset(asset_dir, match.group(1))
-                if image_path.is_file():
-                    image = Image(str(image_path))
-                    src = cell_image_sizes.get(match.group(1))
-                    if src:
-                        scale = min(
-                            1.0,
-                            src[0] / image.imageWidth,
-                            src[1] / image.imageHeight,
-                            (cell_width - 8) / image.imageWidth,
-                            200 / image.imageHeight,
-                        )
-                    else:
-                        scale = min(1.0, (cell_width - 8) / image.imageWidth, 200 / image.imageHeight)
-                    image.drawWidth = image.imageWidth * scale
-                    image.drawHeight = image.imageHeight * scale
-                    image.hAlign = "CENTER"
-                    flowables.append(image)
-            position = match.end()
-        tail = cell_text[position:]
-        if tail.strip() or not flowables:
-            marked = tail.replace("<br>", "\x00BR\x00")
-            flowables.append(Paragraph(_label_markup(_table_cell_superscripts(marked), label_font, em_size=cell_style.fontSize).replace("\x00BR\x00", "<br/>"), cell_style))
-        return flowables
+        # 单元格渲染实现已提为模块级 _table_cell_flowables（列宽分配的折行测量与
+        # 渲染共用同一份代码，GEN-110）。
+        return _table_cell_flowables(
+            cell_text, cell_width, is_header,
+            styles=styles, cell_image_sizes=cell_image_sizes, cell_image_re=cell_image_re,
+            label_font=label_font, asset_dir=asset_dir, Image=Image,
+        )
 
     if not rows or not rows[0].get("cells"):
         return
@@ -2422,11 +2528,24 @@ def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any
         built.setStyle(TableStyle(commands))
         return built
 
-    col_widths = _table_column_widths(rows, col_count, styles["table"].fontSize, cell_image_sizes, cell_image_re, frame_width=content_width)
+    # 列宽折行测量器（GEN-110）：用渲染端同一实现测「文本 × 列宽 → 行数」，分配按
+    # 折行代价（总高 → 折行数 → 折行格数 → 空白平衡）逐段买入。测量器是**文档级**
+    # 缓存（挂在 styles 上），同一文档的重复单元格与跨表重复内容直接命中。
+    table_measurer = _table_measurer_for(
+        styles, cell_image_sizes=cell_image_sizes, cell_image_re=cell_image_re,
+        label_font=label_font, asset_dir=asset_dir, Image=Image,
+        font_size=styles["table"].fontSize,
+    )
+    col_widths = _table_column_widths(
+        rows, col_count, styles["table"].fontSize, cell_image_sizes, cell_image_re,
+        frame_width=content_width, measurer=table_measurer,
+    )
     grid = _grid(col_widths)
     # 宽表横排（GEN-103）：竖排下必然排不下的多列表整表旋转 90°（表头落订口一侧）。
     landscape_widths = _table_landscape_widths(
-        rows, col_count, styles["table"].fontSize, cell_image_sizes, cell_image_re, content_width, grid
+        rows, col_count, styles["table"].fontSize, cell_image_sizes, cell_image_re, content_width, grid,
+        measurer=table_measurer,      # 同一测量器：横排判定复用已测结果
+        portrait_widths=col_widths,   # 判据③a：竖排列宽是否已被压到下界（读不成表）
     )
     if landscape_widths is not None and _ROTATED_TABLE_CLASS is not None:
         # 横排：题注 + 单位行 + 表格作为一个整体旋转（表头落订口一侧）。
@@ -2516,6 +2635,220 @@ def _table_column_demands(
     return need, header_min, body_need, content
 
 
+class _TableCellMeasurer:
+    """列宽分配的折行测量器（GEN-110）：单元格文本 × 列宽 → 折行行数。
+
+    测量走**渲染端同一实现** ``_table_cell_flowables``（`$…$` 拍平、上下标、
+    表注悬挂缩进、`<br>` 固定断行、表中图按列宽缩放），因此「分配时算出的行数」
+    与「实际渲染的行数」同源；纯文本单元格的流式对象只构建一次、按不同宽度反复
+    ``wrap``（reportlab 每次 wrap 都会重排，行数随宽度变化），结果按
+    （文本, 表头, 列宽）缓存——同一文档的多张表共用，重复单元格（如「五号黑体」、
+    「30」）直接命中。
+
+    ``_synthetic`` 为无渲染上下文（单表渲染 / 单测）时的兜底：按
+    ``_cell_text_natural_width`` 的字符宽模型估算行数。**正文渲染一律用真实测量**
+    （``_append_table`` 构造），兜底只保证函数在缺 reportlab 样式时仍可用。
+    """
+
+    def __init__(self, *, styles: dict[str, Any] | None = None, cell_image_sizes: dict[str, list[float]] | None = None, cell_image_re: re.Pattern[str] | None = None, label_font: str = "", asset_dir: Path | None = None, Image: Any = None, font_size: float = 9.0) -> None:
+        self.styles = styles
+        self.cell_image_sizes = cell_image_sizes or {}
+        self.cell_image_re = cell_image_re or re.compile(r"!\[(?:[^\]]*)\]\(([^)]+)\)")
+        self.label_font = label_font
+        self.asset_dir = asset_dir
+        self.Image = Image
+        self.font_size = font_size
+        self._flowables: dict[tuple[str, bool], list[Any]] = {}
+        self._lines: dict[tuple[str, bool, float], int] = {}
+        self._ladders: dict[tuple[str, bool, float, float], list[tuple[float, int]]] = {}
+        self._synthetic = styles is None
+
+    @staticmethod
+    def content_width(column_width: float) -> float:
+        """单元格内容可用宽（reportlab 的 colWidths 减去左右边距）。"""
+        return max(column_width - 2 * _TABLE_CELL_PADDING, 1.0)
+
+    def leading(self, is_header: bool) -> float:
+        if self._synthetic:
+            return 1.0
+        style = self.styles["table"] if is_header else self.styles["table-body"]
+        return float(style.leading)
+
+    def _flowable_lines(self, flowables: list[Any], column_width: float, is_header: bool) -> int:
+        width = self.content_width(column_width)
+        total = 0
+        for flowable in flowables:
+            style = getattr(flowable, "style", None)
+            leading = float(getattr(style, "leading", 0) or 0) or self.leading(is_header)
+            try:
+                _w, height = flowable.wrap(width, 10000)
+            except Exception:
+                return max(1, int(len(str(getattr(flowable, "text", "")) or "x")))
+            total += max(1, int(round(float(height) / leading)))
+        return max(1, total)
+
+    def lines(self, text: str, column_width: float, is_header: bool) -> int:
+        key = (text, is_header, round(float(column_width), 1))
+        cached = self._lines.get(key)
+        if cached is not None:
+            return cached
+        if self._synthetic:
+            # 兜底（无渲染上下文）：字符宽模型估算，按宽度等比换算行数。
+            natural = _cell_text_natural_width(re.sub(r"\$([^$\n]+)\$", lambda m: _latex_to_text(m.group(1)), text), self.font_size)
+            usable = self.content_width(column_width)
+            result = max(1, int(math.ceil(natural / usable - 1e-9)))
+        else:
+            if self.cell_image_re.search(text):
+                # 表中图的缩放随列宽变化 → 每个宽度重建一次流式对象。
+                flowables = _table_cell_flowables(
+                    text, column_width, is_header, styles=self.styles,
+                    cell_image_sizes=self.cell_image_sizes, cell_image_re=self.cell_image_re,
+                    label_font=self.label_font, asset_dir=self.asset_dir, Image=self.Image,
+                )
+            else:
+                flowables = self._flowables.get((text, is_header))
+                if flowables is None:
+                    flowables = _table_cell_flowables(
+                        text, column_width, is_header, styles=self.styles,
+                        cell_image_sizes=self.cell_image_sizes, cell_image_re=self.cell_image_re,
+                        label_font=self.label_font, asset_dir=self.asset_dir, Image=self.Image,
+                    )
+                    self._flowables[(text, is_header)] = flowables
+            result = self._flowable_lines(flowables, column_width, is_header)
+        self._lines[key] = result
+        return result
+
+
+# 规则对应: GEN-110（表格列宽按折行代价分配）——折行测量器（真实渲染行数）+
+# 每格折行阶梯 + 「按单位宽度收益买入」的分配；旧口径（自然宽需求 + 富余分配）
+# 只在无渲染上下文时兜底。详见 _table_column_widths 的 docstring。
+_CELL_LADDER_MAX_TIERS = 24   # 单元格折行阶梯的层数上限（行数极多的长文本兜底）
+_CELL_LADDER_BITS = 10        # 断点二分位数上限（455pt 量级下 ≈0.4pt，复核回补）
+# 测量器挂载在 styles 上的键：styles 每个文档建一次，测量器随之为文档级缓存
+# （跨表复用行数/阶梯缓存；见 _table_measurer_for）。
+_TABLE_MEASURER_KEY = "_table-measurer"
+
+
+def _table_measurer_for(
+    styles: dict[str, Any],
+    *,
+    cell_image_sizes: dict[str, list[float]],
+    cell_image_re: re.Pattern[str],
+    label_font: str = "",
+    asset_dir: Path | None = None,
+    Image: Any = None,
+    font_size: float = 9.0,
+) -> _TableCellMeasurer:
+    """取本**文档**的列宽折行测量器（GEN-110）：styles 建一次 → 测量器也建一次。
+
+    同一文档的多张表共用行数缓存与折行阶梯缓存（重复单元格如「五号正常体」「30」
+    直接命中，实测 GB_3100-2026 的阶梯重建由 898 次降到 355 次）；表中图的版面
+    尺寸是**每张表**的（``cellImageSizes``），故每次取用时刷新（图片单元格本来
+    就按宽度重建流式对象，不走缓存）。
+    """
+    measurer = styles.get(_TABLE_MEASURER_KEY)
+    if not isinstance(measurer, _TableCellMeasurer):
+        measurer = _TableCellMeasurer(
+            styles=styles, cell_image_sizes=cell_image_sizes, cell_image_re=cell_image_re,
+            label_font=label_font, asset_dir=asset_dir, Image=Image, font_size=font_size,
+        )
+        styles[_TABLE_MEASURER_KEY] = measurer
+    else:
+        measurer.cell_image_sizes = cell_image_sizes or {}
+        measurer.label_font = label_font or measurer.label_font
+    return measurer
+
+
+def _table_cell_ladder(measurer: _TableCellMeasurer, text: str, is_header: bool, lower: float, upper: float) -> list[tuple[float, int]]:
+    """单元格折行阶梯 ``[(列宽, 行数)]``（列宽升序、行数递减）——GEN-110 的分配依据。
+
+    ``宽度`` 是**该单元格可用的总列宽**（含左右边距，与 reportlab 的 ``colWidths``
+    同口径）；含义是「总宽 ≥ 该值时，该单元格折成 ≤ 行数 行」。含 `<br>` 的固定
+    断行是行数的下限（阶梯顶层即此下限，再宽也降不下去）。
+
+    逐级二分出「降到 k 行所需的最小宽度」：从下界 ``lower`` 处的最大行数出发，
+    向 1 行逐级求断点，二分区间随已求出的断点收缩（``[上一个断点, upper]`` →
+    精度够用即可，位数按区间自适应），层数上限 ``_CELL_LADDER_MAX_TIERS``。
+    阶梯只覆盖 ``[lower, upper]``，分配时按下界起步、逐段买入，故不会用到区间外。
+    """
+    k_max = measurer.lines(text, lower, is_header)
+    if k_max <= 1:
+        return [(lower, 1)]
+    cache_key = (text, is_header, round(lower, 1), round(upper, 1))
+    cached = measurer._ladders.get(cache_key)
+    if cached is not None:
+        return cached
+    best_lines = measurer.lines(text, upper, is_header)
+    if best_lines >= k_max:
+        measurer._ladders[cache_key] = [(lower, k_max)]
+        return measurer._ladders[cache_key]                 # 上限宽度也降不下行数 → 无层可买
+    steps: list[tuple[float, int]] = []
+    previous = lower
+    for target in range(k_max - 1, best_lines - 1, -1):
+        lo, hi = previous, upper
+        if measurer.lines(text, lo, is_header) <= target:
+            width = lo
+        else:
+            span = max(hi - lo, 0.05)
+            bits = max(6, min(_CELL_LADDER_BITS, int(math.ceil(math.log2(span / 0.05)))))
+            for _ in range(bits):
+                mid = (lo + hi) / 2.0
+                if measurer.lines(text, mid, is_header) <= target:
+                    hi = mid
+                else:
+                    lo = mid
+            # 二分停在「不再达标」的一侧 0.03pt 之内，取整可能落到达标侧的边界外
+            # （实测 44.045 → 44.05 又变回 2 行）→ 复核并按 0.05pt 回补。
+            width = round(hi, 2)
+            for _ in range(8):
+                if measurer.lines(text, width, is_header) <= target:
+                    break
+                width = round(width + 0.05, 2)
+            if measurer.lines(text, width, is_header) > target:
+                break                  # 回补失败（异常文本），保守停止
+        if width <= previous + 1e-9:
+            # 该宽度不会让行数再降（同宽度不可能有两种更优行数）：跳过本层继续
+            # 找更宽的层（例如「规格代号」在 26.06pt 直接 4 行→2 行，无 3 行层）。
+            continue
+        steps.append((width, target))
+        previous = width
+        if len(steps) >= _CELL_LADDER_MAX_TIERS:
+            break                      # 层数上限（行数极多的长文本兜底）
+    entries = [(lower, k_max), *steps]
+    entries.sort(key=lambda pair: pair[0])
+    ladder: list[tuple[float, int]] = []
+    for width, count in entries:
+        # 阶梯按「降到 k 行所需的最小宽度」生成，同一宽度可能跨了多层（「规格代号」
+        # 在 26.1pt 处 4 行直落 2 行）→ 一律取该宽度的**实测**行数，声明不虚高。
+        count = min(count, measurer.lines(text, width, is_header))
+        if ladder and width <= ladder[-1][0] + 1e-9:
+            if count < ladder[-1][1]:
+                ladder[-1] = (width, count)
+            continue
+        ladder.append((width, count))
+    measurer._ladders[cache_key] = ladder
+    return ladder
+
+
+def _table_ladder_lines(ladder: list[tuple[float, int]], width: float) -> int:
+    """阶梯查表：总宽 = width 时该单元格的行数。"""
+    result = ladder[0][1]
+    for entry_width, count in ladder:
+        if entry_width <= width + 1e-9:
+            result = count
+        else:
+            break
+    return result
+
+
+def _table_ladder_next(ladder: list[tuple[float, int]], width: float) -> tuple[float, int] | None:
+    """阶梯上宽 > width 的第一个断点 → (宽度, 行数)；没有则 None。"""
+    for entry_width, count in ladder:
+        if entry_width > width + 1e-9:
+            return (entry_width, count)
+    return None
+
+
 def _table_column_widths(
     rows: list[dict],
     col_count: int,
@@ -2525,70 +2858,171 @@ def _table_column_widths(
     frame_width: float = _BODY_MEASURE,
     floor: float = 24.0,
     min_column: float | None = None,
+    measurer: _TableCellMeasurer | None = None,
 ) -> list[float]:
-    """按内容分配表格列宽（2026-09-03 起；2026-09-07 四次用户裁定）。
+    """按**折行代价**分配表格列宽（2026-09-17 起；GEN-110 执行侧）。
 
-    需求口径（2026-09-07 四次裁定，取代“单列最大行宽”口径）：
-      · 表头行：列宽底线 = 表头自然宽 + 12pt（表头尽量不折行；仅当全部表头
-        底线之和都超出版心时（罕见）才让表头折行）；
-      · 数据行：取该列各行自然宽（<br> 多行格取最长行）的 **80% 分位数**
-        （少数派超长行/个别单长格不再独撑整列、饿死多数行——表2/表3/表4 的
-        209/329/585pt 单格即此病根）；colspan 内容按跨列数均摊进各列；
-        整行通栏注行（colspan=全部）与 OCR 丢 colspan 的单长格不挤占；
-        表格图片按原版面宽度计。
-    分配（总宽恒 = 版心 frame_width）：
-      · 内容总需求（含边距）≤ 版心时：先满足各列需求，富余空间**各列均分**
-        ——列内文字距两端表格线留距一致、疏密观感均衡，绝无临界折行；
-      · 超版心时：表头底线优先全额满足，剩余宽度按数据需求比例分给各列
-        （折行优先发生在少数派长行，且尽量不发生在表头）；
-      · 完全空列（无表头无数据）保底 floor，不参与均分。
-    每列下界（2026-09-12，GEN-103）：列宽不得小于 ``min_column``（默认
-    「左右边距 + 一个汉字宽」）——窄于此的列连一个字都排不下，reportlab 会以
-    「负可用宽」中止**整篇**渲染（GB/T 5171.1-2014 表9：26 列、末列被分到 0.6pt）。
-    不足部分从最宽列按富余量扣减，Σ 仍恒 = 版心；Σ下界已超版心（列数极多）时
-    退化为等分，由调用点决定压缩边距或整表横排（``_append_table``）。
+    用户 2026-09-17 给定的四条目标，按字典序落实：
+      ① 整表总高度尽可能小；② 折行总次数尽可能少；③ 单元格内容尽量保持完整
+        （尽量不折行）；④ 上述条件下尽量让空白与文字的观感平衡。
+    旧口径（需求 = 表头自然宽 + 12pt 与数据 80% 分位取大，再「富余各列均分 /
+    按数据需求比例分」）满足不了 ①—④：它按**自然宽估计**给列，既不看折行
+    代价，也不看超长单元格的成本，实测 GB/T 30819 表4 把「表头长、数据短」的
+    第 4/5 列撑到 130/94pt（源排版 84/69pt，数据只要 19pt），而表头并不因此
+    不折行；GB/T 1.1 表F.1 则把第 2 列撑到 112pt（内容 84pt 就够）而第 4 列
+    只有 117pt、折行 8 处。
+
+    新算法（总宽恒 = 版心，列宽和恰等于 ``frame_width``）：
+      1. **测量**：每个单元格用渲染端同一实现测出折行阶梯（``_table_cell_ladder``）
+         ——「列宽 → 行数」的分段常数函数；
+      2. **分配**：从每列下界起步，反复买入「单位宽度换到的收益」最大的那一段。
+         收益按字典序比较——先看整表高度（各行行数的最大值之和，行高由该行最高的
+         单元格决定），再看折行总行数，最后看折行的单元格个数；同一优先级下按
+         「收益/宽度」比选列。步长为该列阶梯上的下一个断点（即真正能减少折行所需
+         的最小加宽），不逐点试探；
+      3. **平衡**（④）：买无可买（所有单元格都不再折行）或版心用尽后的余额，按
+         各列**当时宽度**比例分配——即各列「空白/文字」的比值一致，窄列不会被
+         塞进大块空白（旧口径的「富余均分」正是宽度反差大的原因之一）；
+      4. **空列**保底 ``floor``（不参与买入与余额分配）、每列下界 ``min_column``
+         （默认「左右边距 + 一个汉字宽」，GEN-103）在最后统一施加，Σ 仍恒 = 版心。
+
+    单元格集合与渲染端一致：整行通栏（colspan = 全部列）的注行、以及渲染端会
+    自动 SPAN 成通栏的「单长格行」都不挤占单列宽度（``lone_full`` 判据与
+    ``_append_table`` 相同）；跨列（colspan < 列数）单元格按**组宽**参与测量，
+    买它所在任一行列的宽度都会计入组宽。
+
+    ``measurer`` 缺省时退化为需求模型的兜底（无渲染上下文的单表渲染/单测），
+    正文渲染路径一律传入 ``_TableCellMeasurer``（``_append_table``）。
     """
-    need, header_min, body_need, content = _table_column_demands(
-        rows, col_count, font_size, cell_image_sizes, cell_image_re
-    )
-    if not content:
-        return [frame_width / col_count] * col_count
-    if len(content) == col_count and sum(need) <= 0:
-        return [frame_width / col_count] * col_count
-    # 空列占用：floor 每列；可用版心只分给有内容的列。
-    frame_for_content = frame_width - floor * (col_count - len(content))
-    widths = [floor if c not in content else 0.0 for c in range(col_count)]
-    sum_need = sum(need[c] for c in content)
-    if sum_need <= frame_for_content:
-        # 富余各列均分：留距一致、疏密均衡。
-        extra = (frame_for_content - sum_need) / len(content)
-        for c in content:
-            widths[c] = need[c] + extra
-    else:
-        # 超版心：先全额满足表头底线，余量按数据需求比例分配（无表头数据的
-        # 列不参与余量分配）。表头底线本身超版心时按比例压表头底线（罕见兜底）。
-        h_sum = sum(header_min[c] for c in content)
-        if h_sum > frame_for_content:
-            for c in content:
-                widths[c] = header_min[c] * frame_for_content / h_sum
-        else:
-            rest = frame_for_content - h_sum
-            r_den = sum(body_need[c] for c in content)
-            for c in content:
-                widths[c] = header_min[c] + (rest * body_need[c] / r_den if r_den > 0 else rest / len(content))
-        # 保底 floor（不足部分从最宽列扣除）
-        over = sum(widths) - frame_width
-        if over > 0:
-            order = sorted(range(col_count), key=lambda i: widths[i], reverse=True)
-            for i in order:
-                if over <= 1e-6:
-                    break
-                give = min(widths[i] - floor, over)
-                widths[i] -= give
-                over -= give
-    # 每列下界（2026-09-12，GEN-103）：见 docstring。Σ下界 ≥ 版心时等分（此时
-    # 任何分配都排不下，横排/压缩边距由调用点决定），否则从最宽列扣减补足。
     lower = float(min_column) if min_column is not None else 2 * _TABLE_CELL_PADDING + font_size
+    if col_count <= 0:
+        return []
+    if measurer is None:
+        # 无渲染上下文（单表渲染 / 单测）：字符宽模型兜底。正文渲染路径总是传入
+        # _TableCellMeasurer（真实折行测量），见 docstring。
+        measurer = _TableCellMeasurer(font_size=font_size)
+    # 单元格集合（与渲染端同判据）：(行, 起列, 止列, 表头?, 文本)
+    raw_cells: list[tuple[int, int, int, bool, str]] = []
+    for row in rows:
+        cells = sorted(row.get("cells", []), key=lambda cell: cell["colIndex"])
+        plain = lambda cell: cell_image_re.sub("", str(cell.get("text", "")))
+        filled = [cell for cell in cells if plain(cell).strip()]
+        lone_full = len(cells) > 2 and len(filled) == 1 and len(plain(filled[0])) >= 20
+        if lone_full:
+            continue
+        is_header = bool(row.get("isHeader"))
+        for cell in cells:
+            text = plain(cell).strip()
+            span = int(cell.get("colspan", 1) or 1)
+            if not text or span >= col_count:
+                continue
+            start = int(cell["colIndex"])
+            raw_cells.append((int(row["rowIndex"]), start, min(start + span, col_count), is_header, text))
+    content_cols = sorted({cell[1] for cell in raw_cells} | {cell[2] - 1 for cell in raw_cells})
+    if not raw_cells:
+        return [frame_width / col_count] * col_count
+    # 下界之和已超版心（列数极多）：任何分配都排不下，等分后由调用点决定
+    # 压缩边距 / 整表横排（GEN-103）。
+    budget = frame_width - floor * (col_count - len(content_cols))
+    if budget <= lower * len(content_cols):
+        return [frame_width / col_count] * col_count
+    widths = [floor if c not in content_cols else lower for c in range(col_count)]
+    # 阶梯宽度上限按「该单元格最多能拿到的组宽」取：其余列各自至少保留下界 lower，
+    # 更宽的目标在这个表格里根本买不起（探它只是浪费折行测量）。
+    reachable = [max(lower, min(frame_width, budget - lower * (col_count - (end - start)))) for _row, start, end, _h, _t in raw_cells]
+    ladders: list[list[tuple[float, int]]] = [
+        _table_cell_ladder(measurer, text, is_header, lower, reachable[index])
+        for index, (_row, _start, _end, is_header, text) in enumerate(raw_cells)
+    ]
+    row_cells: dict[int, list[int]] = {}
+    column_cells: dict[int, list[int]] = {c: [] for c in range(col_count)}
+    for index, (row, start, end, _is_header, _text) in enumerate(raw_cells):
+        row_cells.setdefault(row, []).append(index)
+        for c in range(start, end):
+            column_cells[c].append(index)
+    header_rows = {cell[0] for cell in raw_cells if cell[3]}
+    body_lead = measurer.leading(False)
+    head_lead = measurer.leading(True)
+    row_lead = {row: (head_lead if row in header_rows else body_lead) for row in row_cells}
+
+    def _row_counts(widths_now: list[float]) -> tuple[list[int], dict[int, int]]:
+        """各单元格行数与各行行数最大值（行高 = 该行最高单元格的行数 × 行高）。"""
+        counts = [
+            _table_ladder_lines(ladders[index], sum(widths_now[start:end]))
+            for index, (_row, start, end, _is_header, _text) in enumerate(raw_cells)
+        ]
+        row_max = {row: max(counts[index] for index in indexes) for row, indexes in row_cells.items()}
+        return counts, row_max
+
+    counts, row_max = _row_counts(widths)
+    remaining = budget - sum(widths)
+    guard = 0
+    while remaining > 0.5 and guard < 10000:
+        guard += 1
+        best: tuple[tuple[float, float, float], int, float] | None = None
+        for col in range(col_count):
+            candidates = column_cells[col]
+            if not candidates:
+                continue
+            # 同一列内按「需要增加的组宽」去重：一次买入即可跨越该列上所有符合条件的
+            # 断点，逐个单元格重复评估同一目标纯属浪费（表2/表4 的重复数字格尤甚）。
+            increases: set[float] = set()
+            for index in candidates:
+                _row, start, end, _is_header, _text = raw_cells[index]
+                group = sum(widths[start:end])
+                step = _table_ladder_next(ladders[index], group)
+                if step is None:
+                    continue
+                cost = step[0] - group
+                if cost > 1e-9 and cost <= remaining + 1e-9:
+                    increases.add(round(cost, 3))
+            # 该列可省下的折行总行数（= 高度收益的上界）→ 用于剪掉无望的远目标。
+            column_extra = sum(counts[index] - 1 for index in candidates)
+            bound = column_extra * row_lead.get(raw_cells[candidates[0]][0], body_lead)
+            for cost in sorted(increases):
+                if best is not None and cost > 1e-9 and bound / cost < best[0][0]:
+                    break                      # 更远的目标代价更高、上界不变 → 都不划算
+                trial_counts = {}
+                for index in candidates:
+                    _row, start, end, _is_header, _text = raw_cells[index]
+                    trial_counts[index] = _table_ladder_lines(ladders[index], sum(widths[start:end]) + cost)
+                d_height = 0.0
+                for row, indexes in row_cells.items():
+                    if not any(index in trial_counts for index in indexes):
+                        continue
+                    before = row_max[row]
+                    after = max(trial_counts.get(index, counts[index]) for index in indexes)
+                    if after != before:
+                        d_height += (before - after) * row_lead[row]
+                d_extra = sum(counts[index] - new for index, new in trial_counts.items())
+                d_wrapped = sum((counts[index] > 1) - (new > 1) for index, new in trial_counts.items())
+                if d_height <= 1e-9 and d_extra <= 0 and d_wrapped <= 0:
+                    continue
+                score = (d_height / cost, d_extra / cost, d_wrapped / cost)
+                if best is None or score > best[0]:
+                    best = (score, col, cost)
+        if best is None:
+            break
+        _score, col, cost = best
+        target = widths[col] + cost
+        # 应用买入：更新受影响单元格的行数、各行最大值与剩余额度
+        affected = set(column_cells[col])
+        for index in affected:
+            _row, start, end, _is_header, _text = raw_cells[index]
+            counts[index] = _table_ladder_lines(ladders[index], sum(widths[start:end]) + cost)
+        widths[col] = target
+        for row, indexes in row_cells.items():
+            if not affected.isdisjoint(indexes):
+                row_max[row] = max(counts[index] for index in indexes)
+        remaining = budget - sum(widths)
+    if remaining > 0.5:
+        # ④ 视觉平衡：余额按各列当时宽度比例分配 → 空白/文字比值各列一致。
+        weights = [widths[c] if c in content_cols else 0.0 for c in range(col_count)]
+        total_weight = sum(weights)
+        if total_weight > 0:
+            for col in range(col_count):
+                widths[col] += remaining * weights[col] / total_weight
+    # 每列下界（2026-09-12，GEN-103）：见 docstring。
     if lower > 0 and col_count:
         if lower * col_count >= frame_width:
             widths = [frame_width / col_count] * col_count
@@ -2619,25 +3053,44 @@ def _table_rotated_measure(content_width: float) -> float | None:
     return float(rotated)
 
 
-def _table_exceeds_frame(grid: Any, avail_width: float, frame_height: float) -> bool:
-    """竖排网格在版心内能否分页排下：用 reportlab 自己的 split() 复算一次。
+def _table_exceeds_frame(grid: Any, avail_width: float, frame_height: float, *, max_splits: int = 64) -> bool:
+    """竖排网格在版心内能否**分页**排下：按 reportlab 的**递归**分页语义复算。
 
     跨行合并（rowspan）锁定的行组不可再分，组高超过一页时 reportlab 抛
-    LayoutError；与其另立行高模型，不如直接问它——切分结果里仍有高于一页的片段
-    即为"竖排必然排不下"（GEN-103 判据 ③）。
+    LayoutError；与其另立行高模型，不如直接问它（GEN-103 判据 ③）。
+
+    reportlab 的一次 ``split()`` 只切出「本页装得下的第一片 + 其余」，**其余那一片
+    可以高于一页**——它会被再切一次。只看一级片段会把「长表正常分页」误判成
+    「竖排必然排不下」（GB/T 30819-2024 表2 9 列 ×54 行：一级片段 669pt + 741pt，
+    再切一次即 669/627/150pt 三片全在版心内），于是整表被旋转 90°——旋转后沿页宽
+    方向的尺寸 = 表高 624 + 题注 14 = 638pt > 版心宽 441.5pt，reportlab 抛
+    ``Splitting error(n==2)``，04_render 为空、构建退出码 2，与源排版（该表竖排跨页、
+    表头重复）也不符。因此判据改为「切到不动点仍有一片高于一页」才算排不下。
+
+    返回 True = 竖排**确实**无法分页（可横排）；异常与切不动的片段一律按「无法
+    分页」处理（保持原判据的保守取向：宁可不横排）。
     """
-    try:
-        pieces = grid.split(avail_width, frame_height)
-    except Exception:
-        return False
-    for piece in pieces or []:
+    pending: list[Any] = [grid]
+    splits = 0
+    while pending:
+        piece = pending.pop()
         try:
             # reportlab 的 Table.wrap 返回 (宽, 高) 而不写 .height 属性，故取返回值。
             _width, height = piece.wrap(avail_width, frame_height)
         except Exception:
             return False
-        if float(height) > frame_height + 0.5:
+        if float(height) <= frame_height + 0.5:
+            continue
+        if splits >= max_splits:
             return True
+        splits += 1
+        try:
+            sub = piece.split(avail_width, frame_height)
+        except Exception:
+            return False
+        if len(sub or []) < 2:
+            return True
+        pending.extend(sub)
     return False
 
 
@@ -2649,6 +3102,8 @@ def _table_landscape_widths(
     cell_image_re: re.Pattern[str],
     content_width: float,
     grid: Any,
+    measurer: "_TableCellMeasurer | None" = None,
+    portrait_widths: list[float] | None = None,
 ) -> list[float] | None:
     """宽表横排判定（GEN-103）：需要横排时返回横排列宽，否则返回 None。
 
@@ -2656,9 +3111,14 @@ def _table_landscape_widths(
     同时成立：
       ① 本容器内整表按需排不下（Σ列需求 > 容器宽）——列只能被压到折行；
       ② 横排可用宽（页面版心高）能整表按需排下（Σ列需求 ≤ 横排可用宽）；
-      ③ 竖排网格在本版心内**无法分页**（跨行合并锁定的行组高于一页），即竖排必然
-         LayoutError，而不是"难看但能排"。
-    ② 保证横排确有收益，③ 保证普通"要折行但能分页"的长表不受影响。
+      ③ 竖排**不可用**：二选一——
+         a) 竖排列宽分配后仍有**半数以上（且 ≥3）的列被压到下界**（= 左右边距 + 一个
+            汉字宽 → 每行只排得下一个字，读不成表；26 列的 表9 即此类）；或
+         b) 竖排网格在本版心内**无法分页**（跨行合并锁定行组高于一页）→ 竖排必然
+            LayoutError（``_table_exceeds_frame``）。
+    ② 保证横排确有收益，③ 保证普通「要折行但能分页、列还排得下字」的长表不受影响
+    （GB/T 30819-2024 表2/表4：9/11 列、最小列 31pt 以上 → 竖排跨页、表头重复，与源
+    排版一致，不横排）。
     """
     measure = _table_rotated_measure(content_width)
     if measure is None:
@@ -2669,10 +3129,15 @@ def _table_landscape_widths(
     total_need = sum(need)
     if total_need <= content_width or total_need > measure:
         return None
-    if not _table_exceeds_frame(grid, content_width, measure):
+    lower = 2 * _TABLE_CELL_PADDING + font_size
+    squeezed = False
+    if portrait_widths:
+        at_lower = sum(1 for width in portrait_widths if width <= lower + 0.01)
+        squeezed = at_lower >= max(3, math.ceil(len(portrait_widths) / 2))
+    if not squeezed and not _table_exceeds_frame(grid, content_width, measure):
         return None
     return _table_column_widths(
-        rows, col_count, font_size, cell_image_sizes, cell_image_re, frame_width=measure
+        rows, col_count, font_size, cell_image_sizes, cell_image_re, frame_width=measure, measurer=measurer
     )
 
 

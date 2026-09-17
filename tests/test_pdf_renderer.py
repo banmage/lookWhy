@@ -1426,6 +1426,445 @@ class TableColumnWidthTests(unittest.TestCase):
         self.assertAlmostEqual(sum(widths), 455.0, delta=1e-3)
 
 
+class TableColumnWidthByWrapCostTests(unittest.TestCase):
+    """按折行代价分配列宽（GEN-110，2026-09-17 用户四条目标）。
+
+    现象：旧口径（需求 = 表头自然宽 + 12pt 与数据 80% 分位取大，再「富余均分 /
+    按数据需求比例分」）不看折行代价——GB/T 30819-2024 表4 把「表头长、数据短」的
+    第 4/5 列撑到 130/94pt（源排版 84/69pt，数据只要 19pt）而表头照样折行；
+    GB/T 1.1-2020 表F.1 第 2 列 112pt（内容 84pt 够）而第 4 列 117pt、折行 8 处。
+    新口径用**渲染端同一实现**测量每个单元格的折行行数，按字典序（总高 → 折行行数
+    → 折行格数）逐段买入宽度，余额按各列宽度比例分配。
+
+    断言均取自真实测量（``_TableCellMeasurer`` 走真实 reportlab 样式与折行），
+    不依赖自然宽估计。
+    """
+
+    _IMG = re.compile(r"!\[(?:[^\]]*)\]\(([^)]+)\)")
+    FRAME = 455.0
+    FONT_SIZE = 9.0
+
+    def _measurer(self) -> "_TableCellMeasurer":
+        from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        from reportlab.platypus import Image
+
+        from leleby_ssir.pdf_renderer import _TableCellMeasurer, _styles
+
+        root = Path(__file__).resolve().parents[1]
+        font = root / "config" / "rendering" / "fonts" / "NotoSerifCJKsc-Regular.ttf"
+        profile_asset = root / "config" / "rendering" / "GB_T_1.1-2020.yaml"
+        if not font.is_file() or not profile_asset.is_file():
+            self.skipTest("font/profile asset missing")
+        name = "WrapCostTest"
+        if name not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(TTFont(name, str(font)))
+        profile = yaml.safe_load(profile_asset.read_text(encoding="utf-8"))
+        styles = _styles(getSampleStyleSheet(), profile, name, name, TA_CENTER, TA_JUSTIFY, TA_LEFT)
+        return _TableCellMeasurer(
+            styles=styles, cell_image_sizes={}, cell_image_re=self._IMG,
+            label_font=name, asset_dir=root, Image=Image, font_size=self.FONT_SIZE,
+        )
+
+    @staticmethod
+    def _rows(header: list[str], data: list[list[str]]) -> list[dict]:
+        def _cells(texts: list[str]) -> list[dict]:
+            return [{"colIndex": i, "colspan": 1, "rowspan": 1, "text": t} for i, t in enumerate(texts)]
+
+        return [
+            {"rowIndex": 0, "isHeader": True, "cells": _cells(header)},
+            *[{"rowIndex": i + 1, "isHeader": False, "cells": _cells(row)} for i, row in enumerate(data)],
+        ]
+
+    @staticmethod
+    def _cost(rows: list[dict], widths: list[float], measurer: Any) -> tuple[float, int, int]:
+        """(总高, 折行行数, 折行格数)：行高 = 该行最高单元格的行数。"""
+        row_max: dict[int, int] = {}
+        extra = 0
+        wrapped = 0
+        for row in rows:
+            lead = measurer.leading(bool(row.get("isHeader")))
+            for cell in row.get("cells", []):
+                if not str(cell.get("text", "")).strip():
+                    continue
+                start = cell["colIndex"]
+                span = int(cell.get("colspan", 1) or 1)
+                lines = measurer.lines(cell["text"], sum(widths[start:start + span]), bool(row.get("isHeader")))
+                extra += lines - 1
+                wrapped += 1 if lines > 1 else 0
+                row_max[row["rowIndex"]] = max(row_max.get(row["rowIndex"], 0), lines)
+        height = sum(
+            lines * measurer.leading(bool(row.get("isHeader")))
+            for row in rows
+            for lines in [row_max.get(row["rowIndex"], 0)]
+        )
+        return height, extra, wrapped
+
+    def test_wrap_cost_beats_equal_split_on_the_stated_objectives(self) -> None:
+        """长表头 + 数据格列：新口径在「总高 → 折行行数」上严格优于等分（GEN-110 ① ②）。
+
+        表F.1 型：第 2 列表头长（「层次、要素及表述」）但数据很短，第 4 列数据长
+        且行数多——旧口径把第 2 列按表头撑宽、第 4 列挤窄，折行集中在第 4 列。
+        """
+        measurer = self._measurer()
+        header = ["序号", "层次、要素及表述", "位置", "文字内容", "字号和字体"]
+        data = []
+        for i in range(1, 22):
+            data.append([f"{i:02d}", "封面" if i < 14 else "", f"第{i}行", "中华人民共和国××行业标准" if i == 7 else "四号黑体", "五号正常体"])
+        rows = self._rows(header, data)
+        widths = _table_column_widths(rows, 5, self.FONT_SIZE, {}, self._IMG, frame_width=self.FRAME, measurer=measurer)
+        equal = [self.FRAME / 5] * 5
+        self.assertAlmostEqual(sum(widths), self.FRAME, delta=1e-3)
+        cost_new = self._cost(rows, widths, measurer)
+        cost_equal = self._cost(rows, equal, measurer)
+        self.assertLess(cost_new[0], cost_equal[0], (cost_new, cost_equal))     # ① 总高更小
+        self.assertLessEqual(cost_new[1], cost_equal[1], (cost_new, cost_equal))  # ② 折行更少
+        # 第 4 列（长内容）拿到足够宽度：其最长数据格不再折行
+        longest = max((c for r in rows[1:] for c in r["cells"] if c["colIndex"] == 3), key=lambda c: len(c["text"]))
+        self.assertEqual(measurer.lines(longest["text"], widths[3], False), 1, widths)
+
+    def test_long_header_column_yields_width_instead_of_hogging_it(self) -> None:
+        """表头长、数据短的列不再按「表头自然宽」撑满（GB/T 30819-2024 表4 的第 4/5 列）。
+
+        同形的 7 列表：第 4/5/6 列表头 13/12/12 字（1 行需 157/112/104pt）而数据只有
+        两三个数字。旧口径给这几列「表头自然宽 + 12pt」（实测 130/94/48pt），数据格
+        大面积留白而表头照样折行；新口径允许表头折行、把宽度让给真正需要的列——
+        验收：表头列宽 < 它自己的 1 行需求（表头折行）、**数据格一个都不折行**、
+        三项代价（总高/折行行数/折行格数）全面优于等分。
+        """
+        measurer = self._measurer()
+        header = ["规格代号", "传动比", "额定输出转矩N·m", "启动、停止时的允许最大输出转矩N·m",
+                  "瞬间允许最大输出转矩N·m", "允许最高输入转速r/min", "润滑方式"]
+        data = [
+            [str(14 + i), str(30 + i * 5), f"{7.2 + i * 3.1:.1f}", f"{15.6 + i * 6.2:.1f}",
+             f"{31.2 + i * 12.4:.1f}", f"{12000 - i * 300}", "润滑油润滑(O)" if i % 2 else "润滑脂润滑(G)"]
+            for i in range(20)
+        ]
+        rows = self._rows(header, data)
+        widths = _table_column_widths(rows, 7, self.FONT_SIZE, {}, self._IMG, frame_width=self.FRAME, measurer=measurer)
+        self.assertAlmostEqual(sum(widths), self.FRAME, delta=1e-3)
+        # 表头列宽 < 表头 1 行所需宽 → 表头折行、宽度让给数据列（旧口径按表头撑满）
+        for col in (3, 4, 5):
+            self.assertLess(widths[col], _cell_text_natural_width(header[col], self.FONT_SIZE) + 8.0, widths)
+        # 数据格全部一行排下（用户目标 ②③：折行尽量少、内容保持完整）
+        for row in rows[1:]:
+            for cell in row["cells"]:
+                self.assertEqual(measurer.lines(cell["text"], widths[cell["colIndex"]], False), 1, (cell["text"], widths))
+        # 四项目标的量比：总高、折行行数、折行格数全面优于等分
+        self.assertLess(self._cost(rows, widths, measurer)[0], self._cost(rows, [self.FRAME / 7] * 7, measurer)[0])
+        self.assertLessEqual(self._cost(rows, widths, measurer)[1], self._cost(rows, [self.FRAME / 7] * 7, measurer)[1])
+
+    def test_full_width_note_row_does_not_drag_a_column(self) -> None:
+        """通栏注行/单长格行不参与列宽（测量与渲染同判据）。
+
+        渲染端会把「一行只有一个长文本格」的行 SPAN 成通栏（colspan=全部列，或
+        lone_full 判据），这类行按整表宽排版，不得把某一列撑宽。
+        """
+        measurer = self._measurer()
+        rows = self._rows(["A", "B", "C", "D"], [["1", "2", "3", "4"], ["5", "6", "7", "8"]])
+        rows.append({
+            "rowIndex": 99, "isHeader": False,
+            "cells": [
+                {"colIndex": 0, "colspan": 4, "rowspan": 1, "text": "注1：" + "很长的通栏注内容。" * 30},
+                {"colIndex": 1, "colspan": 1, "rowspan": 1, "text": ""},
+                {"colIndex": 2, "colspan": 1, "rowspan": 1, "text": ""},
+                {"colIndex": 3, "colspan": 1, "rowspan": 1, "text": ""},
+            ],
+        })
+        rows.append({
+            "rowIndex": 100, "isHeader": False,
+            "cells": [{"colIndex": i, "colspan": 1, "rowspan": 1, "text": ("一" * 60) if i == 0 else ""} for i in range(4)],
+        })
+        widths = _table_column_widths(rows, 4, self.FONT_SIZE, {}, self._IMG, frame_width=self.FRAME, measurer=measurer)
+        self.assertAlmostEqual(sum(widths), self.FRAME, delta=1e-3)
+        # 两行的长文本都不撑宽任何单列：列宽不超「正常内容 + 均分余额」的量级
+        self.assertLess(max(widths), 200.0, widths)
+
+    def test_empty_column_keeps_floor_and_every_column_keeps_lower_bound(self) -> None:
+        """空列保底 floor、每列 ≥ 下界（左右边距 + 一个汉字宽），Σ 恒 = 版心（GEN-103/110）。"""
+        measurer = self._measurer()
+        rows = self._rows(["名称", "", "符号"], [["时间", "", "min"], ["长度", "", "m"]])
+        widths = _table_column_widths(rows, 3, self.FONT_SIZE, {}, self._IMG, frame_width=self.FRAME, measurer=measurer)
+        lower = 2 * 4.0 + self.FONT_SIZE
+        self.assertAlmostEqual(sum(widths), self.FRAME, delta=1e-3)
+        self.assertEqual(widths[1], 24.0)          # 空列保底（不参与买入与余额分配）
+        for width in widths:
+            self.assertGreaterEqual(width + 1e-9, lower)
+
+
+class WrapCostColumnWidthPdfTests(unittest.TestCase):
+    """按折行代价分配列宽的**端到端**验收（GEN-110，PDF 内部对象）。
+
+    测试内生成 canonical（两张表：7 列表头长/数据短 = GB/T 30819-2024 表4 形，
+    5 列第 2 列宽/第 4 列挤 = GB/T 1.1-2020 表F.1 形）→ 真实渲染 → 断言：
+      ① 数据行行高 = 一行（21pt = 15pt 行距 + 上下 3pt 边距），即**数据格零折行**；
+      ② PDF 竖线间距 = 分配器算出的列宽（分配与渲染同一份列宽）。
+    """
+
+    ROOT = Path(__file__).resolve().parents[1]
+    HEAD_A = ["规格代号", "传动比", "额定输出转矩N·m", "启动、停止时的允许最大输出转矩N·m",
+              "瞬间允许最大输出转矩N·m", "允许最高输入转速r/min", "润滑方式"]
+    HEAD_B = ["序号", "层次、要素及表述", "位置", "文字内容", "字号和字体"]
+
+    def _canonical(self) -> str:
+        lines = ["\n".join([
+            "---", "csm-version: '1.0'", "document-type: standard",
+            "document-identifier: T_WRAP_001-2026", "standard-number: T/WRAP 001-2026",
+            "title: 列宽折行代价渲染夹具", "publication-date: '2026-01-01'",
+            "effective-date: '2026-02-01'", "ics: '01.120'", "ccs: A 00", "language: zh-CN",
+            "source:", "  mode: user-markdown", "extraction-backend: fixture", "extensions: {}", "---",
+        ]), "# 列宽折行代价渲染夹具", "## 1 范围",
+         "本夹具规定列宽按折行代价分配后的渲染结果。", "## 2 表", 
+         '<!-- ssir:table id="wrap-001" header-rows="1" caption-number="4" -->', "**表4**",
+         "| " + " | ".join(self.HEAD_A) + " |",
+         "| " + " | ".join(["---"] * len(self.HEAD_A)) + " |"]
+        for i in range(20):
+            lines.append("| " + " | ".join([
+                str(14 + i), str(30 + i * 5), f"{7.2 + i * 3.1:.1f}", f"{15.6 + i * 6.2:.1f}",
+                f"{31.2 + i * 12.4:.1f}", f"{12000 - i * 300}", "润滑油润滑(O)" if i % 2 else "润滑脂润滑(G)",
+            ]) + " |")
+        lines += ["## 3 表F.1 形",
+                  '<!-- ssir:table id="wrap-002" header-rows="1" caption-number="F.1" -->', "**表F.1**",
+                  "| " + " | ".join(self.HEAD_B) + " |",
+                  "| " + " | ".join(["---"] * len(self.HEAD_B)) + " |"]
+        for i in range(1, 22):
+            lines.append("| " + " | ".join([
+                f"{i:02d}", "封面" if i < 14 else "", f"第{i}行",
+                "中华人民共和国××行业标准" if i == 7 else "四号黑体", "五号正常体",
+            ]) + " |")
+        lines.append("")
+        return "\n".join(lines)
+
+    def test_data_cells_never_wrap_and_pdf_columns_match_the_allocation(self) -> None:
+        try:
+            import pymupdf
+        except ImportError:  # pragma: no cover
+            self.skipTest("pymupdf unavailable")
+        import json
+        import tempfile
+
+        from leleby_ssir.builder import SSIRBuilder
+        from leleby_ssir.parser import CSMParser
+        from leleby_ssir.pdf_renderer import _TableCellMeasurer, _styles, _table_column_widths, render_pdf_file
+
+        font = self.ROOT / "config" / "rendering" / "fonts" / "NotoSerifCJKsc-Regular.ttf"
+        if not font.is_file():
+            self.skipTest("body font asset missing")
+        from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        from reportlab.platypus import Image
+
+        img_re = re.compile(r"!\[(?:[^\]]*)\]\(([^)]+)\)")
+        name = "WrapCostPdf"
+        if name not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(TTFont(name, str(font)))
+        profile = yaml.safe_load((self.ROOT / "config" / "rendering" / "GB_T_1.1-2020.yaml").read_text(encoding="utf-8"))
+        styles = _styles(getSampleStyleSheet(), profile, name, name, TA_CENTER, TA_JUSTIFY, TA_LEFT)
+        measurer = _TableCellMeasurer(
+            styles=styles, cell_image_sizes={}, cell_image_re=img_re,
+            label_font=name, asset_dir=self.ROOT, Image=Image, font_size=styles["table"].fontSize,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            canonical = Path(directory) / "wrap.canonical.md"
+            canonical.write_text(self._canonical(), encoding="utf-8")
+            document = SSIRBuilder().build(CSMParser().read(str(canonical)))
+            expected: dict[str, list[float]] = {}
+            for table in document["tables"]:
+                expected[str(table.get("number"))] = _table_column_widths(
+                    table["rows"], table["colCount"], styles["table"].fontSize, {}, img_re,
+                    frame_width=_BODY_MEASURE, measurer=measurer,
+                )
+            ssir = Path(directory) / "wrap.ssir.json"
+            ssir.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+            target = Path(directory) / "wrap.pdf"
+            render_pdf_file(str(ssir), str(target), toc_depth=None)
+            rendered = pymupdf.open(str(target))
+            row_heights: list[float] = []
+            column_widths: list[list[float]] = []
+            for page in rendered:
+                verticals = sorted({round((d["rect"].x0 + d["rect"].x1) / 2, 1) for d in page.get_drawings() if d["rect"].width < 1.5 and d["rect"].height >= 20})
+                if len(verticals) < 2:
+                    continue                      # 无表格网格的页（封面/目次/正文）跳过
+                left, right = verticals[0], verticals[-1]
+                horizontals = sorted({
+                    round((d["rect"].y0 + d["rect"].y1) / 2, 1)
+                    for d in page.get_drawings()
+                    if d["rect"].height < 1.5 and d["rect"].width >= (right - left) * 0.9
+                })
+                row_heights.extend(round(b - a, 1) for a, b in zip(horizontals, horizontals[1:]))
+                column_widths.append([round(b - a, 1) for a, b in zip(verticals, verticals[1:])])
+            rendered.close()
+        # ① 数据行全部一行高（21pt）；只有表头行可能更高（长表头折行不可避免）
+        one_line = 15.0 + 2 * 3.0
+        multi = sorted({height for height in row_heights if height > one_line + 0.6})
+        self.assertTrue(row_heights, row_heights)
+        self.assertLessEqual(len(multi), 2, multi)          # 两张表的表头行
+        # ② PDF 竖线间距 == 分配器算出的列宽（同一份列宽；列宽和恒 = 版心）
+        for number, widths in expected.items():
+            self.assertAlmostEqual(sum(widths), _BODY_MEASURE, delta=1e-3, msg=number)
+            matches = [page for page in column_widths if len(page) == len(widths)]
+            self.assertTrue(matches, (number, widths, column_widths))
+            self.assertLessEqual(
+                min(max(abs(a - b) for a, b in zip(page, widths)) for page in matches), 1.0,
+                (number, widths, matches),
+            )
+
+
+class SideBySideColumnWidthTests(unittest.TestCase):
+    """并列组列宽按各列内容自然宽分配（GEN-111，2026-09-17 用户报告）。
+
+    现象：GB/T 1.1-2020 9.9.3.1 示例4 的右栏「不正确：」下公式折行——旧口径的
+    列需求只看**图片**（图/公式绘制宽），GEN-106 拍平成文字的含汉字公式
+    （`dim (能量) = dim (力) × \\dim (长度)`）在这一列需求为 0 → 退化成 60pt 占位
+    → 列宽 [274.5, 131]，而该列一行需要 166.4pt，于是被挤成
+    「dim (能量) = dim (力)×(」+「长度)」两行（另一个公式同样）。
+    """
+
+    def test_equal_split_when_every_column_fits(self) -> None:
+        """版心够时**等分**（对照型「正确/不正确」并列保持对称），不按内容长短拉偏。"""
+        from leleby_ssir.pdf_renderer import _side_by_side_widths
+
+        widths = _side_by_side_widths([125.7, 166.4], 405.5)
+        self.assertAlmostEqual(widths[0], widths[1], places=6)
+        self.assertAlmostEqual(sum(widths), 405.5, places=6)
+        self.assertGreaterEqual(min(widths), 166.4)
+
+    def test_width_is_donated_to_the_column_that_does_not_fit(self) -> None:
+        """某列排不下时，从有余量的列按余量比例让宽，直到它排得下。"""
+        from leleby_ssir.pdf_renderer import _side_by_side_widths
+
+        widths = _side_by_side_widths([50.0, 300.0], 405.0)
+        self.assertGreaterEqual(widths[1], 300.0)          # 排得下的那列拿到所需
+        self.assertGreaterEqual(widths[0], 50.0)           # 让宽不把对方压到需求以下
+        self.assertAlmostEqual(sum(widths), 405.0, places=6)
+
+    def test_total_budget_is_preserved_when_nothing_can_fit(self) -> None:
+        """所有列都排不下时等分（谁也占不到便宜），总额恒 = 容器宽。"""
+        from leleby_ssir.pdf_renderer import _side_by_side_widths
+
+        widths = _side_by_side_widths([300.0, 300.0], 405.0)
+        self.assertAlmostEqual(widths[0], widths[1], places=6)
+        self.assertAlmostEqual(sum(widths), 405.0, places=6)
+
+    def test_three_columns_and_degenerate_inputs(self) -> None:
+        from leleby_ssir.pdf_renderer import _side_by_side_widths
+
+        self.assertEqual(_side_by_side_widths([], 400.0), [])
+        self.assertAlmostEqual(sum(_side_by_side_widths([10.0], 400.0)), 400.0, places=6)
+        widths = _side_by_side_widths([40.0, 380.0, 40.0], 480.0)
+        self.assertAlmostEqual(sum(widths), 480.0, places=6)
+        self.assertGreaterEqual(widths[1], 380.0)
+        self.assertGreaterEqual(widths[0], 40.0)
+        # 总量不够时（Σ需求 460 > 420）三列等分、总额仍恒 = 容器宽
+        tight = _side_by_side_widths([40.0, 380.0, 40.0], 420.0)
+        self.assertAlmostEqual(sum(tight), 420.0, places=6)
+        self.assertAlmostEqual(tight[1], 340.0, places=6)
+
+    def test_paragraph_natural_width_is_the_rendered_one_line_width(self) -> None:
+        """自然宽与渲染同源：段落片段按 reportlab 字宽表累加（不是字符数模型）。"""
+        try:
+            from reportlab.platypus import Paragraph
+        except ImportError:  # pragma: no cover
+            self.skipTest("reportlab unavailable")
+        from leleby_ssir.pdf_renderer import _flowable_natural_width, _markup
+
+        styles = _side_cell_styles_or_skip(self)
+        cases = {"正确：": 31.5, "dim (能量) = dim (力)×dim (长度)": 166.4}
+        for text, expected in cases.items():
+            width = _flowable_natural_width(Paragraph(_markup(text), styles["side-cell"]))
+            self.assertAlmostEqual(width, expected, delta=1.5, msg=text)
+
+
+def _side_cell_styles_or_skip(case: unittest.TestCase) -> dict:
+    """取真实渲染样式（字体资产缺失时跳过）——并列列宽测试与表格测试同款前置。"""
+    from pathlib import Path as _Path
+
+    import yaml
+    from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+
+    from leleby_ssir.pdf_renderer import _styles
+
+    root = _Path(__file__).resolve().parents[1]
+    font = root / "config" / "rendering" / "fonts" / "NotoSerifCJKsc-Regular.ttf"
+    if not font.is_file():
+        case.skipTest("body font asset missing")
+    name = "SideCellFont"
+    if name not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(TTFont(name, str(font)))
+    profile = yaml.safe_load((root / "config" / "rendering" / "GB_T_1.1-2020.yaml").read_text(encoding="utf-8"))
+    return _styles(getSampleStyleSheet(), profile, name, name, TA_CENTER, TA_JUSTIFY, TA_LEFT)
+
+
+class SideBySideColumnWidthPdfTests(unittest.TestCase):
+    """并列组列宽的**端到端**验收（GEN-111，PDF 内部对象）。
+
+    测试内生成 canonical（`ssir:columns` 两列：左「正确：」+ 短公式，右「不正确：」+
+    含汉字长公式 → 交给 GEN-106 拍平成文本）→ 真实渲染 → 断言右栏那行**只占一行**，
+    且行宽 = 其自然宽（不被挤成两行）。
+    """
+
+    ROOT = Path(__file__).resolve().parents[1]
+
+    def _canonical(self) -> str:
+        return "\n".join([
+            "---", "csm-version: '1.0'", "document-type: standard",
+            "document-identifier: T_SIDE_001-2026", "standard-number: T/SIDE 001-2026",
+            "title: 并列列宽渲染夹具", "publication-date: '2026-01-01'",
+            "effective-date: '2026-02-01'", "ics: '01.120'", "ccs: A 00", "language: zh-CN",
+            "source:", "  mode: user-markdown", "extraction-backend: fixture", "extensions: {}", "---",
+            "# 并列列宽渲染夹具", "## 1 范围", "本夹具规定并列组列宽的渲染结果。",
+            "###### 示例 4：", "", "<!-- ssir:box -->", "", "<!-- ssir:columns -->", "",
+            "正确：", "", "$$", r"dim (E) =  dim (F) ×  dim (l)", "$$", "",
+            "<!-- ssir:column -->", "", "不正确：", "", "$$",
+            r"dim (能量 ) = dim (力) × dim ( 长度 )", "$$", "",
+            "<!-- ssir:/columns -->", "", "<!-- ssir:/box -->", "",
+        ])
+
+    def test_long_formula_line_stays_on_one_line(self) -> None:
+        try:
+            import pymupdf
+        except ImportError:  # pragma: no cover
+            self.skipTest("pymupdf unavailable")
+        import json
+        import tempfile
+
+        from leleby_ssir.builder import SSIRBuilder
+        from leleby_ssir.parser import CSMParser
+        from leleby_ssir.pdf_renderer import render_pdf_file
+
+        with tempfile.TemporaryDirectory() as directory:
+            canonical = Path(directory) / "side.canonical.md"
+            canonical.write_text(self._canonical(), encoding="utf-8")
+            document = SSIRBuilder().build(CSMParser().read(str(canonical)))
+            ssir = Path(directory) / "side.ssir.json"
+            ssir.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+            target = Path(directory) / "side.pdf"
+            render_pdf_file(str(ssir), str(target), toc_depth=None)
+            rendered = pymupdf.open(str(target))
+            lines = []
+            for page in rendered:
+                for block in page.get_text("dict")["blocks"]:
+                    if block["type"] != 0:
+                        continue
+                    for line in block["lines"]:
+                        text = "".join(span["text"] for span in line["spans"]).strip()
+                        if text:
+                            lines.append((line["bbox"][0], line["bbox"][2], text))
+            long_lines = [item for item in lines if "能量" in item[2]]
+            self.assertEqual(len(long_lines), 1, f"含汉字公式被折行：{long_lines!r}")
+            x0, x1, text = long_lines[0]
+            self.assertEqual(text, "dim (能量) = dim (力)×dim (长度)")
+            self.assertAlmostEqual(x1 - x0, 166.4, delta=3.0, msg=text)
+
+
 class ExampleBoxWidthTests(unittest.TestCase):
     """示例线框内容宽模型 + 通栏对象按容器宽排布（2026-09-07 穿框根因修复）。
 
@@ -1809,6 +2248,10 @@ class WideTableLandscapeTests(unittest.TestCase):
     夹具 tests/fixtures/wide_table.canonical.md：表9 的 26 列 × 15 行原样（含 rowspan
     锁定行组）+ 同文档一张 3 列窄表（反例：必须保持竖排）。断言基于 PDF 内部对象
     （pymupdf 文本行 dir、网格线坐标），非视觉比对。
+
+    判据③「竖排能否分页」按 reportlab 的**递归**分页语义复算（2026-09-17，见
+    test_portrait_grid_that_can_paginate_is_not_called_unpaginatable）：只看一次
+    ``split()`` 的一级片段会把长表正常分页误判成「必然排不下」。
     """
 
     ROOT = Path(__file__).resolve().parents[1]
@@ -1894,6 +2337,147 @@ class WideTableLandscapeTests(unittest.TestCase):
         self.assertEqual(columns, 26)  # 26 列 → 27 条列分隔线（含表格左右外框）
         # ③ 反例：同文档的 3 列窄表保持竖排（规则不外溢）
         self.assertCountEqual(upright, ["表10", "试验方法"])
+
+    def test_portrait_grid_that_can_paginate_is_not_called_unpaginatable(self) -> None:
+        """判据③按 reportlab 的**递归**分页语义（2026-09-17，GB/T 30819-2024 表2）。
+
+        现象：9 列 ×54 行长表（源排版竖排跨页）在 455pt 版心下 Σ列需求 585pt 超版心，
+        一次 ``split()`` 得到 669pt + 741pt 两片。reportlab 的语义里「其余那一片」本来
+        就可以高于一页——它会被再切一次（实测 669/627/150pt）——但旧判据只看一级片段，
+        于是判定「竖排必然排不下」→ 整表旋转 90°；旋转后沿页宽方向的尺寸 = 表高 624 +
+        题注 14 = 638pt > 版心宽 441.5pt，reportlab 抛 ``Splitting error(n==2)``，
+        04_render 为空、构建退出码 2。
+
+        这里用一张 80 行普通表（无跨行合并）钉住两件事：一级片段确实有高于一页的
+        （旧判据据此横排），而切到不动点后每一片都在版心内（新判据不得横排）。
+        """
+        from reportlab.platypus import Table
+
+        from leleby_ssir.pdf_renderer import _table_exceeds_frame
+
+        frame_height = 688.1574803149606  # A4 高 − 上下边距 − Frame 内衬（GEN-103 横排可用宽）
+        grid = Table([[f"R{i}C{j}" for j in range(4)] for i in range(80)], colWidths=[120.0] * 4)
+        first_pass = [piece.wrap(_BODY_MEASURE, frame_height)[1] for piece in grid.split(_BODY_MEASURE, frame_height)]
+        self.assertTrue(any(height > frame_height + 0.5 for height in first_pass), first_pass)
+        self.assertFalse(_table_exceeds_frame(grid, _BODY_MEASURE, frame_height))
+
+    def test_portrait_grid_with_row_group_over_one_page_still_rotates(self) -> None:
+        """判据③的正例：跨行合并锁定的行组高于一页时，竖排**真的**无法分页。
+
+        与 wide_table.canonical.md 表9 同形（该表 26 列 × 15 行，一次 split 后仍有
+        1897.5pt 的片段且切不动），横排仍然成立。
+        """
+        from reportlab.platypus import Table, TableStyle
+
+        from leleby_ssir.pdf_renderer import _table_exceeds_frame
+
+        frame_height = 688.1574803149606
+        data = [[f"C{j}" for j in range(4)]] + [[f"R{i}", f"R{i}C1", f"R{i}C2", f"{i}.0"] for i in range(80)]
+        grid = Table(data, colWidths=[120.0] * 4)
+        grid.setStyle(TableStyle([("SPAN", (0, 1), (0, 79))]))  # 79 行锁成一个跨行合并组
+        self.assertTrue(_table_exceeds_frame(grid, _BODY_MEASURE, frame_height))
+
+
+class TallWideTablePaginationTests(unittest.TestCase):
+    """长宽表竖排分页（GEN-103 判据③的实例回归，2026-09-17）。
+
+    夹具在测试内生成（9 列 × 54 行，Σ列需求 674pt：> 版心 455pt 触发①、≤ 横排可用宽
+    688pt 触发②，即旧判据下必然横排的形状），复现 GB/T 30819-2024 表2/表4 在旧判据下
+    ``Splitting error(n==2)`` 中止整篇渲染的缺陷。断言基于 PDF 内部对象：题注文本行
+    方向为横排（``dir == (1, 0)``，未被旋转）、表头行随分页重复出现于 ≥2 页。
+    """
+
+    ROOT = Path(__file__).resolve().parents[1]
+    HEADERS = ["规格代号", "传动比", "额定输出转矩N·m", "启动、停止时的允许最大输出转矩N·m",
+               "瞬间允许最大输出转矩N·m", "允许最高输入转速", "润滑方式", "精度等级", "备注"]
+    FRONT_MATTER = """---
+csm-version: '1.0'
+document-type: standard
+document-identifier: T_TALL_001-2026
+standard-number: T/TALL 001-2026
+title: 长表分页渲染夹具
+publication-date: '2026-01-01'
+effective-date: '2026-02-01'
+ics: '01.120'
+ccs: A 00
+language: zh-CN
+source:
+  mode: user-markdown
+extraction-backend: fixture
+extensions: {}
+---
+"""
+
+    def _canonical(self) -> str:
+        rows = [" | ".join(self.HEADERS), " | ".join(["---"] * len(self.HEADERS))]
+        for i in range(54):
+            rows.append(" | ".join([
+                str(14 + i),
+                str(50 + i * 2),
+                f"{7.8 + i * 13.3:.1f}",
+                f"{15.6 + i * 26.6:.1f}",
+                f"{31.2 + i * 53.2:.1f}",
+                str(6000 - i * 100),
+                "润滑油润滑(O)" if i % 2 else "润滑脂润滑(G)",
+                str(1 + i % 3),
+                "—",
+            ]))
+        body = "| " + " |\n| ".join(rows) + " |"
+        return (
+            self.FRONT_MATTER
+            + "\n# 长表分页渲染夹具\n\n## 1 范围\n\n本夹具规定 9 列 × 54 行长表在版心内的分页渲染行为。\n"
+            + "\n## 2 长表\n\n"
+            + '<!-- ssir:table id="tall-001" header-rows="1" caption-number="2" -->\n**表2**\n'
+            + body
+            + "\n"
+        )
+
+    def test_tall_wide_table_paginates_upright_instead_of_aborting(self) -> None:
+        try:
+            import pymupdf
+        except ImportError:  # pragma: no cover - 环境缺 pymupdf 时跳过
+            self.skipTest("pymupdf unavailable")
+        font = self.ROOT / "config" / "rendering" / "fonts" / "NotoSerifCJKsc-Regular.ttf"
+        if not font.is_file():
+            self.skipTest("body font asset missing")
+        import json
+
+        from leleby_ssir.builder import SSIRBuilder
+        from leleby_ssir.parser import CSMParser
+        from leleby_ssir.pdf_renderer import _table_column_demands, render_pdf_file
+
+        with tempfile.TemporaryDirectory() as directory:
+            canonical = Path(directory) / "tall.canonical.md"
+            canonical.write_text(self._canonical(), encoding="utf-8")
+            document = SSIRBuilder().build(CSMParser().read(str(canonical)))
+            table = document["tables"][0]
+            self.assertEqual(table["colCount"], len(self.HEADERS))
+            needs = _table_column_demands(
+                table["rows"], table["colCount"], 9.0, {}, re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
+            )[0]
+            # 判据①②都成立（旧代码据此横排），唯③（能否竖排分页）是本次修复的点位。
+            self.assertGreater(sum(needs), _BODY_MEASURE, sum(needs))
+            ssir = Path(directory) / "tall.ssir.json"
+            ssir.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+            target = Path(directory) / "tall.pdf"
+            report = render_pdf_file(str(ssir), str(target), toc_depth=None)
+            rendered = pymupdf.open(str(target))
+            caption_dirs: set[tuple] = set()
+            header_pages: set[int] = set()
+            for number, page in enumerate(rendered, start=1):
+                for block in page.get_text("dict")["blocks"]:
+                    for line in block.get("lines", []):
+                        text = "".join(span["text"] for span in line["spans"]).strip()
+                        if text == "表2":
+                            caption_dirs.add(tuple(round(value) for value in line["dir"]))
+                        if text in {"规格", "传动", "备注"}:
+                            header_pages.add(number)
+            rendered.close()
+        # ① 题注为竖排文本（未被旋转）：旧代码在这里把整表旋转 90°
+        self.assertEqual(caption_dirs, {(1, 0)}, caption_dirs)
+        # ② 表头随分页重复（profile repeat-header-rows）：长表确实跨页排布，未中止
+        self.assertGreaterEqual(len(header_pages), 2, header_pages)
+        self.assertGreaterEqual(report.page_count, 3)
 
 
 class FigureUnitLineTests(unittest.TestCase):
