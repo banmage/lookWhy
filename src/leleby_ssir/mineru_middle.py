@@ -220,6 +220,9 @@ def _figure_markdown(block: dict[str, Any], warnings: list[str]) -> str:
     独立题注行会让下游的「图片后 6 行内吸附」规则把题注抢给**前一**张图（GB_T_20001.6-2017
     附录 A 的两张连续图片实测如此）。``image_footnote`` 排在图片之后。
     块内多张图时题注给最后一张（MinerU 把题注绑在整块上）。
+
+    块内**多条**题注时取分图题注（``a)``/``a）`` 形状，GEN-113 的归属重排会把同行
+    相邻分图的题注先归位、把「图N 题名」题注行摘出去），否则沿用第一条。
     """
     images: list[str] = []
     captions: list[str] = []
@@ -238,13 +241,116 @@ def _figure_markdown(block: dict[str, Any], warnings: list[str]) -> str:
         warnings.append("figure block without figure body skipped")
         return "\n\n".join(captions + footnotes)
     if captions:
+        chosen = next((text for text in captions if _SUB_FIGURE_CAPTION_RE.match(text)), captions[0])
         match = re.match(r"^!\[(.*?)\]\((.*)\)$", images[-1])
         if match:
-            images[-1] = f"![{captions[0]}]({match.group(2)})"
+            images[-1] = f"![{chosen}]({match.group(2)})"
         else:  # 形态意外（非图片行）时退回尾部题注行，不吞掉题注
             images.extend(captions)
             warnings.append("image caption kept as a trailing line (unexpected image shape)")
     return "\n\n".join(images + footnotes)
+
+
+def _assign_figure_captions(blocks: list[dict[str, Any]], warnings: list[str]) -> list[str]:
+    """页内图题注归属重排（GEN-113），返回应作为**独立题注行**输出的「图N 题名」列表。
+
+    现象：一行分图（GB/T 1.1-2020 9.7.6 的 a)、b)…）在 MinerU 里题注行是逐行检出的
+    ``image_caption`` 块，块归属按阅读顺序贪心——相邻分图的题注会被挂到**别的**图块上，
+    整行的「图N 题名」也会挂到某一张分图上（GB_T_30819-2024 4.1.8 图3 实测：a 图块挂了
+    「c) Ⅲ型」与「a) 1型」两条，c 图块一条都没有，d 图块多挂了「图3 输入端与波发生器凸轮
+    连接方式」）。旧口径只取块内第一条题注，于是 a 图被写成「c) Ⅲ型」、c 图没有题注、
+    「图3 …」整条丢失。
+
+    判据（只用几何，保守）：
+    - 题注文本形如「图N …」（含附录 ``图A.1 …``）且**横向落在本图块内** → 本图的整图题注，
+      保持原位（``_figure_markdown`` 照旧写进替代文本，如「图2 型号组成示意图」）；
+      落在别的图块外时 → 整行图的题注，摘下来由调用方排在页面最后一个图块之后输出
+      （源版面在整行图之下，「图3 输入端与波发生器凸轮连接方式」即此类）；
+    - 其余题注（分图题注 ``a)``/``a）`` 等）→ 归给横向重叠最大的图块（重叠须 ≥ 题注宽的
+      一半）；重叠落在别的图块上时**移动**过去，没有这样的图块时保持原位（不猜）。
+
+    块只在页内**移动/摘出**题注内层块，不臆造题注文本——``image_caption_bands``/
+    ``_page_caption_boxes`` 读的是页内题注的集合，与归属无关。
+    """
+    figures = [block for block in blocks if str(block.get("type") or "").lower() in ("image", "chart")]
+    if not figures:
+        return []
+    boxes: list[list[float]] = []
+    for block in figures:
+        bbox = block.get("bbox")
+        try:
+            boxes.append([float(value) for value in bbox])
+        except (TypeError, ValueError):
+            boxes.append([])
+    if not any(len(box) == 4 for box in boxes):
+        return []  # 没有几何可比对：保持 MinerU 的原归属，不猜
+    extra: list[str] = []
+    for index, block in enumerate(figures):
+        kept: list[dict[str, Any]] = []
+        block_box = boxes[index]
+        for inner in _inner_blocks(block):
+            if _figure_inner_role(str(inner.get("type") or "")) != "caption":
+                kept.append(inner)
+                continue
+            text = _lines_text(inner, warnings).strip()
+            if not text:
+                continue
+            caption_box = inner.get("bbox")
+            has_geometry = len(block_box) == 4 and isinstance(caption_box, (list, tuple)) and len(caption_box) == 4
+            if _FIGURE_CAPTION_LINE_RE.match(text):
+                # 本图块的几何缺失时不判断（多数旧 raw 的题注块没有 bbox）：保持原位
+                if not has_geometry or _caption_overlaps(caption_box, block_box):
+                    kept.append(inner)  # 本图的整图题注（图2 型号组成示意图 类）
+                elif text not in extra:
+                    extra.append(text)  # 整行图的题注（图3 …）：独立题注行
+                continue
+            target = _caption_owner(caption_box, boxes) if isinstance(caption_box, (list, tuple)) else None
+            if target is None or target == index:
+                kept.append(inner)
+                continue
+            # 挂错块：移到真正横向重叠的图块上（源版面题注在其分图之下）。
+            figures[target].setdefault("blocks", []).append(inner)
+        block["blocks"] = kept
+    return extra
+
+
+def _caption_overlaps(caption_box: Any, block_box: list[float]) -> bool:
+    """题注是否横向落在该图块内（重叠 ≥ 题注宽的一半）。"""
+    if not isinstance(caption_box, (list, tuple)) or len(caption_box) != 4 or len(block_box) != 4:
+        return False
+    try:
+        left, right = float(caption_box[0]), float(caption_box[2])
+    except (TypeError, ValueError):
+        return False
+    width = right - left
+    if width <= 0:
+        return False
+    overlap = min(right, block_box[2]) - max(left, block_box[0])
+    return overlap >= _CAPTION_BAND_MIN_X_OVERLAP * width
+
+
+def _caption_owner(caption_box: Any, boxes: list[list[float]]) -> int | None:
+    """题注 bbox → 横向重叠最大的图块下标（重叠 ≥ 题注宽一半）；无归属返回 None。"""
+    if not isinstance(caption_box, (list, tuple)) or len(caption_box) != 4:
+        return None
+    try:
+        left, _, right, _ = (float(value) for value in caption_box)
+    except (TypeError, ValueError):
+        return None
+    width = right - left
+    if width <= 0:
+        return None
+    best_index: int | None = None
+    best_overlap = 0.0
+    for index, box in enumerate(boxes):
+        if len(box) != 4:
+            continue
+        overlap = min(right, box[2]) - max(left, box[0])
+        if overlap > best_overlap:
+            best_overlap, best_index = overlap, index
+    if best_index is None or best_overlap < _CAPTION_BAND_MIN_X_OVERLAP * width:
+        return None
+    return best_index
 
 
 def _rows_markdown(block: dict[str, Any], warnings: list[str]) -> str:
@@ -312,6 +418,20 @@ def _block_markdown(block: dict[str, Any], warnings: list[str]) -> str:
     return ""
 
 
+# 图题注块（MinerU 把「分图题注 / 图题注」行判成图块的 ``*_caption`` 内层块）。图块 bbox
+# 越界把它们圈进来时，图块的有效下边界压到题注上边界——题注像素不属于图（GEN-112）。
+_CAPTION_BLOCK_SUFFIX = "_caption"
+# 题注的两种形态（GB/T 1.1-2020 9.7.2/9.7.6）：整图题注「图N 题名」（附录为「图A.1 题名」）
+# 与分图题注「a) 分图题」「a）分图题」。前者只属于整幅图，后者属于各个分图（GEN-113）。
+_FIGURE_CAPTION_LINE_RE = re.compile(r"^图\s*(?:\d|[A-Za-z]\.\d)")
+_SUB_FIGURE_CAPTION_RE = re.compile(r"^[A-Za-z][)）]")
+# 压缩量上界：题注行不可能占图块高度的三成以上（越界圈入的是一行题注，不是图的内容；
+# 上界用于挡住 bbox 异常时把整图裁没）。
+_CAPTION_BAND_MAX_RATIO = 0.3
+# 题注必须横向基本落在图块内（横向重叠 ≥ 题注宽的一半），否则判为同行别的分图的题注。
+_CAPTION_BAND_MIN_X_OVERLAP = 0.5
+
+
 def _line_texts(block: dict[str, Any]) -> list[str]:
     """块内每个可视行一条文本（不跨行拼接——页眉/页脚的 ICS 与 CCS 各占一行）。"""
     return [row.strip() for row in _block_lines(block, []) if row.strip()]
@@ -340,8 +460,69 @@ def image_source_sizes(data: dict[str, Any]) -> dict[str, tuple[float, float]]:
     键取 ``image_path`` 的文件名（远程下载/本地落地后的资产名同源，忽略查询串）。
     与 PDF 路径同样的保守过滤：宽或高 < 10pt 的图块（装饰/图标）、首页高度 < 100pt
     的图块（封面徽标）不参与。
+
+    图块 bbox 把同行的题注行圈进来时（见 ``image_caption_bands``，GEN-112），高度按
+    **压到题注上边界后的有效高度**取值——资产同时被裁到该边界，尺寸与像素密度因此一致。
     """
-    sizes: dict[str, tuple[float, float]] = {}
+    return {
+        name: (round(width, 1), round(height - clamp, 1))
+        for name, width, height, clamp in _figure_geometry(data)
+    }
+
+
+def image_caption_bands(data: dict[str, Any]) -> dict[str, tuple[float, float, float]]:
+    """图块越界圈入的题注带：资产文件名 → ``(图块宽 pt, 有效高 pt, 压缩量 pt)``。
+
+    MinerU 对**同一行的分图**（GB/T 1.1-2020 9.7.6 的分图 a)、b)…）常把题注行判成独立的
+    ``image_caption`` 块，并且图块 bbox 的下边界会越界圈进这一行：裁剪图因此把题注的**像素**
+    一起带走（渲染端再按图题注排版一次就成双份，见 docs/12 §3.66）。题注像素不属于图——
+    本表给出「图块下边界压到题注上边界」的几何，供资产裁剪（GEN-112）；未越界的图不入表。
+
+    判据（保守，宁缺勿错）：题注块与图块**双轴相交**、题注横向至少一半落在图块内、
+    压缩量 > 0 且 < 图块高的三成（``_CAPTION_BAND_MAX_RATIO``，防 bbox 异常时把整图裁没）。
+    """
+    bands: dict[str, tuple[float, float, float]] = {}
+    for name, width, height, clamp in _figure_geometry(data):
+        if clamp > 0:
+            bands[name] = (round(width, 1), round(height - clamp, 1), round(clamp, 1))
+    return bands
+
+
+def _figure_caption_clamp(block_bbox: list[float], page_caption_boxes: list[list[float]]) -> float:
+    """图块下边界越界圈入题注像素时的压缩量（pt），无越界返回 0。
+
+    题注坐标与图块同一坐标系（MinerU 页内 pt）：题注上边界在图块竖直范围内、且题注
+    横向至少一半落在图块横向范围内时，压缩量 = 图块下边界 − 题注上边界。
+    """
+    left, top, right, bottom = block_bbox
+    height = bottom - top
+    if height <= 0:
+        return 0.0
+    best = 0.0
+    for caption in page_caption_boxes:
+        c_left, c_top, c_right, c_bottom = caption
+        if c_bottom <= top or c_top >= bottom or c_right <= left or c_left >= right:
+            continue  # 双轴不相交：不是被圈进来的题注
+        width = c_right - c_left
+        if width <= 0:
+            continue
+        overlap = min(c_right, right) - max(c_left, left)
+        if overlap < _CAPTION_BAND_MIN_X_OVERLAP * width:
+            continue  # 题注主要落在别的图块下（同行别的分图）
+        clamp = bottom - c_top
+        if clamp <= 0 or clamp > _CAPTION_BAND_MAX_RATIO * height:
+            continue
+        best = max(best, clamp)
+    return best
+
+
+def _figure_geometry(data: dict[str, Any]) -> list[tuple[str, float, float, float]]:
+    """middle.json 图块几何：``(资产文件名, 宽 pt, 高 pt, 题注带压缩量 pt)``。
+
+    一次遍历同时产出尺寸（``image_source_sizes``）与题注带（``image_caption_bands``）
+    两份视图——两者必须来自同一份几何，否则资产裁剪与尺寸印记会各说各话。
+    """
+    geometry: list[tuple[str, float, float, float]] = []
     for page_index, page in enumerate(data.get("pdf_info") or []):
         if not isinstance(page, dict):
             continue
@@ -349,19 +530,22 @@ def image_source_sizes(data: dict[str, Any]) -> dict[str, tuple[float, float]]:
         # 封面徽标过滤需要真实页号。
         page_number = page.get("page_idx")
         page_number = page_index if not isinstance(page_number, int) else page_number
-        for block in page.get("para_blocks") or []:
-            if not isinstance(block, dict) or str(block.get("type") or "") not in ("image", "chart"):
+        blocks = [block for block in page.get("para_blocks") or [] if isinstance(block, dict)]
+        caption_boxes = _page_caption_boxes(blocks)
+        for block in blocks:
+            if str(block.get("type") or "") not in ("image", "chart"):
                 continue
             bbox = block.get("bbox")
             if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
                 continue
             try:
-                width = float(bbox[2]) - float(bbox[0])
-                height = float(bbox[3]) - float(bbox[1])
+                left, top, right, bottom = (float(value) for value in bbox)
             except (TypeError, ValueError):
                 continue
+            width, height = right - left, bottom - top
             if width < 10 or height < 10 or (page_number == 0 and height < 100):
                 continue
+            clamp = _figure_caption_clamp([left, top, right, bottom], caption_boxes)
             for inner in _inner_blocks(block):
                 if _figure_inner_role(str(inner.get("type") or "")) != "body":
                     continue
@@ -373,8 +557,32 @@ def image_source_sizes(data: dict[str, Any]) -> dict[str, tuple[float, float]]:
                             continue
                         name = _asset_name(str(span.get("image_path") or ""))
                         if name:
-                            sizes[name] = (round(width, 1), round(height, 1))
-    return sizes
+                            geometry.append((name, width, height, clamp))
+    return geometry
+
+
+def _page_caption_boxes(blocks: list[dict[str, Any]]) -> list[list[float]]:
+    """页内全部图题注块 bbox（``image_caption``/``chart_caption`` 等 ``*_caption`` 内层块）。
+
+    只收**图族**题注（``image_*``/``chart_*``）：表题注在表之上、与图块无关，收进来只会
+    增加误判面。
+    """
+    boxes: list[list[float]] = []
+    for block in blocks:
+        for inner in _inner_blocks(block):
+            kind = str(inner.get("type") or "").lower()
+            if not kind.endswith(_CAPTION_BLOCK_SUFFIX):
+                continue
+            if not kind.startswith(("image", "chart")):
+                continue
+            bbox = inner.get("bbox")
+            if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+                continue
+            try:
+                boxes.append([float(value) for value in bbox])
+            except (TypeError, ValueError):
+                continue
+    return boxes
 
 
 def _asset_name(image_path: str) -> str:
@@ -465,16 +673,23 @@ def middle_json_to_csm_markdown(data: dict[str, Any]) -> tuple[str, list[str]]:
     for page in data["pdf_info"]:
         if not isinstance(page, dict):
             continue
-        for block in page.get("para_blocks") or []:
-            if not isinstance(block, dict):
-                continue
+        blocks = [block for block in page.get("para_blocks") or [] if isinstance(block, dict)]
+        # 图题注归属重排（GEN-113）：同行分图的题注按几何归位，整行图的题注摘成独立
+        # 题注行——排在页面最后一个图块之后（源版面在整行图之下，先于后续章条）。
+        extra_captions = _assign_figure_captions(blocks, warnings)
+        last_figure = max(
+            (index for index, block in enumerate(blocks) if str(block.get("type") or "").lower() in ("image", "chart")),
+            default=None,
+        )
+        for index, block in enumerate(blocks):
             markdown = _block_markdown(block, warnings)
-            if not markdown:
-                continue
-            if block.get("type") == "text" and block.get("merge_prev") and paragraphs:
-                merged = _append_fragment(paragraphs[-1], markdown)
-                if merged != paragraphs[-1]:
-                    paragraphs[-1] = merged
-                    continue
-            paragraphs.append(markdown)
+            if markdown:
+                if block.get("type") == "text" and block.get("merge_prev") and paragraphs:
+                    merged = _append_fragment(paragraphs[-1], markdown)
+                    if merged != paragraphs[-1]:
+                        paragraphs[-1] = merged
+                        continue
+                paragraphs.append(markdown)
+            if index == last_figure and extra_captions:
+                paragraphs.extend(extra_captions)
     return "\n\n".join(paragraphs).strip() + "\n", warnings

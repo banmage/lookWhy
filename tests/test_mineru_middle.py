@@ -29,6 +29,7 @@ from leleby_ssir.mineru_html import convert_mineru_markup  # noqa: E402
 from leleby_ssir.mineru_middle import (  # noqa: E402
     MiddleJsonError,
     cover_hints,
+    image_caption_bands,
     image_source_sizes,
     middle_json_to_csm_markdown,
 )
@@ -321,6 +322,141 @@ class ImageSourceSizeTests(unittest.TestCase):
         data = {"pdf_info": [{"page_idx": 1, "para_blocks": [
             self._image_block(None, "images/c.jpg")]}]}
         self.assertEqual(image_source_sizes(data), {})
+
+class FigureCaptionAssignmentTests(unittest.TestCase):
+    """GEN-113：同行分图的题注按几何归位，整行图的题注摘成独立题注行。
+
+    几何取自 GB_T_30819-2024 4.1.8 图3 的实测版面（p10）：四个分图块 + 四个分图题注行
+    （y∈[301,314]）+ 整图题注行（y∈[327,339]）。MinerU 把「c) Ⅲ型」挂在 a 图块上、
+    c 图块一条没有、整图题注挂在 d 图块上。
+    """
+
+    ASSETS = ["https://cdn.example/a.jpg", "https://cdn.example/b.jpg",
+              "https://cdn.example/c.jpg", "https://cdn.example/d.jpg"]
+
+    @staticmethod
+    def _figure(bbox: list[float], asset: str, captions: list[tuple[str, list[float]]]) -> dict:
+        inner: list[dict] = [
+            {"type": "image_body", "lines": [{"spans": [{"type": "image", "image_path": asset, "bbox": bbox}]}]}
+        ]
+        for text, box in captions:
+            inner.append({"type": "image_caption", "bbox": box,
+                          "lines": [{"spans": [{"type": "text", "content": text, "bbox": box}]}]})
+        return {"type": "image", "bbox": bbox, "blocks": inner}
+
+    def _page_blocks(self) -> list[dict]:
+        a, b, c, d = self.ASSETS
+        return [
+            # a 图块多挂了 c 的分图题注（MinerU 的阅读顺序贪心）
+            self._figure([74, 96, 151, 287], a, [("c) Ⅲ型", [327, 301, 368, 314]),
+                                                  ("a) 1型", [96, 302, 136, 314])]),
+            self._figure([177, 95, 263, 290], b, [("b) Ⅱ型", [203, 301, 243, 314])]),
+            # c 图块没有题注（被挂到 a 上）
+            self._figure([293, 96, 408, 312], c, []),
+            # d 图块多挂了整图题注
+            self._figure([417, 91, 554, 293], d, [("d) Ⅳ型", [492, 301, 533, 314]),
+                                                  ("图3 输入端与波发生器凸轮连接方式", [218, 327, 393, 339])]),
+        ]
+
+    def test_sub_caption_moves_to_the_overlapping_figure(self) -> None:
+        data = {"pdf_info": [{"page_idx": 10, "para_blocks": self._page_blocks()}]}
+        markdown, _ = middle_json_to_csm_markdown(data)
+        self.assertIn("![a) 1型](https://cdn.example/a.jpg)", markdown)
+        self.assertIn("![c) Ⅲ型](https://cdn.example/c.jpg)", markdown)
+        # a 图块上原本错的题注不能再出现（更不能再进 a 的替代文本）
+        self.assertNotIn("![c) Ⅲ型](https://cdn.example/a.jpg)", markdown)
+
+    def test_row_caption_becomes_a_standalone_line_after_the_figures(self) -> None:
+        data = {"pdf_info": [{"page_idx": 10, "para_blocks": self._page_blocks()}]}
+        markdown, _ = middle_json_to_csm_markdown(data)
+        self.assertNotIn("图3 输入端与波发生器凸轮连接方式]", markdown)  # 不在任何替代文本里
+        self.assertIn("\n\n图3 输入端与波发生器凸轮连接方式\n", markdown)
+        # 位置：排在最后一个图块之后（源版面整行图之下），不是被丢掉
+        self.assertLess(markdown.index("https://cdn.example/d.jpg"),
+                        markdown.index("\n\n图3 输入端与波发生器凸轮连接方式\n"))
+
+    def test_caption_inside_its_own_figure_stays_in_the_alt_text(self) -> None:
+        # 反例（绝大多数图的形态）：整图题注横向就落在本图块内 → 照旧进替代文本，不摘成独立行
+        block = self._figure([151, 502, 462, 618], "https://cdn.example/f.jpg",
+                             [("图2\u3000型号组成示意图", [254, 624, 358, 636])])
+        data = {"pdf_info": [{"page_idx": 8, "para_blocks": [block]}]}
+        markdown, _ = middle_json_to_csm_markdown(data)
+        self.assertIn("![图2\u3000型号组成示意图](https://cdn.example/f.jpg)", markdown)
+        self.assertNotIn("\n\n图2\u3000型号组成示意图\n", markdown)
+
+    def test_caption_without_geometry_is_left_where_mineru_put_it(self) -> None:
+        # 没有 bbox 可比对时不猜：保持 MinerU 的归属（题注照旧进替代文本）
+        block = {"type": "image", "blocks": [
+            {"type": "image_body", "lines": [{"spans": [{"type": "image", "image_path": "https://cdn.example/x.jpg"}]}]},
+            {"type": "image_caption", "lines": [{"spans": [{"type": "text", "content": "图9 无几何"}]}]},
+        ]}
+        data = {"pdf_info": [{"page_idx": 3, "para_blocks": [block]}]}
+        markdown, _ = middle_json_to_csm_markdown(data)
+        self.assertIn("![图9 无几何](https://cdn.example/x.jpg)", markdown)
+
+    def test_caption_with_no_overlapping_figure_stays_put(self) -> None:
+        # 分图题注落在所有图块之外（几何不支持归属时）→ 保持原位，不丢
+        block = self._figure([100, 100, 200, 300], "https://cdn.example/y.jpg",
+                             [("e) Ⅴ型", [420, 305, 470, 318])])
+        data = {"pdf_info": [{"page_idx": 4, "para_blocks": [block]}]}
+        markdown, _ = middle_json_to_csm_markdown(data)
+        self.assertIn("![e) Ⅴ型](https://cdn.example/y.jpg)", markdown)
+
+
+class CaptionBandTests(unittest.TestCase):
+    """GEN-112：图块 bbox 越界圈入题注行 → 压缩量（图块下边界压到题注上边界）。
+
+    实测来源：GB_T_30819-2024 4.1.8 图3 的 c 分图（图块 [293,96,408,312]、题注行
+    [327,301,368,314]）——题注像素被圈进裁剪图，渲染时题注就出现两次。
+    """
+
+    @staticmethod
+    def _figure(bbox: list[float], asset: str, captions: list[tuple[str, list[float]]]) -> dict:
+        return FigureCaptionAssignmentTests._figure(bbox, asset, captions)
+
+    def test_overlapping_caption_band_clamps_the_size(self) -> None:
+        data = {"pdf_info": [{"page_idx": 10, "para_blocks": [
+            self._figure([293, 96, 408, 312], "https://cdn.example/c.jpg",
+                         [("c) Ⅲ型", [327, 301, 368, 314])]),
+        ]}]}
+        self.assertEqual(image_caption_bands(data), {"c.jpg": (115.0, 205.0, 11.0)})
+        # 尺寸印记同步扣掉题注带，否则资产裁剪后图会被纵向压扁
+        self.assertEqual(image_source_sizes(data), {"c.jpg": (115.0, 205.0)})
+
+    def test_caption_below_the_block_is_not_a_band(self) -> None:
+        # 反例：题注在图块下方（正常排版）→ 没有越界，不裁
+        data = {"pdf_info": [{"page_idx": 1, "para_blocks": [
+            self._figure([100, 200, 200, 300], "https://cdn.example/f.jpg",
+                         [("图1 题名", [110, 310, 190, 324])]),
+        ]}]}
+        self.assertEqual(image_caption_bands(data), {})
+        self.assertEqual(image_source_sizes(data), {"f.jpg": (100.0, 100.0)})
+
+    def test_caption_of_the_neighbouring_figure_is_not_a_band(self) -> None:
+        # 反例：竖直方向相交但横向落在别的分图下（< 一半）→ 不是本图被圈入的题注
+        data = {"pdf_info": [{"page_idx": 1, "para_blocks": [
+            self._figure([100, 200, 200, 300], "https://cdn.example/g.jpg",
+                         [("a) 甲", [210, 290, 260, 304])]),
+        ]}]}
+        self.assertEqual(image_caption_bands(data), {})
+
+    def test_oversized_band_is_rejected(self) -> None:
+        # 反例：题注上边界深入图块（压缩量 > 图块高三成）→ 判为 bbox 异常，不动资产
+        data = {"pdf_info": [{"page_idx": 1, "para_blocks": [
+            self._figure([100, 200, 200, 300], "https://cdn.example/h.jpg",
+                         [("b) 乙", [110, 210, 190, 224])]),
+        ]}]}
+        self.assertEqual(image_caption_bands(data), {})
+
+    def test_table_caption_is_not_a_figure_band(self) -> None:
+        # 反例：表题注与图块相交不算图题注带（表题在表之上，与图无关）
+        table = _block("table", [], bbox=[110, 210, 190, 300],
+                       blocks=[{"type": "table_caption", "bbox": [110, 210, 190, 224],
+                                "lines": [{"spans": [_span("表1 甲")]}]}])
+        figure = self._figure([100, 200, 200, 300], "https://cdn.example/i.jpg", [])
+        data = {"pdf_info": [{"page_idx": 1, "para_blocks": [figure, table]}]}
+        self.assertEqual(image_caption_bands(data), {})
+
 
 class RecordBlockTests(unittest.TestCase):
     """GEN-099：``ref_text``/``index``/``list`` 是「一行一条记录」的块，条目边界必须保留。

@@ -479,7 +479,17 @@ def _bare_heading_candidates(lines: list[str]) -> tuple[set[str], dict[int, str]
             continue
         heading = HEADING_RE.match(line)
         if heading:
-            number_match = re.match(r"^(\d+(?:\.\d+)*)\s", heading.group(2))
+            # 规则对应: GEN-117（标题编号确认不依赖空格）。
+            # 标题编号与标题文字之间可能缺空格（人工 curation 的 canonical 常见写法：
+            # `### 6.4分类、标记和编码`，而渲染端统一写 `6.4 分类、标记和编码`）。
+            # 旧判据要求编号后**必须**是空白，缺空格的标题就不算"已确认编号"，
+            # 其下裸条款段（`6.4.3 产品分类的基本要求如下：`）的级联提升随之失效，
+            # 于是同一份文件在回环两侧解析出不同的条款树（C7-clauseIdentifiers /
+            # C4-numericalValues 关键信息丢失）。此处与 builder 的标题拆分同判据：
+            # 编号后是空白，或直接跟标题文字（汉字/字母/括号）。
+            number_match = re.match(
+                r"^(\d+(?:\.\d+)*)(?:\s|(?=[\u4e00-\u9fffA-Za-z（(]))", heading.group(2)
+            )
             if number_match:
                 confirmed.add(number_match.group(1))
             continue

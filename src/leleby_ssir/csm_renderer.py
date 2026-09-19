@@ -256,13 +256,13 @@ class _RenderState:
         for row in table["rows"]:
             for cell in row["cells"]:
                 if cell.get("rowspan", 1) > 1 or cell.get("colspan", 1) > 1:
-                    # row 为 0-based 表格行：表头行（rowIndex < header_rows）可为
-                    # 0 或负数，数据行为正数——与 builder 的 data_row 换算一致
-                    # （data_row = header_rows + row - 1）。
+                    # row 为**绝对** 0-based 表格行（表头行也算在内：row=0 即第一行），
+                    # 与 builder 的 data_row 同一基准（builder 直接取该值）。旧写法
+                    # `rowIndex - header_rows + 1` 只在 header-rows=1 时等于绝对值。
                     self.lines.append(
                         '<!-- ssir:table-merge table="{table}" row="{row}" column="{column}" rowspan="{rowspan}" colspan="{colspan}" -->'.format(
                             table=table_id,
-                            row=int(cell["rowIndex"]) - header_rows + 1,
+                            row=int(cell["rowIndex"]),
                             column=int(cell["colIndex"]) + 1,
                             rowspan=cell.get("rowspan", 1),
                             colspan=cell.get("colspan", 1),

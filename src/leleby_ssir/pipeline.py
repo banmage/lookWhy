@@ -1009,7 +1009,11 @@ def _stamp_figure_source_sizes(ssir_path: Path, source_pdf: Path) -> None:
     03_ssir/ 子目录——必须沿祖先目录向上找（同 pdf_renderer._resolve_asset）。
     此前只按 ssir_path.parent / ref 解析导致所有图都拿不到尺寸（03_ssir/
     下没有 assets/），是"图太大"的直接根因。
+
+    开跑前先按 GEN-112 把「图块 bbox 越界圈入题注像素」的资产裁到题注上边界：尺寸印记
+    按裁剪后的像素重算（本函数与 from_map 两条来源都如此），裁剪与尺寸因此不会各说各话。
     """
+    _trim_figure_caption_bands(ssir_path)
     try:
         import fitz  # type: ignore
         from PIL import Image as PILImage  # type: ignore
@@ -1148,7 +1152,11 @@ def _stamp_figure_source_sizes_from_map(ssir_path: Path, size_map: dict[str, tup
     同数值，且裁剪图与图块一一对应，因此不需要宽高比/密度匹配，也不做密度回退——
     拿不到尺寸的图保持无印记（渲染端按默认尺寸），不猜。
     表格单元格内图（GBT-X02 表中图）同样写入 ``cellImageSizes``。
+
+    尺寸随 ``image_source_sizes`` 一起扣掉题注带（GEN-112），并同步把对应资产裁到题注上
+    边界——资产是裁剪图，只有二者一致图才不会纵向压扁。
     """
+    _trim_figure_caption_bands(ssir_path)
     if not size_map:
         return
     try:
@@ -1182,6 +1190,85 @@ def _stamp_figure_source_sizes_from_map(ssir_path: Path, size_map: dict[str, tup
 def _asset_basename(ref: str) -> str:
     """资产引用 → 文件名（去查询串；用于与 middle.json 图块 bbox 键对齐）。"""
     return ref.split("?", 1)[0].split("#", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+
+
+def _trim_figure_caption_bands(ssir_path: Path) -> int:
+    """图块越界圈入的题注像素 → 把图资产裁到题注上边界（GEN-112）。
+
+    现象：MinerU 的图块 bbox 偶尔把**同行分图的题注行**圈进来，裁剪图因此带着题注的像素；
+    渲染端再按图题注排版一次（GBT-B06），图上图下就出现两条同样的分图题
+    （GB_T_30819-2024 4.1.8 图3 的「c) Ⅲ型」实测：图块 y∈[96,312]、题注行 y∈[301,314]，
+    题注像素整行落在图内）。题注像素不属于图，按 ``mineru_middle.image_caption_bands``
+    给出的几何（图块宽 + 压到题注上边界后的有效高）裁掉，尺寸印记随后按裁剪后的像素重算，
+    图文尺寸与像素密度保持一致。
+
+    幂等：目标像素高由几何与该资产**宽向**像素密度算出（宽不受裁剪影响），只在当前像素高
+    大于目标时才裁——重复运行不再变化。几何来自 provenance 记录的 middle.json（与
+    ``_figure_size_map_from_docroot``/``mineru_middle`` 同一份来源）；没有几何时报 0，不猜。
+    """
+    try:
+        from PIL import Image as PILImage  # type: ignore
+    except Exception:
+        return 0
+    from .mineru_middle import image_caption_bands
+
+    docroot = ssir_path.parent.parent if ssir_path.parent.name == "03_ssir" else ssir_path.parent
+    stem = ssir_path.name[: -len(".ssir.json")] if ssir_path.name.endswith(".ssir.json") else ssir_path.stem
+    provenance = docroot / "01_extract" / f"{stem}.provenance.json"
+    try:
+        source_raw = Path(str(json.loads(provenance.read_text(encoding="utf-8")).get("sourceRaw") or ""))
+        if source_raw.suffix.lower() != ".json" or not source_raw.is_file():
+            return 0
+        bands = image_caption_bands(json.loads(source_raw.read_text(encoding="utf-8", errors="replace")))
+    except Exception:
+        return 0
+    if not bands:
+        return 0
+    try:
+        data = json.loads(ssir_path.read_text(encoding="utf-8"))
+    except Exception:
+        return 0
+    trimmed = 0
+    for figure in data.get("figures") or []:
+        ref = str(figure.get("assetRef") or "")
+        band = bands.get(_asset_basename(ref))
+        if not ref or not band:
+            continue
+        path = _resolve_asset_ref(ssir_path, ref)
+        if path is None:
+            continue
+        width_pt, height_pt = band[0], band[1]
+        try:
+            with PILImage.open(path) as image:
+                image.load()
+                if width_pt <= 0:
+                    continue
+                # 宽向密度不受裁剪影响，用它把 pt 几何换算成像素目标高。
+                density = image.width / width_pt
+                target = int(round(height_pt * density))
+                if target <= 0 or image.height <= target:
+                    continue
+                cropped = image.crop((0, 0, image.width, target))
+                qtables = getattr(image, "quantization", None)
+                if qtables:
+                    cropped.save(path, qtables=qtables, subsampling=image.info.get("subsampling", 2))
+                else:
+                    cropped.save(path)
+        except Exception:  # noqa: BLE001 - 资产不可写/格式意外时不猜测，留原样并继续
+            continue
+        trimmed += 1
+    if trimmed:
+        _log(f"Figure assets trimmed to the caption band from the middle.json layout: {trimmed} image(s)")
+    return trimmed
+
+
+def _resolve_asset_ref(ssir_path: Path, ref: str) -> Path | None:
+    """资产引用 → 文件路径（沿祖先目录向上找；assetRef 相对文档根，SSIR 在 03_ssir/ 下）。"""
+    for parent in [ssir_path.parent, *ssir_path.parents]:
+        candidate = parent / ref
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 

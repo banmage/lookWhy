@@ -87,6 +87,8 @@
   `tools/mineru_full_standard.py <ID>`（抽取 + 渲染，快捷模式不再自动跑回环）；
   `tools/build_ssir.py <raw|canonical|ID>`（构建）；**回环验证是独立程序**：
   `tools/verify_conversion.py <ID|文档根|canonical|ssir>`（含可选 PDF 对比）；
+  **规则回放是独立程序**（改动抽取/解析规则后对既有产物做确定性回放，带内容不变量与幂等断言）：
+  `tools/replay_table_header_rows.py [--apply] [文件…]`（GEN-114 表头行数，canonical 与 raw 同源回放）；
   `ssir csm normalize/parse/roundtrip`、`ssir pdf render`（`--docx-output` 已暂时停用）。
 
 ---

@@ -89,9 +89,9 @@ def html_table_to_csm(html: str, table_id: str, caption: str | None) -> str:
             if len(row) > target and all(cell["text"] == "" for cell in row[target:]):
                 del row[target:]
     width = max(len(row) for row in rows)
-    # 合并单元格统一产 merge 指令：row 坐标按 CSM 契约——表头行（header-rows=1
-    # 时为第 0 行）用 row=0，数据行从 1 开始；column 从 1 开始。rowspan/colspan
-    # 钳制到表格实际范围，防止越界破坏渲染。
+    # 合并单元格统一产 merge 指令：row/column 坐标按 CSM 契约——**绝对** 0-based
+    # 表格行（row=0 即第一行，表头行也算在内；数据行的 row = header-rows + 序号 − 1）；
+    # column 从 1 开始。rowspan/colspan 钳制到表格实际范围，防止越界破坏渲染。
     for row_index, row in enumerate(rows):
         for col_index, cell in enumerate(row):
             if cell["colspan"] > 1 or cell["rowspan"] > 1:
@@ -103,7 +103,15 @@ def html_table_to_csm(html: str, table_id: str, caption: str | None) -> str:
                 }
                 if merge["rowspan"] > 1 or merge["colspan"] > 1:
                     merges.append(merge)
-    attrs = [f'id="mineru-table-{table_id}"', 'header-rows="1"']
+    # 表头行数（GEN-114）：表头区的垂直跨度 = **首行**起点的最大 rowspan。GB/T 表的
+    # 表头常不止一行（「尺寸代号 | 规格代号」+ 各列规格号、「参数名称 | 转速」+ 各转速段、
+    # 「机座号 | 基本尺寸及公差带」+ D/D₁/L/L₁ + h7/H7…），MinerU 的 HTML 用 rowspan
+    # 表达这一跨度（实测 2~4）。旧实现硬编码 header-rows="1" → 转页接排只重复第一行、
+    # 表头底纹也只盖一行。至少保留一行数据行：表头跨度不得吃掉整表，否则
+    # repeatRows == 行数、reportlab 认为「切点落在表头内」而永不可分页。
+    header_rows = max((max(int(cell.get("rowspan", 1)), 1) for cell in rows[0]), default=1)
+    header_rows = max(1, min(header_rows, len(rows) - 1))
+    attrs = [f'id="mineru-table-{table_id}"', f'header-rows="{header_rows}"']
     if caption:
         match = re.match(r"^表\s*([^\s]+)(?:\s+(.+))?$", caption.strip())
         if match:
@@ -186,6 +194,23 @@ def formula_assets_index(source: Path) -> dict[str, list[str]]:
 
 
 _PLACEHOLDER_IMAGE_ALT_RE = re.compile(r"^(?:image|img|picture|图片|图像)\d*$", re.IGNORECASE)
+# 图片替代文本里已带的图号：整图号「图 N 题名」/「图 A.1 题名」，或分图号「a) Ⅹ型」/「a）Ⅹ型」。
+# 用于题注吸附护栏（GEN-113）：题注行的图号与替代文本里的图号不一致时，那是**别的图**的
+# 题注，吸附只会把本图题注覆盖掉。
+_FIGURE_ALT_NUMBER_RE = re.compile(r"^图\s*([A-Z]?\.?\d+(?:\.\d+)?)")
+_SUB_FIGURE_ALT_NUMBER_RE = re.compile(r"^([A-Za-z])[)）]")
+
+
+def _figure_number_token(alt: str) -> str:
+    """图片替代文本里的图号（``1``/``E.4``/分图 ``a``）；没有图号返回空串。"""
+    text = alt.strip()
+    match = _FIGURE_ALT_NUMBER_RE.match(text)
+    if match:
+        return match.group(1)
+    match = _SUB_FIGURE_ALT_NUMBER_RE.match(text)
+    if match:
+        return match.group(1)
+    return ""
 # MinerU HTML 片段里的行内公式标记（内容为 LaTeX）；见 _inline_equations_to_csm（GEN-097）。
 _INLINE_EQ_RE = re.compile(r"<eq\b[^>]*>(.*?)</eq>", re.IGNORECASE | re.DOTALL)
 
@@ -277,7 +302,7 @@ def convert_mineru_markup(raw: str, part_prefix: str, formula_assets: dict[str, 
     converted = "".join(output).replace("](images/", "](assets/images/")
     lines = converted.splitlines()
     cleaned: list[str] = []
-    image_pattern = re.compile(r"^!\[.*?\]\(([^)]+)\)$")
+    image_pattern = re.compile(r"^!\[(.*?)\]\(([^)]+)\)$")
     figure_caption = re.compile(r"^图\s*([A-Z]?\.?\d+(?:\.\d+)?)\s+(.+)$")
     index = 0
     while index < len(lines):
@@ -288,15 +313,25 @@ def convert_mineru_markup(raw: str, part_prefix: str, formula_assets: dict[str, 
             continue
         caption_at = None
         caption_match = None
+        # 题注行的图号与图片替代文本里的图号**不一致**时不得吸附：那是别的图的题注，
+        # 吸附会把本图已有的题注**覆盖**掉（GB_T_30819-2024 4.1.8 实测：分图 b 的
+        # 「b) Ⅱ型」曾被整行图的题注「图3 输入端与波发生器凸轮连接方式」顶掉；
+        # GB_T_1.1-2020 附录 E 的「图E.4 封底格式」曾被下一张图的题注顶掉）。
+        # 替代文本里没有图号（空 / 占位串 / 只有题名）或图号一致时照旧吸附——后者顺带把
+        # 「图1 题名」规范成「图 1 题名」（docs/07 §6.5）。
+        alt_number = _figure_number_token(image.group(1))
         for probe in range(index + 1, min(index + 7, len(lines))):
             candidate = figure_caption.match(lines[probe].strip())
-            if candidate:
-                caption_at, caption_match = probe, candidate
+            if not candidate:
+                continue
+            if alt_number and alt_number != candidate.group(1):
                 break
+            caption_at, caption_match = probe, candidate
+            break
         if caption_match:
             assert caption_at is not None
             label = f"图 {caption_match.group(1)} {caption_match.group(2)}"
-            cleaned.append(f"![{label}]({image.group(1)})")
+            cleaned.append(f"![{label}]({image.group(2)})")
             cleaned.extend(lines[index + 1:caption_at])
             index = caption_at + 1
         else:

@@ -630,7 +630,12 @@ class SSIRBuilder:
             table["rows"].append(row_data)
         for merge in block.data.get("merges", []):
             try:
-                data_row = header_rows + int(merge["row"]) - 1
+                # merge 的 row/column 是**绝对** 0-based 表格坐标（row=0 即第一行——
+                # 表头行也算在内；数据行的 row = header-rows + 序号 − 1），与抽取端
+                # （mineru_html/docx_importer 按源行号写）和 csm_renderer 的写法同一基准。
+                # 旧实现写 `header_rows + row - 1`：header-rows=1 时与绝对值重合，
+                # 一旦表头不止一行（GEN-114）就会把合并整体下移一行。
+                data_row = int(merge["row"])
                 column = int(merge["column"]) - 1
                 cell = table["rows"][data_row]["cells"][column]
                 cell["rowspan"] = int(merge.get("rowspan", "1"))

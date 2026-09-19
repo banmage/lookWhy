@@ -1785,5 +1785,161 @@ class ClauseHeadingDemoteTests(unittest.TestCase):
         self.assertIn("一般说明。", headings)
         self.assertFalse([i for i in doc.issues if i.code == "CSM-OCR-009"])
 
+class TableHeaderRowsAndMergeRowsTests(unittest.TestCase):
+    """表头行数（GEN-114）与合并指令的行基准：merge 的 row 是**绝对** 0-based 行号。
+
+    旧 builder 把 merge 的 row 当成「相对数据行」（data_row = header_rows + row − 1），
+    在 header-rows=1 时与绝对行号恰好重合，所以一直没暴露；表头一旦是多行（GB/T 表
+    常见 2~4 行表头），同一份合并指令就会整体下移 1~3 行——表头区的「尺寸代号」跨行格
+    会跑到数据行上，表头第 2 行也不再被重复。
+    """
+
+    def test_two_row_header_and_absolute_merge_rows(self) -> None:
+        csm = (
+            "---\n"
+            'csm-version: "1.0"\n'
+            "document-type: standard\n"
+            'document-identifier: "GB/T 30819—2024"\n'
+            'standard-number: "GB/T 30819—2024"\n'
+            'title: "结构尺寸"\n'
+            "language: zh-CN\n"
+            "source: {mode: mineru, provenance: none}\n"
+            "extensions: {}\n"
+            "---\n\n"
+            "# 结构尺寸\n\n"
+            "## 4.1.8　结构尺寸\n\n"
+            '<!-- ssir:table id="t6" header-rows="2" caption-number="6" unit="毫米" -->\n'
+            "**表6 CS-Ⅰ系列减速器结构尺寸表**\n"
+            "| 尺寸代号 | 规格代号 |  |  |\n"
+            "| --- | --- | --- | --- |\n"
+            "|  | 8 | 11 | 14 |\n"
+            "| $Φd_{1}$ | 3.0 | 5.0 | 6.0 |\n"
+            '<!-- ssir:table-merge table="t6" row="0" column="1" rowspan="2" colspan="1" -->\n'
+            '<!-- ssir:table-merge table="t6" row="0" column="2" rowspan="1" colspan="3" -->\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "t.canonical.md"
+            path.write_text(csm, encoding="utf-8")
+            ssir, _ = parse_csm_with_report(path)
+        table = ssir["tables"][0]
+        self.assertEqual(table["unit"], "毫米")
+        rows = sorted(table["rows"], key=lambda row: row["rowIndex"])
+        # 两行表头：第 0、1 行都是表头，数据从第 2 行起
+        self.assertEqual([row["isHeader"] for row in rows], [True, True, False])
+        header_cells = sorted(rows[0]["cells"], key=lambda cell: cell["colIndex"])
+        # row="0" 的两条合并指令落回第 0 行（不是被下移一行的第 1 行）
+        self.assertEqual(header_cells[0]["rowspan"], 2)
+        self.assertEqual(header_cells[0]["text"], "尺寸代号")
+        self.assertEqual(header_cells[1]["colspan"], 3)
+        self.assertEqual(header_cells[1]["text"], "规格代号")
+        # 数据行没有被表头合并污染
+        data_cells = sorted(rows[2]["cells"], key=lambda cell: cell["colIndex"])
+        self.assertEqual([cell["rowspan"] for cell in data_cells], [1, 1, 1, 1])
+        self.assertEqual([cell["colspan"] for cell in data_cells], [1, 1, 1, 1])
+        self.assertEqual(data_cells[0]["text"], "$Φd_{1}$")
+
+    def test_merge_on_the_first_data_row_uses_the_absolute_row(self) -> None:
+        # 反例的姊妹形态：header-rows=2 时数据行的 row 必须是 2（表格第 3 行），
+        # 旧口径把它理解成第 1 行（表头第 2 行）——表头会被数据行的跨列格顶掉。
+        csm = (
+            "---\n"
+            'csm-version: "1.0"\n'
+            "document-type: standard\n"
+            'document-identifier: "GB/T 10000—2024"\n'
+            'standard-number: "GB/T 10000—2024"\n'
+            'title: "示例"\n'
+            "language: zh-CN\n"
+            "source: {mode: mineru, provenance: none}\n"
+            "extensions: {}\n"
+            "---\n\n"
+            "# 示例\n\n"
+            "## 1 范围\n\n"
+            '<!-- ssir:table id="t1" header-rows="2" caption-number="1" -->\n'
+            "**表1 示例表**\n"
+            "| 甲 | 乙 |  |\n"
+            "| --- | --- | --- |\n"
+            "|  | 乙甲 | 乙乙 |\n"
+            "| 注 | 说明文字 |  |\n"
+            '<!-- ssir:table-merge table="t1" row="0" column="1" rowspan="2" colspan="1" -->\n'
+            '<!-- ssir:table-merge table="t1" row="2" column="1" rowspan="1" colspan="2" -->\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "t.canonical.md"
+            path.write_text(csm, encoding="utf-8")
+            ssir, _ = parse_csm_with_report(path)
+        rows = sorted(ssir["tables"][0]["rows"], key=lambda row: row["rowIndex"])
+        self.assertEqual(rows[1]["isHeader"], True)
+        data_cells = sorted(rows[2]["cells"], key=lambda cell: cell["colIndex"])
+        self.assertEqual(data_cells[0]["colspan"], 2)
+        self.assertEqual(data_cells[0]["text"], "注")
+        self.assertEqual(data_cells[1]["text"], "说明文字")
+
+
+class GluedHeadingNumberTests(unittest.TestCase):
+    """GEN-117：标题编号与标题文字之间缺空格时，解析结果必须与有空格时一致。
+
+    现象（2026-09-19，GB_T_20001.10-2014 回环失败 + 用户手工核对）：canonical 里存在
+    `### 6.4分类、标记和编码`、`## 22电磁兼容性` 这类**编号紧贴标题文字**的写法（人工 curation /
+    抽取遗留，缺一个空格），而渲染端统一写 `6.4 分类、标记和编码`。旧判据要求「标题编号后必须是
+    空白」才算已确认编号 → 缺空格的标题不算已确认，其下裸条款段（`6.4.3 产品分类的基本要求如下：`）
+    的级联提升随之失效 → 同一份文件在回环两侧解析出不同的条款树，报告出
+    C7-clauseIdentifiers / C4-numericalValues 关键信息丢失。判据改为与 builder 的标题拆分一致：
+    编号后是空白，或直接跟标题文字（汉字/字母/括号）——**canonical 不需要改写**。
+    """
+
+    HEADER = (
+        "---\n"
+        "csm-version: 1.0\n"
+        "document-type: standard\n"
+        "document-identifier: GB_T_20001.10-2014\n"
+        "standard-number: GB/T 20001.10—2014\n"
+        "title: 标准编写规则 第10部分：产品标准\n"
+        "language: zh-CN\n"
+        "---\n\n"
+        "# 标准编写规则 第10部分：产品标准\n\n"
+    )
+    BODY = (
+        "### {chapter}\n\n"
+        "6.4.1 产品标准中分类、标记和编码为可选要素。\n\n"
+        "6.4.2 根据具体情况，该要素可并入技术要求（见6.5）。\n\n"
+        "6.4.3 产品分类的基本要求如下：\n\n"
+        "— 划分的类别应满足使用的需要；\n\n"
+        "## {chapter22}\n\n"
+        "22.1 应进行电磁兼容性测试\n"
+    )
+
+    @classmethod
+    def _write(cls, directory: str, name: str, chapter: str, chapter22: str) -> Path:
+        path = Path(directory) / name
+        path.write_text(
+            cls.HEADER + cls.BODY.format(chapter=chapter, chapter22=chapter22), encoding="utf-8"
+        )
+        return path
+
+    @staticmethod
+    def _numbers(ssir: dict) -> list[str]:
+        return [str(node["number"]) for node in CSMToSSIRTests._nodes(ssir["structuralRoot"]) if node.get("number")]
+
+    def test_glued_heading_confirms_the_same_clause_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            spaced = parse_csm(self._write(directory, "spaced.canonical.md", "6.4 分类、标记和编码", "22 电磁兼容性"))
+            glued = parse_csm(self._write(directory, "glued.canonical.md", "6.4分类、标记和编码", "22电磁兼容性"))
+        self.assertEqual(self._numbers(spaced), self._numbers(glued))
+        # 缺空格的标题同样要确认编号 → 其下裸条款段被提升为子条款
+        self.assertIn("6.4.3", self._numbers(glued))
+        self.assertIn("22.1", self._numbers(glued))
+
+    def test_glued_heading_round_trip_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            for name, chapter, chapter22 in (
+                ("spaced.canonical.md", "6.4 分类、标记和编码", "22 电磁兼容性"),
+                ("glued.canonical.md", "6.4分类、标记和编码", "22电磁兼容性"),
+            ):
+                with self.subTest(name=name):
+                    path = self._write(directory, name, chapter, chapter22)
+                    _, _, report = round_trip_csm(path, Path(directory) / f"{name}.render.md")
+                    self.assertTrue(report.passed, report.to_dict())
+
+
 if __name__ == "__main__":
     unittest.main()

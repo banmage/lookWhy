@@ -9,6 +9,7 @@ import json
 import math
 from pathlib import Path
 import re
+from string import ascii_letters
 from typing import Any
 
 import yaml
@@ -804,6 +805,11 @@ def _toc_tracked_table_class(Table: Any) -> type:
     reportlab 拆表时新建 Table 分片，子类属性不会自动继承——大表（GB_T_1.1-2020
     表3/表4）跨页后 afterFlowable 拿到的分片没有 id，目次页码就成了 0。
     表类由 render_pdf 注入（reportlab 是延迟导入的可选依赖），故按基类缓存子类。
+
+    另加**续表题注**（GEN-115、GB/T 1.1-2020 9.8.3/10.4.2）：表跨页时每一片续表在
+    重复的表头行之上插入「表N 表题（续）」与单位陈述行（单位为××，右对齐）——由
+    ``_append_table`` 把这两行作为 ``_continuation_flowables`` 挂到表对象上；本子类在
+    ``split()`` 里给需要它的分片插行（详见 ``_insert_continuation_rows``）。
     """
     cached = _TOC_TRACKED_TABLES.get(Table)
     if cached is not None:
@@ -811,15 +817,87 @@ def _toc_tracked_table_class(Table: Any) -> type:
 
     class _TrackedTable(Table):  # type: ignore[misc, valid-type]
         ssir_id = ""
+        # 续表题注行（Paragraph 列表，自上而下）：仅当表确实分页时使用。
+        _continuation_flowables: list[Any] | None = None
+        # 本表**自身**就是从续页起排的续表（其上片也要题注）。
+        _is_continuation_piece = False
 
         def split(self, availWidth: float, availHeight: float) -> list[Any]:
             pieces = super().split(availWidth, availHeight)
             for piece in pieces:
                 piece.ssir_id = getattr(self, "ssir_id", "")
+            if len(pieces) == 2:
+                top, bottom = pieces
+                if getattr(self, "_is_continuation_piece", False):
+                    # 本表已是续表：题注/单位行就是它的前几行，reportlab 会把它们
+                    # 连同表头一起重复到下片（repeatRows 已含题注行数）——两片都不再插行，
+                    # 只把标记传下去（否则再拆一层会重复印一遍题注）。
+                    top._is_continuation_piece = True
+                    bottom._is_continuation_piece = True
+                else:
+                    # 首次分片：下片落在下一页 → 成为续表，补题注/单位行，并把
+                    # repeatRows 提到「题注 + 单位 + 全部表头行」，使更深的拆分重复整块。
+                    added = self._insert_continuation_rows(bottom)
+                    bottom._is_continuation_piece = True
+                    if added:
+                        bottom.repeatRows = (bottom.repeatRows or 0) + added
             return pieces
+
+        def _insert_continuation_rows(self, piece: Any) -> int:
+            """在分片**表头行之前**插入续表题注/单位行（行坐标整体下移），返回插入行数。
+
+            插行后不变量：行的 cellValues/cellStyles/_argH/_nrows 长度一致；所有按行
+            索引的样式命令（GRID/底纹/SPAN/禁拆）整体下移 K 行，两条插入行各以
+            SPAN 横跨全表（题注居中、单位右对齐由 Paragraph 自身样式决定）。表框
+            （GRID 命令）随之只覆盖表头与数据行，题注/单位行留白在表框之上。
+            """
+            rows_to_add = list(getattr(self, "_continuation_flowables", None) or [])
+            if not rows_to_add:
+                return 0
+            k = len(rows_to_add)
+            ncols = len(piece._colWidths)
+            values = [list(row) for row in piece._cellvalues]
+            styles = [list(row) for row in piece._cellStyles]
+            base_style = piece._cellStyles[0][0]
+            for offset, flowables in enumerate(rows_to_add):
+                values.insert(offset, [flowables] + [""] * (ncols - 1))
+                styles.insert(offset, [base_style.copy() for _ in range(ncols)])
+            piece._cellvalues = values
+            piece._cellStyles = styles
+            heights = list(piece._argH) if piece._argH is not None else None
+            if heights is not None:
+                for _ in range(k):
+                    heights.insert(0, None)
+            piece._argH = heights
+            piece._rowHeights = heights
+            piece._nrows = piece._nrows + k
+            for attr in ("_linecmds", "_bkgrndcmds", "_spanCmds", "_nosplitcmds", "_srflcmds", "_sircmds"):
+                commands = getattr(piece, attr, None)
+                if not commands:
+                    continue
+                setattr(piece, attr, [_shift_command_rows(command, k) for command in commands])
+            piece._spanCmds = list(piece._spanCmds or []) + [
+                ("SPAN", (0, offset), (-1, offset)) for offset in range(k)
+            ]
+            return k
 
     _TOC_TRACKED_TABLES[Table] = _TrackedTable
     return _TrackedTable
+
+
+def _shift_command_rows(command: Any, rows: int) -> Any:
+    """样式命令的行索引整体下移（插行用）：``(op, (sc,sr), (ec,er), …)``。
+
+    ``-1`` 是 reportlab 的「最后一行」哨兵，保持不动；其余行号 +rows。
+    """
+    if not isinstance(command, tuple) or len(command) < 3:
+        return command
+    start, end = command[1], command[2]
+    if not (isinstance(start, tuple) and isinstance(end, tuple) and len(start) == 2 and len(end) == 2):
+        return command
+    shifted_start = (start[0], start[1] + rows if start[1] >= 0 else start[1])
+    shifted_end = (end[0], end[1] + rows if end[1] >= 0 else end[1])
+    return (command[0], shifted_start, shifted_end, *command[3:])
 
 
 _TOC_TRACKED_TABLES: dict[Any, type] = {}
@@ -885,6 +963,9 @@ def _styles(base: Any, profile: dict[str, Any], font: str, body_font: str, cente
         "list": ParagraphStyle("gbt-list", parent=base["BodyText"], fontName=body_font, fontSize=body["size-pt"], leading=body["leading-pt"], alignment=justify, leftIndent=4 * body["size-pt"], firstLineIndent=-2 * body["size-pt"], spaceAfter=2, wordWrap="CJK"),
         "list-sub": ParagraphStyle("gbt-list-sub", parent=base["BodyText"], fontName=body_font, fontSize=body["size-pt"], leading=body["leading-pt"], alignment=justify, leftIndent=6 * body["size-pt"], firstLineIndent=-2 * body["size-pt"], spaceAfter=2, wordWrap="CJK"),
         "caption": ParagraphStyle("gbt-caption", parent=base["BodyText"], fontName=font, fontSize=10.5, leading=14, alignment=center, spaceBefore=4, spaceAfter=4),
+        # 分图题注（GBT-B06：分图编号、分图题小五号黑体；GB/T 1.1-2020 9.7.6、
+        # 附录F 表F.1 序号38/39）：与图题注同为黑体居中，但小一号、上下留白更紧。
+        "subcaption": ParagraphStyle("gbt-subcaption", parent=base["BodyText"], fontName=font, fontSize=9, leading=12, alignment=center, spaceBefore=2, spaceAfter=2),
         "formula": ParagraphStyle("gbt-formula", parent=base["Code"], fontName=body_font, fontSize=10, leading=16, alignment=center, spaceAfter=4),
         "table": ParagraphStyle("gbt-table", parent=base["BodyText"], fontName=body_font, fontSize=rules["table"]["size-pt"], leading=rules["table"]["leading-pt"], alignment=center),
         "table-body": ParagraphStyle("gbt-table-body", parent=base["BodyText"], fontName=body_font, fontSize=rules["table"]["size-pt"], leading=rules["table"]["leading-pt"], alignment=left, wordWrap="CJK"),
@@ -1447,6 +1528,36 @@ def _side_by_side_widths(needs: list[float], avail: float) -> list[float]:
     return widths
 
 
+# 分图编号（GB/T 1.1-2020 9.7.6：只准许对图作一个层次的细分，分图用后带半圆括号的
+# 小写拉丁字母编号 a)、b)…）。渲染端据此区分「图题注」与「分图题注」两种形态。
+_SUB_FIGURE_NUMBER_RE = re.compile(r"^[A-Za-z][)）]$")
+
+
+def _figure_caption_text(figure: dict[str, Any]) -> str:
+    """图题注文本（GBT-B06、GB/T 1.1-2020 9.7.2/9.7.6、10.4.2）。
+
+    - 通栏图：``图{编号} {图题}``（如「图3 输入端与波发生器凸轮连接方式」）；
+    - 分图：分图题注**不带「图」字**——源版面即「a） Ⅰ型」，GB/T 1.1-2020 9.7.6 给分图
+      编号而未把分图提升为独立图号，故输出 ``{分图编号} {分图题}``；
+    - 编号与题名都缺时返回空串，渲染端据此不输出题注行（GBT-B08）。
+    """
+    number = str(figure.get("number") or "").strip()
+    caption = str(figure.get("caption") or "").strip()
+    if not number and not caption:
+        return ""
+    if number and _SUB_FIGURE_NUMBER_RE.match(number):
+        return f"{number} {caption}".strip()
+    return f"图{number} {caption}".strip()
+
+
+def _figure_caption_style(figure: dict[str, Any], styles: dict[str, Any]) -> Any:
+    """图题注样式：分图编号、分图题小五号黑体，其余五号黑体（GBT-B06、附录F 序号36—40）。"""
+    number = str(figure.get("number") or "").strip()
+    if number and _SUB_FIGURE_NUMBER_RE.match(number):
+        return styles["subcaption"]
+    return styles["caption"]
+
+
 def _append_side_by_side(story: list[Any], members: list[dict[str, Any]], registries: dict[str, dict[str, dict[str, Any]]], styles: dict[str, Any], font: str, report: PDFRenderReport, asset_dir: Path, colors: Any, Table: Any, TableStyle: Any, Paragraph: Any, Spacer: Any, Image: Any, content_width: float = _BODY_MEASURE) -> None:
     """Render a side-by-side group as one borderless table row (div 定位等价物)。
 
@@ -1502,6 +1613,12 @@ def _append_side_by_side(story: list[Any], members: list[dict[str, Any]], regist
                     image.drawHeight = draw_h
                     image.hAlign = "CENTER"
                     cell.append(image)
+                    # 并列组内的图同样渲染图题注（GBT-B06：图编号和图题置于图之下居中）
+                    # ——修复前图片成员只画图、不画题注，图题注在并列路径整体丢失，
+                    # 只剩图内像素（GB_T_30819-2024 4.1.8 图3 的 a)～d) 分图题）。
+                    caption = _figure_caption_text(figure)
+                    if caption:
+                        cell.append(Paragraph(_markup(caption), _figure_caption_style(figure, styles)))
                 else:
                     report.warnings.append(f"Missing figure asset in side-by-side group: {figure.get('id')}")
             elif kind == "formula":
@@ -1536,7 +1653,7 @@ def _append_side_by_side(story: list[Any], members: list[dict[str, Any]], regist
                         report.warnings.append(
                             f"Formula in side-by-side group typeset as text ({text_fallback_reason}): {formula.get('id')}"
                         )
-                        fallback = _latex_to_text(raw_formula)
+                        fallback = _inline_math_markup(raw_formula)
                         if fallback.strip():
                             cell.append(Paragraph(_markup(fallback), styles["side-cell"]))
             elif kind in {"paragraph", "note", "quote", "example", "warning"}:
@@ -2268,7 +2385,7 @@ def _append_content(story: list[Any], content: dict[str, Any], registries: dict[
             formula_flowable = image
         else:
             report.warnings.append(f"Formula typeset as text ({text_fallback_reason}): {formula['id']}")
-            formula_flowable = Paragraph(_markup(_latex_to_text(raw_formula)), styles["formula"])
+            formula_flowable = Paragraph(_markup(_inline_math_markup(raw_formula)), styles["formula"])
         if number:
             # 规则对应: GBT-X06（公式编号右端对齐、与公式以“……”连接）。
             story.append(
@@ -2314,11 +2431,10 @@ def _append_content(story: list[Any], content: dict[str, Any], registries: dict[
             # 与图、图题同一个 KeepTogether——否则满页的图另起一面时这一行会被留在前页
             # 末（附录 E 的"单位为毫米"本应是每张图页的第一行，见 docs/12 §3.54）。
             figure_flowables.insert(0, Paragraph(_markup(f"单位为{unit_text}"), _unit_line_style(styles)))
-        figure_number = str(figure.get("number") or "")
-        figure_caption = str(figure.get("caption") or "")
-        caption = f"图{figure_number} {figure_caption}".strip() if (figure_number or figure_caption) else ""
+        # 题注文本与样式按 GBT-B06 统一（分图编号/分图题 = 小五号黑体、不带「图」字）。
+        caption = _figure_caption_text(figure)
         if caption:
-            figure_flowables.append(Paragraph(_markup(caption), styles["caption"]))
+            figure_flowables.append(Paragraph(_markup(caption), _figure_caption_style(figure, styles)))
         story.append(KeepTogether(figure_flowables))
     elif kind == "other":
         unknown = registries["unknownContents"].get(content.get("unknownRef"), {})
@@ -2443,11 +2559,45 @@ def _table_cell_flowables(
     return flowables
 
 
+def _table_caption_keep_height(
+    caption_flowables: list[Any], grid: Any, header_row_count: int, content_width: float
+) -> float | None:
+    """表题/单位行与表框不得同页拆开（GEN-115 / GBT-B07、GBT-B13）：返回题注所需的竖向空间。
+
+    现象（2026-09-19，GB_T_10401-2023 表A.1）：图 A.1 占满版面后表只放得下三行，
+    reportlab 的「不得在 repeatRows/表头内切分」规则让整表推迟到下一页，而作为独立
+    流元素的题注与单位行留在前页末尾——**题注孤行**（与 §3.x 图题被留在前页同一问题
+    类）。判据只用几何：当前页剩余高 < 题注高 + 全部表头行 + 一行数据 → 先分页。
+    只在文档上下文（``_ROTATED_TABLE_MEASURE`` 已由 render_pdf 写入）且所需高不到版心
+    八成时返回数值；近乎满页的表头不参与，否则每页都会先分页、表永远起不来。
+    """
+    frame_height = _ROTATED_TABLE_MEASURE
+    if frame_height is None or not caption_flowables:
+        return None
+    caption_height = 0.0
+    for flowable in caption_flowables:
+        _, height = flowable.wrap(content_width, frame_height)
+        caption_height += float(height)
+    grid.wrap(content_width, frame_height)
+    # reportlab 的行高表可能留 None（未测量行），按整表均高兜底（只用于「够不够起排」
+    # 的判据，不参与真实排版）。
+    row_heights = list(getattr(grid, "_rowHeights", None) or [])
+    total_height = float(getattr(grid, "height", 0.0) or 0.0)
+    average = total_height / len(row_heights) if row_heights else 0.0
+    keep_rows = [height if height is not None else average for height in row_heights[: header_row_count + 1]]
+    required = caption_height + float(sum(keep_rows))
+    if required <= 0 or required >= float(frame_height) * 0.8:
+        return None
+    return required
+
+
 def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any], colors: Any, Table: Any, TableStyle: Any, Paragraph: Any, *, asset_dir: Path | None = None, Image: Any = None, content_width: float = _BODY_MEASURE, label_font: str = "") -> None:
     # 规则对应: GBT-B07（表编号表题居中置于表上、表头框线、数字小五号宋体）、
+    # GBT-B13/GEN-115（转页接排：完整表头重复 + 续表题注「（续）」 + 单位陈述 + 题注不孤行）、
+    # GEN-114（表头行数 header-rows → 底纹与 repeatRows 覆盖全部表头行）、
     # GBT-X02（不准许分表/表中套表；转页重复表头 repeatRows；表中图）、GEN-033（无编号无题名不输出题注）、
     # GBT-B10（表内注标记小五号黑体、注内容小五号宋体）。
-    from reportlab.platypus import Spacer
+    from reportlab.platypus import CondPageBreak, Spacer
 
     number = str(table.get("number") or "").strip()
     caption = str(table.get("caption") or "").strip()
@@ -2467,6 +2617,33 @@ def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any
         )
         caption_flowables.append(Paragraph(_markup(f"单位为{unit}"), unit_style))
     rows = sorted(table.get("rows", []), key=lambda row: row["rowIndex"])
+    # 表头行数（GEN-114）：parser 按 header-rows 打标，此处只数前导表头行——底纹与
+    # 转页重复都以它为界（reportlab 的 repeatRows 见 _grid）。
+    header_row_count = 0
+    for row in rows:
+        if not row.get("isHeader"):
+            break
+        header_row_count += 1
+    # 续表题注/单位行（GEN-115、GB/T 1.1-2020 9.8.3）：表跨页时每一片续表都要在重复的
+    # 表头之上给出「表N 表题（续）」与单位的陈述（单位为××，右对齐）——由
+    # _TrackedTable.split 在分片里插行（new Paragraph，不复用正文那两行）。
+    continuation_flowables: list[Any] = []
+    if number or caption:
+        # 「（续）」按 GB/T 1.1-2020 附录 F 表 F.1 序号 38 用**五号宋体**（表编号/表题仍
+        # 五号黑体）——在题注段后内联切换正文字体。
+        serif_font = str(styles["body"].fontName)
+        continuation_flowables.append(
+            Paragraph(
+                _markup(f"表{number} {caption}".strip()) + f'<font name="{serif_font}">（续）</font>',
+                styles["caption"],
+            )
+        )
+    if unit:
+        from reportlab.lib.styles import ParagraphStyle
+        unit_style = styles.get("table-unit") or ParagraphStyle(
+            "gbt-table-unit", parent=styles["body"], alignment=2, fontSize=9, leading=12, spaceAfter=0, firstLineIndent=0,
+        )
+        continuation_flowables.append(Paragraph(_markup(f"单位为{unit}"), unit_style))
 
     cell_image_re = re.compile(r"!\[(?:[^\]]*)\]\(([^)]+)\)")
     # 表中图原始版面尺寸（pt）：_stamp_figure_source_sizes 在流水线 finalize
@@ -2493,8 +2670,9 @@ def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any
     # 保底 24pt 防空列退化、每列下界「左右边距 + 一个汉字宽」（GEN-103）。
     # 跨列单元格的图片按跨列总宽缩放。
     commands: list[tuple[Any, ...]] = [("GRID", (0, 0), (-1, -1), 0.5, colors.black), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("LEFTPADDING", (0, 0), (-1, -1), _TABLE_CELL_PADDING), ("RIGHTPADDING", (0, 0), (-1, -1), _TABLE_CELL_PADDING), ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]
-    if rows and rows[0].get("isHeader"):
-        commands.append(("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F2F2F2")))
+    if header_row_count:
+        # 表头底纹覆盖**全部**表头行（多行表头的 header_rows 实测 2~4，GEN-114）。
+        commands.append(("BACKGROUND", (0, 0), (-1, header_row_count - 1), colors.HexColor("#F2F2F2")))
     for row in rows:
         for cell in row.get("cells", []):
             if cell.get("rowspan", 1) > 1 or cell.get("colspan", 1) > 1:
@@ -2541,6 +2719,8 @@ def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any
         frame_width=content_width, measurer=table_measurer,
     )
     grid = _grid(col_widths)
+    # 续表题注/单位行挂在表对象上（GEN-115）：表不分页时这两行不出现（正文那两行照旧）。
+    grid._continuation_flowables = continuation_flowables
     # 宽表横排（GEN-103）：竖排下必然排不下的多列表整表旋转 90°（表头落订口一侧）。
     landscape_widths = _table_landscape_widths(
         rows, col_count, styles["table"].fontSize, cell_image_sizes, cell_image_re, content_width, grid,
@@ -2551,6 +2731,16 @@ def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any
         # 横排：题注 + 单位行 + 表格作为一个整体旋转（表头落订口一侧）。
         story.extend([_ROTATED_TABLE_CLASS([*caption_flowables, _grid(landscape_widths)]), Spacer(1, 6)])
         return
+    # 框内（_BoxSink）不参与题注防孤行：条件分页是页面级动作，而框内内容最终要进表格
+    # 单元格，单元格里不能有分页动作（同 §8「KeepTogether 不能进表格行」的坑）。
+    caption_keep = (
+        _table_caption_keep_height(caption_flowables, grid, header_row_count, content_width)
+        if isinstance(story, list) else None
+    )
+    if caption_keep is not None:
+        # 表题/单位行必须与表框同页（GBT-B07；与图题组同一问题类）：当前页剩余高放不下
+        # 「题注 + 全部表头行 + 一行数据」时先分页，题注与表格一起落到下一页。
+        story.append(CondPageBreak(caption_keep))
     story.extend([*caption_flowables, grid, Spacer(1, 6)])
 
 
@@ -3262,7 +3452,9 @@ def _latex_to_text(latex: str) -> str:
     \\frac becomes a/b, common operators map to Unicode, and sub/superscripts
     are flattened.  Only affects display; SSIR/CSM keep the LaTeX source.
 
-    规则对应: GBT-X06（数学公式另行居中编排；无法排版时以可读文本呈现）。
+    规则对应: GBT-X06（数学公式另行居中编排；无法排版时以可读文本呈现）、
+    GBT-B12/GEN-116（量符号斜体、上划线——行内通道由 `_inline_math_markup` 在拍平当步补齐；
+    本函数只做「可读文本」这一层，保持与 docx 侧共用的纯文本语义）。
     """
     text = latex.strip()
     # 0) 嵌套花括号命令组展开（2026-09-03，GB_T_1.1-2020 9.4.4.4/9.4.5.2 型：
@@ -3284,6 +3476,14 @@ def _latex_to_text(latex: str) -> str:
     text = re.sub(
         r"\s*_\s*\{([^{}]*)\}",
         lambda m: "\x00SUB\x00" + m.group(1).replace("~", "").strip() + "\x00/SUB\x00",
+        text,
+    )
+    # 2b) 不带花括号的单字符下标：`T_P`、`P_N`（MinerU 在表格单元格里常这样写）。
+    #     旧码只认 `_{…}`，`_P` 的 `_` 会被当成普通字符保留下来（拍出 "T_P"），
+    #     下标语义丢失且字母连成一段（GEN-116 变量斜体把整段当量符号）。
+    text = re.sub(
+        r"\s*_\s*([A-Za-z0-9])",
+        lambda m: "\x00SUB\x00" + m.group(1) + "\x00/SUB\x00",
         text,
     )
     text = re.sub(
@@ -3322,6 +3522,42 @@ def _latex_to_text(latex: str) -> str:
         (r"\partial", "∂"),
         (r"\Delta", "Δ"),
         (r"\sum", "Σ"),
+        # 希腊字母命令 → Unicode 字母（GEN-116）：`\eta` 这类不是「运算符」而是**量符号**，
+        # 旧实现在收尾的「丢弃剩余 \command」步骤里把它们整条删掉（`\overline{\eta}` 拍平
+        # 成空串）。语料实测：`\overline { { \eta } }`、`\mathrm{n}`、`\alpha` 等。
+        (r"\alpha", "α"),
+        (r"\beta", "β"),
+        (r"\gamma", "γ"),
+        (r"\delta", "δ"),
+        (r"\epsilon", "ε"),
+        (r"\varepsilon", "ε"),
+        (r"\zeta", "ζ"),
+        (r"\eta", "η"),
+        (r"\theta", "θ"),
+        (r"\vartheta", "θ"),
+        (r"\iota", "ι"),
+        (r"\kappa", "κ"),
+        (r"\lambda", "λ"),
+        (r"\nu", "ν"),
+        (r"\xi", "ξ"),
+        (r"\rho", "ρ"),
+        (r"\sigma", "σ"),
+        (r"\tau", "τ"),
+        (r"\upsilon", "υ"),
+        (r"\phi", "φ"),
+        (r"\varphi", "φ"),
+        (r"\chi", "χ"),
+        (r"\psi", "ψ"),
+        (r"\omega", "ω"),
+        (r"\Gamma", "Γ"),
+        (r"\Theta", "Θ"),
+        (r"\Lambda", "Λ"),
+        (r"\Xi", "Ξ"),
+        (r"\Pi", "Π"),
+        (r"\Sigma", "Σ"),
+        (r"\Upsilon", "Υ"),
+        (r"\Phi", "Φ"),
+        (r"\Psi", "Ψ"),
     ):
         text = text.replace(src, dst)
     # 5) Drop any remaining \command, stray braces, tildes, backslashes.
@@ -3335,7 +3571,7 @@ def _latex_to_text(latex: str) -> str:
     # LaTeX 命令终止空格（\Delta V 里 \Delta 后、V 前的空格）在命令替换后
     # 残留——希腊字母与后随拉丁字母同属一个量符号（ΔV、μs、Ωm），排版无空格；
     # 拉丁-拉丁乘积（J s）的空格保留（真实原文有间隙）。
-    text = re.sub(r"(?<=[ΔαβγδεζηθικλμνξοπρστυφχψωΩ]) (?=[A-Za-z])", "", text)
+    text = re.sub(r"(?<=[\u0370-\u03ff]) (?=[A-Za-z])", "", text)
     # 7) MinerU 逐字符空格数字（"6 . 6 2 6 0 7 0 1 5"）收紧为规范数值
     #    （"6.62607015"；2026-09-02，GB_3100-2026 4.2 常量行）。
     text = re.sub(r"\s+([.,])\s*", r"\1", text)
@@ -3537,7 +3773,9 @@ def _markup(text: str, em_size: float | None = None) -> str:
     )
     # Inline MinerU math ("$...$") is LaTeX; flatten it to readable text so
     # command noise ("\\mathrm{~T~}") does not leak into the rendered PDF.
-    text = re.sub(r"\$([^$\n]+)\$", lambda m: _latex_to_text(m.group(1)), text)
+    # 同时保住「变量斜体 + 上划线」两条版式约定（GEN-116）：_inline_math_markup 在拍平
+    # 当步完成斜体化（含直立内容遮罩），后续文本规则看到的仍是原样文本。
+    text = re.sub(r"\$([^$\n]+)\$", lambda m: _inline_math_markup(m.group(1)), text)
     # OCR whitespace noise: collapse space runs ("、   32.4 V") and join
     # digit-group separators ("2 000 W" -> "2000 W").
     text = re.sub(r" {2,}", " ", text)
@@ -3756,6 +3994,144 @@ def _formula_image_scale(font_size_pt: float) -> float:
     显示」；容器宽 / 140pt 高的上限仍在调用处用 ``min()`` 继续收窄（只缩小不放大）。
     """
     return (72.0 / _FORMULA_IMAGE_DPI) * (font_size_pt / _FORMULA_IMAGE_EM_PT)
+
+
+# ---------------------------------------------------------------------------
+# 行内 math 的变量斜体与上划线（GEN-116；GB/T 1.1-2020 10.4.6、GBT-B12/GBT-X06
+# 执行侧）。源 PDF 实测（GB_T_30819-2024 p25 的 6.4 式中、GB_T_5171.1-2014 p10）：
+#   量符号 P/n/T/R/i/Φ/η 用**斜体**字形；下标数字与描述性下标（P_N 的 N）、单位
+#   （kW、r/min、K）、数字与运算符用正体；量符号上的短横线是**矢量短横线**压在
+#   字母上方（`\overline{η}`）；数学算子希腊大写 Δ 正体而其后变量 t 斜体。
+# 拍平（`_latex_to_text`）会把 `\overline` 当未知命令丢掉、字母一律正体——这两条
+# 约定因此在渲染端丢失。
+_MATH_REGION_OPEN = "\x00MATH\x00"      # 行内 math 区域边界（斜体化范围；escape 前剥离）
+_MATH_REGION_CLOSE = "\x00/MATH\x00"
+_MATH_UPRIGHT_OPEN = "\x00UPR\x00"      # \mathrm/\text 等直立内容（不斜体化的遮罩）
+_MATH_UPRIGHT_CLOSE = "\x00/UPR\x00"
+_MATH_OVERLINE = "\x00BAR\x00"          # \overline/\bar → U+0304 组合上划线
+# 直立内容命令：单位与说明文字（源版面正体）
+_MATH_UPRIGHT_COMMANDS = (
+    "mathrm", "text", "textrm", "textup", "textnormal", "textsf", "texttt", "operatorname", "mbox",
+)
+# 正体字母（源版面或规范约定为直立）：数学算子 Δ 增量、Σ/Π 求和求积、∂ 偏导、∇ 梯度；
+# Ω 在语料内只作**单位**（GB_T_10401-2023「绝缘电阻不应小于 100MΩ」，3 处），单位符号
+# 正体。若出现作为量符号的 Ω（立体角/电阻）需按源版面另立证据。
+_MATH_UPRIGHT_LETTERS = "ΔΣΠ∂∇Ω"
+_MATH_VARIABLE_LETTERS = set(ascii_letters) | set(
+    "ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ" "αβγδεζηθικλμνξοπρστυφχψω"
+)
+
+
+def _inline_math_text(latex: str) -> str:
+    """行内 $…$ → 可读文本，并保住变量斜体与上划线两条约定（GEN-116）。
+
+    * **上划线**：`\\overline{X}`/`\\bar{X}` → 内容 + U+0304 组合上划线——源版面用
+      矢量短横线压在字母上方；该字形的墨迹以**笔位为中心**（Noto Serif CJK 实测
+      xMin/xMax = ∓134/1000 em、advance 0），紧跟字母绘制即落在字母上方。
+    * **变量斜体**：基字位置的拉丁/希腊字母由 `_italicize_math_regions` 在 `_markup`
+      末尾包成斜体哨兵（`\\x00EMI\\x00`，GEN-108 的机斜字形）；`\\mathrm{}`/`\\text{}`
+      内容、上下标内容、数学算子（Δ/Σ/Π/∂）、紧跟 `^{…}` 的单字母基字（语料实测
+      全是单位 m²/m³ 与 10 的幂）保持正体。
+    """
+    text = latex.strip()
+    # ① 上划线先替换成记号：`\overline`/`\bar` 是「未知命令」，`_latex_expand_nested`
+    #    与 `_latex_to_text` 都会连命令带花括号一起丢掉（同族的
+    #    `\overline { { \eta } }` 形态更会拍成空串）。嵌套形态（MinerU 常写 `{ { X } }`）
+    #    先处理，再处理单层——`\{…\}?\}` 式的可选括号会把外层 `_ { X }` 的收尾括号一起
+    #    吃掉，把下标组拍坏。必须在 `_latex_expand_nested` **之前**做。
+    text = re.sub(
+        r"\\(?:overline|bar)\s*\{\s*\{\s*([^{}]*?)\s*\}\s*\}",
+        lambda match: match.group(1) + _MATH_OVERLINE,
+        text,
+    )
+    text = re.sub(
+        r"\\(?:overline|bar)\s*\{\s*([^{}]*?)\s*\}",
+        lambda match: match.group(1) + _MATH_OVERLINE,
+        text,
+    )
+    # ② 直立内容（\mathrm{kPa}、\text{米} 等）包上遮罩：这些字符不参与斜体化。
+    #    同样必须在 `_latex_expand_nested` 之前（它会把这些命令直接拆掉）。
+    commands = "|".join(_MATH_UPRIGHT_COMMANDS)
+    mask = lambda match: _MATH_UPRIGHT_OPEN + re.sub(r"\s+", "", match.group(1)) + _MATH_UPRIGHT_CLOSE
+    text = re.sub(rf"\\(?:{commands})\s*\{{\s*\{{\s*([^{{}}]*?)\s*\}}\s*\}}", mask, text)
+    text = re.sub(rf"\\(?:{commands})\s*\{{\s*([^{{}}]*?)\s*\}}", mask, text)
+    return _latex_to_text(text).replace(_MATH_OVERLINE, "\u0304")
+
+
+def _inline_math_markup(latex: str) -> str:
+    """行内 $…$ 的完整渲染文本：拍平 + 变量斜体 + 上划线（GEN-116）。
+
+    斜体化在**拍平当步**完成（区域哨兵只包住这一段片段本身），于是后续的
+    「数值-单位固定字隙」等文本规则看到的仍是原样文本，行为与改动前一致；直立内容
+    的遮罩也在同一步剥离，不会挡住那些规则。
+    """
+    return _italicize_math_regions(_MATH_REGION_OPEN + _inline_math_text(latex) + _MATH_REGION_CLOSE)
+
+
+def _italicize_math_regions(text: str) -> str:
+    """把行内 math 区域（`\\x00MATH\\x00…`）里的基字变量包成斜体哨兵，并剥离区域哨兵。
+
+    只在 `_markup` 末段（`escape()` 之前）调用：数值-单位固定字隙、编号后字隙等
+    既有文本规则先看到**原样文本**，行为与本次改动前一致。
+    """
+    out: list[str] = []
+    index = 0
+    while index < len(text):
+        start = text.find(_MATH_REGION_OPEN, index)
+        if start < 0:
+            out.append(text[index:])
+            break
+        out.append(text[index:start])
+        end = text.find(_MATH_REGION_CLOSE, start)
+        if end < 0:                                # 未闭合：原样输出（不猜）
+            out.append(text[start:])
+            break
+        out.append(_italicize_math_variables(text[start + len(_MATH_REGION_OPEN):end]))
+        index = end + len(_MATH_REGION_CLOSE)
+    joined = "".join(out)
+    return joined.replace(_MATH_UPRIGHT_OPEN, "").replace(_MATH_UPRIGHT_CLOSE, "")
+
+
+def _italicize_math_variables(segment: str) -> str:
+    """math 区域内的变量斜体化（GEN-116）：跳过直立遮罩、上/下标内容与其它哨兵。"""
+    out: list[str] = []
+    index = 0
+    while index < len(segment):
+        if segment.startswith(_MATH_UPRIGHT_OPEN, index):
+            end = segment.find(_MATH_UPRIGHT_CLOSE, index + len(_MATH_UPRIGHT_OPEN))
+            end = len(segment) if end < 0 else end + len(_MATH_UPRIGHT_CLOSE)
+            out.append(segment[index:end])         # 直立内容原样
+            index = end
+            continue
+        if segment.startswith("\x00SUB\x00", index) or segment.startswith("\x00SUP\x00", index):
+            close = "\x00/SUB\x00" if segment.startswith("\x00SUB\x00", index) else "\x00/SUP\x00"
+            end = segment.find(close, index + 1)
+            end = len(segment) if end < 0 else end + len(close)
+            out.append(segment[index:end])         # 上/下标内容原样（源版面正体）
+            index = end
+            continue
+        mark = re.match(r"\x00[^\x00]*\x00", segment[index:])
+        if mark:                                   # 其它哨兵（QEM/WSP/GAP…）原样
+            out.append(mark.group(0))
+            index += mark.end()
+            continue
+        char = segment[index]
+        if char in _MATH_VARIABLE_LETTERS and char not in _MATH_UPRIGHT_LETTERS:
+            end = index
+            while end < len(segment) and segment[end] in _MATH_VARIABLE_LETTERS and segment[end] not in _MATH_UPRIGHT_LETTERS:
+                end += 1
+            run = segment[index:end]
+            # 例外：单字母基字紧跟上标（^{…}）→ 单位/常数（m²、m³），源版面正体。
+            if segment.startswith("\x00SUP\x00", end):
+                out.append(run)
+            else:
+                out.append("\x00EMI\x00" + run + "\x00/EMI\x00")
+            index = end
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
 
 
 # 块级公式按**显示样式**排版（GEN-109）：canonical 的 `ssir:formula` 是 LaTeX 的 display

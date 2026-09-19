@@ -193,6 +193,45 @@ class ConvertMineruMarkupTests(unittest.TestCase):
         out = convert_mineru_markup("![image](images/fig-001.png)\n\n图1 接线图\n", "p001", {})
         self.assertIn("![图 1 接线图](assets/images/fig-001.png)", out)
 
+    def test_numbered_figure_does_not_absorb_a_later_caption_line(self):
+        """GEN-113 护栏：已带图号/分图号的图片不再吸附后面的题注行。
+
+        实测形态（GB_T_30819-2024 4.1.8）：一行分图的四张图各自带着分图题（`b) Ⅱ型`），
+        整行图的题注「图3 输入端与波发生器凸轮连接方式」排在四张图之后；旧口径的 6 行
+        前视吸附会把它**覆盖**到最近的那张分图上（b 图的「b) Ⅱ型」被整行题注顶掉）。
+        """
+        raw = (
+            "![a) Ⅰ型](images/fig-a.png)\n\n"
+            "![b) Ⅱ型](images/fig-b.png)\n\n"
+            "![c) Ⅲ型](images/fig-c.png)\n\n"
+            "![d) Ⅳ型](images/fig-d.png)\n\n"
+            "图3 输入端与波发生器凸轮连接方式\n"
+        )
+        out = convert_mineru_markup(raw, "p001", {})
+        for letter, numeral in (("a", "Ⅰ"), ("b", "Ⅱ"), ("c", "Ⅲ"), ("d", "Ⅳ")):
+            self.assertIn(f"![{letter}) {numeral}型](assets/images/fig-{letter}.png)", out)
+        # 整行题注保持独立行，未被吸进任何分图的替代文本
+        self.assertIn("\n\n图3 输入端与波发生器凸轮连接方式", out)
+        self.assertNotIn("图 3 输入端与波发生器凸轮连接方式]", out)
+
+    def test_numbered_figure_keeps_its_own_caption_and_the_next_one_stays(self):
+        """反例的姊妹形态：附录里两张连续图，前一张的整图题注不被后一张题注顶掉。"""
+        raw = (
+            "![图E.4 封底格式](images/e4.png)\n\n"
+            "![](images/e5.png)\n\n"
+            "a 国家标准发布部门按照有关规定填写。\n\n"
+            "图E.5 国家标准封面格式\n"
+        )
+        out = convert_mineru_markup(raw, "p001", {})
+        self.assertIn("![图E.4 封底格式](assets/images/e4.png)", out)
+        self.assertNotIn("![图 E.5 国家标准封面格式](assets/images/e4.png)", out)
+
+    def test_figure_without_a_number_still_absorbs_the_caption_line(self):
+        # 反例（护栏不外溢）：无图号的图片照旧吸附后面 6 行内的「图 N 题名」题注行
+        out = convert_mineru_markup("![](images/fig-001.png)\n\n图7 甲型结构\n", "p001", {})
+        self.assertIn("![图 7 甲型结构](assets/images/fig-001.png)", out)
+        self.assertNotIn("图7 甲型结构", out.replace("![图 7 甲型结构]", ""))
+
     def test_formula_assets_are_bound_from_content_list(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -242,6 +281,59 @@ class HeaderMergeRoundTripTests(unittest.TestCase):
                 self.assertEqual(header_cell["text"], "c")
                 self.assertEqual(header_cell["colspan"], 2)
                 self.assertEqual(header_cell["rowspan"], 1)
+
+
+class TableHeaderRowsTests(unittest.TestCase):
+    """GEN-114：表头行数 = 首行起点的最大 rowspan（表头区垂直跨度）。
+
+    GB/T 的表头常不止一行（「尺寸代号 | 规格代号」+ 各列规格号、「参数名称 | 转速」+
+    各转速段、「机座号 | 基本尺寸及公差带」+ D/D₁/L/L₁ + h7/H7…），MinerU 的 HTML 用
+    rowspan 表达这一跨度（实测 2~4）；旧实现硬编码 header-rows="1" → 转页接排只重复
+    第一行、表头底纹也只盖一行。
+    """
+
+    def test_rowspan_on_the_first_row_sets_the_header_rows(self) -> None:
+        html = (
+            '<table><tr><td rowspan="2">尺寸代号</td><td colspan="2">规格代号</td></tr>'
+            "<tr><td>8</td><td>11</td></tr>"
+            "<tr><td>Φd1</td><td>3.0</td><td>5.0</td></tr></table>"
+        )
+        out = convert_mineru_markup(html_table_to_csm(html, "001", "表6 结构尺寸表"), "p001", {})
+        self.assertIn('header-rows="2"', out)
+        # 合并指令的 row 是**绝对** 0-based 行号（row=0 即第一行，表头行也算在内）
+        self.assertIn('row="0" column="1" rowspan="2"', out)
+        self.assertIn('row="0" column="2" rowspan="1" colspan="2"', out)
+
+    def test_three_and_four_row_headers(self) -> None:
+        three = (
+            '<table><tr><td rowspan="3">机座号</td><td colspan="2">基本尺寸及公差带</td></tr>'
+            "<tr><td>D</td><td>L</td></tr><tr><td>h7</td><td>H7</td></tr>"
+            "<tr><td>63</td><td>11</td><td>30</td></tr></table>"
+        )
+        self.assertIn('header-rows="3"', html_table_to_csm(three, "001", None))
+        four = (
+            '<table><tr><td rowspan="4">参数名称</td><td colspan="2">转速/(r/min)</td></tr>'
+            "<tr><td>nN ≤ 8000</td><td>nN &gt; 8000</td></tr>"
+            "<tr><td>功率/W</td><td></td></tr><tr><td>16~90</td><td>120~750</td></tr>"
+            "<tr><td>堵转转矩</td><td>2.00</td><td>2.50</td></tr></table>"
+        )
+        self.assertIn('header-rows="4"', html_table_to_csm(four, "001", None))
+
+    def test_plain_header_stays_one_row(self) -> None:
+        html = (
+            "<table><tr><td>序号</td><td>名称</td></tr>"
+            "<tr><td>1</td><td>甲</td></tr></table>"
+        )
+        self.assertIn('header-rows="1"', html_table_to_csm(html, "001", None))
+
+    def test_header_never_eats_the_whole_table(self) -> None:
+        # 反例：首行 rowspan 覆盖整表（含全部行）→ 至少留一行数据，否则 repeatRows ==
+        # 行数，reportlab 认为切点总落在表头内、表永不可分页。
+        html = (
+            '<table><tr><td rowspan="3">A</td><td>B</td></tr>'
+            "<tr><td>C</td></tr><tr><td>D</td></tr></table>"
+        )
+        self.assertIn('header-rows="2"', html_table_to_csm(html, "001", None))
 
 
 if __name__ == "__main__":

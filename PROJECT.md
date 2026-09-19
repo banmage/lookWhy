@@ -419,9 +419,56 @@ lookWhy/
     对称性不该被内容长短拉偏（源排版就是近等分），只有排不下的列才从有余量的列取宽；③ 显式
     `widths` 属性与公式图「只缩小不穿列」的既有契约不动。
 
+24. **并列组（`ssir:columns`）里的图也有题注，分图题注还不带「图」字（GBT-B06 执行侧；docs/12 §3.66）**：
+    `_append_side_by_side` 的 figure 分支早年只 `append(image)`，`ssir:columns` 内的图题注**整体不渲染**
+    ——用户看到的「只有第 3 张图显示了图下名称」其实是 MinerU 裁剪图把题注像素一起裁走了。题注形态/样式
+    只能有**一个入口**：`_figure_caption_text`（通栏「图N 题名」；分图编号 `a)`/`a）` 输出「{编号} {分图题}」，
+    GB/T 1.1-2020 9.7.6 的分图不提升为独立图号）与 `_figure_caption_style`（分图用 `subcaption` 9pt 黑体，
+    其余 `caption` 10.5pt）；通栏 `_append_figure` 与并列 `_append_side_by_side` 两处必须同规，
+    docx 侧尚未同步（Word 暂停支持中）。
+25. **分图题注的归属与像素都只能靠几何，且资产裁剪必须幂等（GEN-112/GEN-113；docs/12 §3.66）**：
+    MinerU 逐行检出的 `image_caption` 块按阅读顺序贪心挂块，一行分图的题注会挂到**别的**图块上、
+    整行图的「图N 题名」也会挂到某一张分图上——只取「块内第一条题注」就会把 a 图写成 c 图的名字、
+    c 图没有题注、整图题注整条丢失。三条规矩：① 归属按**横向几何**重排（重叠 ≥ 题注宽一半；本图块或
+    题注缺 bbox 时保持原位，不猜），「图N 题名」不落在本图块内就摘成独立题注行排在该页最后一个图块之后；
+    ② 图块 bbox 越界圈进题注行（**双轴相交**、压缩量 < 图块高三成）时，题注像素不属于图——把资产裁到
+    题注上边界；③ 裁剪必须**幂等**：目标像素高按几何与该资产**宽向**密度算（宽不受裁剪影响）、只裁不放，
+    且 `image_source_sizes` 的高度同步扣除，否则资产裁短后图会被纵向压扁；④ `convert_mineru_markup` 的
+    6 行前视题注吸附也要加护栏——题注行的图号与图片替代文本里的图号**不一致**时不吸附，否则「图3 …」
+    这类整行题注会**覆盖**掉分图已有的题注（`_figure_number_token`）。
+
+26. **表头是多行是常态，表跨页必须重复整块表头并补「（续）」与单位陈述（GEN-114/GEN-115、GBT-B13；docs/12 §3.67）**：
+    GB/T 表的表头常不止一行（「尺寸代号｜规格代号」+ 各列规格号、「参数名称｜转速」+ 各转速段、「机座号｜基本尺寸及公差带」+
+    D/D₁/L/L₁ + h7/H7），MinerU 的 HTML 用 `rowspan` 表达表头区跨度（实测 2~4）。三条规矩：① 表头行数 = **首行起点的最大 rowspan**
+    （下限 1、上限「行数 − 1」——至少留一行数据，否则 reportlab 认为切点永远落在表头内、表永不可分页），由
+    `mineru_html.html_table_to_csm` 写进 `header-rows`；② `table-merge` 的 `row` 是**绝对 0-based 行号**（row=0 即第一行，
+    表头行也算在内）——旧 builder 用 `header_rows + row − 1` 的「相对数据行」口径，在 header-rows=1 时恰好重合、表头多行时整体错位；
+    ③ 续表要**重复全部表头行**并补「表N 表题（续）」（「（续）」五号宋体）与「单位为××」右对齐行，且题注不得与表框拆到两页
+    （`_table_caption_keep_height` + `CondPageBreak`）。既有 canonical **必须与 raw 同源回放**（`tools/replay_table_header_rows.py`）：
+    raw 是 normalize 的上游，只改 canonical 的话下一次 normalize 重跑就会覆盖回去（实测被并发会话覆盖过一次）。
+
+27. **行内公式（`$…$`）拍平必须保住「变量斜体 + 上划线」（GEN-116；docs/12 §3.68）**：
+    行内 math 只能拍平成文本，而拍平链路会丢掉两条版式约定：`\overline`/`\bar` 是「未知命令」，`_latex_expand_nested`
+    先把它连命令带花括号拆掉（`\overline { { \eta } }` 形态更是拍成空串）；拍平只输出字符、没有斜体约定（源版面是
+    「量符号斜体、单位与下标正体」）。三条规矩：① 上划线 → 内容 + **U+0304 组合上划线**（ink 以笔位为中心、advance 0，
+    紧跟字母即压在字母上方）；② 基字位置的拉丁/希腊字母 → 斜体哨兵（GEN-108 机斜字族），`\mathrm`/`\text` 内容、
+    上/下标、数字、算子（Δ/Σ/Π/∂/Ω）与「紧跟 `^{…}` 的单字母基字」（单位幂 m²）保持正体；
+    ③ 替换顺序：直立遮罩与上划线必须在 `_latex_expand_nested` **之前**，斜体化在拍平当步完成（区域哨兵只包住该片段），
+    否则「数值-单位固定字隙」等既有文本规则会被哨兵挡住。改 `_latex_to_text` 或 `_markup` 的拍平链路时先跑
+    `tests/test_pdf_renderer.py::InlineMathVariableStyleTests` 与跨语料片段审计（8 份 canonical 538 处行内 math）。
+
+28. **标题编号确认不依赖空格（GEN-117；docs/12 §3.70）**：canonical 里可能是编号紧贴标题文字的写法
+    （`### 6.4分类、标记和编码`、`## 22电磁兼容性`），而渲染端统一写 `编号 + 空格 + 标题`。解析端的「已确认编号」
+    判据若要求编号后必须是空白，缺空格的标题就不算已确认 → 其下**裸条款段**（≤40 字、无终止标点，如
+    `6.4.3 产品分类的基本要求如下：`）的级联提升失效 → 同一份文件在回环两侧解析出不同条款树
+    （structure + C7-clauseIdentifiers + C4-numericalValues）。判据必须与 `builder.py` 的标题拆分一致：
+    编号后是空白**或**直接跟标题文字（汉字/字母/括号）。canonical 不需要改写——判据对齐后两种写法解析结果完全相同
+    （9 份语料 A/B 逐节点相同，渲染产物不变）。改 `parser._bare_heading_candidates` /
+    `_promoted_bare_headings` / `builder` 标题拆分时先跑 `tests/test_csm_to_ssir.py::GluedHeadingNumberTests`。
+
 ## 9. 测试与验证惯例
 
-- 改完代码跑 `./.venv/bin/python -m unittest discover`（全量单测，当前 520 例）。
+- 改完代码跑 `./.venv/bin/python -m unittest discover`（全量单测，当前 555 例）。
 - 全流程验证用金标准 PDF：`corpus/golden/Q_003.pdf`（企业标准 6 页，快）、
   `JB_T_14425-2023.pdf`（OCR 型 21 页）、`GB_T_25141-2022.pdf`（国标 18 页）。
 - 验证清单：roundtrip passed、渲染 warnings 数量合理（企业标准 ICS/CCS 缺失

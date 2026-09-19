@@ -106,7 +106,7 @@ class MarkupNormalisationTests(unittest.TestCase):
         out = _markup(text)
         self.assertNotIn("mathrm", out)
         self.assertNotIn("$", out)
-        self.assertIn("K<sub>T</sub>", out)
+        self.assertIn("<i>K</i><sub>T</sub>", out)   # K 是量符号 → 斜体（GEN-116）
         self.assertIn("N·m/A", out)
 
     def test_markup_normalises_untitled_clause_number_spacing(self):
@@ -139,9 +139,9 @@ class MarkupNormalisationTests(unittest.TestCase):
         # 「变量——解释」中，变量与破折号之间、破折号与解释之间各空四分之一汉字；
         # 用固定字隙哨兵（白字），不是空格——两端对齐拉伸不到它。
         gap = '<font size="2.625" color="white">中</font>'
-        self.assertEqual(_markup(r"$\Delta t$——绕组温升，单位为开尔文(K)；"), f"Δt{gap}——{gap}绕组温升，单位为开尔文(K)；")
+        self.assertEqual(_markup(r"$\Delta t$——绕组温升，单位为开尔文(K)；"), f"Δ<i>t</i>{gap}——{gap}绕组温升，单位为开尔文(K)；")
         self.assertEqual(_markup(r"$R _ { 2 }$——试验结束时的绕组电阻，单位为欧姆(Ω)；"),
-                         f"R<sub>2</sub>{gap}——{gap}试验结束时的绕组电阻，单位为欧姆(Ω)；")
+                         f"<i>R</i><sub>2</sub>{gap}——{gap}试验结束时的绕组电阻，单位为欧姆(Ω)；")
         self.assertEqual(_markup("k ——常数，对铜绕组为234.5；"), f"k{gap}——{gap}常数，对铜绕组为234.5；")
         # 列项 marker「——」不是变量解释项；无破折号的正文段落不受影响。
         self.assertEqual(_markup("——增加了第3章“术语和定义”；"), "——增加了第3章“术语和定义”；")
@@ -176,7 +176,7 @@ class MarkupNormalisationTests(unittest.TestCase):
         # （"D_{1max}"）不是量值-单位，不插字隙。
         self.assertEqual(_markup("l = 2.5×10<sup>3</sup> m"), f"l = 2.5×10<super>3</super>{gap}m")
         self.assertEqual(_markup("10<sup>3</sup>m"), f"10<super>3</super>{gap}m")
-        self.assertEqual(_markup(_latex_to_text(r"$D _ { \mathrm { 1 m a x } }$")), "D<sub>1max</sub>")
+        self.assertEqual(_markup(_latex_to_text(r"$D _ { \mathrm { 1 m a x } }$")), "<i>D</i><sub>1max</sub>")
         # 间隙随容器字号（四分之一汉字，非固定点数）。
         self.assertEqual(_markup("1000 m", em_size=9), '1000<font size="2.25" color="white">中</font>m')
 
@@ -1314,8 +1314,8 @@ class Gb3100SuperscriptTableNoteTests(unittest.TestCase):
             _markup("$6 . 6 2 6 0 7 0 1 5 \\times 1 0 ^ { - 3 4 } \\mathrm { J } \\mathrm { s } ;$"),
             f"6.62607015×10<super>−34</super>{_UNIT_GAP}J s ;",
         )
-        self.assertEqual(_markup("$\\cdot \\Delta V _ { \\mathrm { c s } }$"), "·ΔV<sub>cs</sub>")
-        self.assertEqual(_markup("$K _ { \\mathrm { c d } }$"), "K<sub>cd</sub>")
+        self.assertEqual(_markup("$\\cdot \\Delta V _ { \\mathrm { c s } }$"), "·Δ<i>V</i><sub>cs</sub>")
+        self.assertEqual(_markup("$K _ { \\mathrm { c d } }$"), "<i>K</i><sub>cd</sub>")
 
     def test_table_note_cell_split_into_per_note_parts(self) -> None:
         # Fix H：表注行（注1：…注2：… 连排）拆成每条注独立文本；行内 <br>
@@ -2582,6 +2582,359 @@ class FigureUnitLineTests(unittest.TestCase):
         self.assertEqual(unit_glyphs, [])
         self.assertGreater(figure_image[0], 0)
         document.close()
+
+
+class SubFigureCaptionTests(unittest.TestCase):
+    """GBT-B06：图题注一律渲染（含并列组内的图），分图编号/分图题小五号黑体、不带「图」字。
+
+    现象（2026-09-19，GB_T_30819-2024 4.1.8 图3）：`ssir:columns` 组内的图成员在
+    ``_append_side_by_side`` 里只画图、不画题注，a)～d) 四个分图题整体不渲染——源版面里
+    只有第三张图的分图题因为 MinerU 的裁剪图恰好把题注像素一起带走才"显示"出来。
+    修复后并列路径按同一 GBT-B06 渲染题注；断言取真实 PDF 文本层（字形/字号/坐标）。
+    """
+
+    ROOT = Path(__file__).resolve().parents[1]
+
+    def test_caption_text_and_style_shapes(self) -> None:
+        from leleby_ssir.pdf_renderer import _figure_caption_text
+
+        self.assertEqual(
+            _figure_caption_text({"number": "3", "caption": "输入端与波发生器凸轮连接方式"}),
+            "图3 输入端与波发生器凸轮连接方式",
+        )
+        # 分图题注不带「图」字（GB/T 1.1-2020 9.7.6 只给分图编号，源版面即「a） Ⅰ型」）
+        self.assertEqual(_figure_caption_text({"number": "a）", "caption": "Ⅰ型"}), "a） Ⅰ型")
+        self.assertEqual(_figure_caption_text({"number": "b)", "caption": "Ⅱ型"}), "b) Ⅱ型")
+        self.assertEqual(_figure_caption_text({"number": "E.2", "caption": "双数页格式"}), "图E.2 双数页格式")
+        self.assertEqual(_figure_caption_text({"number": "", "caption": ""}), "")
+        # 编号与题名缺一：按 GBT-B08 有编号就出题注行
+        self.assertEqual(_figure_caption_text({"number": "7", "caption": ""}), "图7")
+
+    def test_sub_captions_render_under_their_images(self) -> None:
+        try:
+            import pymupdf
+        except ImportError:  # pragma: no cover - 环境缺 pymupdf 时跳过
+            self.skipTest("pymupdf unavailable")
+        from PIL import Image as PILImage
+        import json
+
+        from leleby_ssir.builder import SSIRBuilder
+        from leleby_ssir.parser import CSMParser
+        from leleby_ssir.pdf_renderer import render_pdf_file
+
+        font = self.ROOT / "config" / "rendering" / "fonts" / "NotoSerifCJKsc-Regular.ttf"
+        if not font.is_file():
+            self.skipTest("body font asset missing")
+        directory = Path(tempfile.mkdtemp())
+        assets = {}
+        for name, size in (("a", (200, 400)), ("b", (220, 420)), ("c", (240, 260))):
+            asset = directory / f"{name}.png"
+            PILImage.new("RGB", size, (255, 255, 255)).save(asset)
+            assets[name] = asset
+        canon = (
+            "---\n"
+            "csm-version: 1.0\n"
+            "document-type: standard\n"
+            "document-identifier: GB_T_30819-2024\n"
+            "standard-number: GB/T 30819—2024\n"
+            "title: 机器人用谐波齿轮减速器\n"
+            "language: zh-CN\n"
+            "---\n\n"
+            "# 机器人用谐波齿轮减速器\n\n"
+            "## 4.1.8　连接方式\n\n"
+            "输入端与波发生器凸轮连接方式可分 4 种类型，如图3a)～d) 所示。\n\n"
+            "<!-- ssir:columns -->\n\n"
+            f"![图 a） Ⅰ型]({assets['a']})\n\n"
+            "<!-- ssir:column -->\n\n"
+            f"![图 b) Ⅱ型]({assets['b']})\n\n"
+            "<!-- ssir:/columns -->\n\n"
+            f"![图5 甲型结构]({assets['c']})\n"
+        )
+        source = Path(directory) / "t.canonical.md"
+        source.write_text(canon, encoding="utf-8")
+        ssir = json.loads(json.dumps(SSIRBuilder().build(CSMParser().read(str(source)))))
+        ssir_path = Path(directory) / "t.ssir.json"
+        ssir_path.write_text(json.dumps(ssir, ensure_ascii=False), encoding="utf-8")
+        target = Path(directory) / "t.pdf"
+        render_pdf_file(str(ssir_path), str(target), toc_depth=None)
+
+        document = pymupdf.open(str(target))
+        spans: list[tuple[str, str, float, tuple, int]] = []
+        images: dict[int, list[tuple]] = {}
+        for page_number, page in enumerate(document):
+            for block in page.get_text("dict")["blocks"]:
+                if block.get("type") == 1:
+                    images.setdefault(page_number, []).append(tuple(round(value, 1) for value in block["bbox"]))
+                    continue
+                for line in block.get("lines", []):
+                    for span in line["spans"]:
+                        spans.append((span["text"].strip(), span["font"], round(span["size"], 1),
+                                      tuple(round(value, 1) for value in span["bbox"]), page_number))
+        document.close()
+
+        by_text = {}
+        for text, name, size, bbox, page_number in spans:
+            by_text.setdefault(text, (name, size, bbox, page_number))
+        # ① 四个题注都在（修复前并列组内的图题注一条都不渲染）
+        for text in ("a） Ⅰ型", "b) Ⅱ型"):
+            self.assertIn(text, by_text, by_text)
+            name, size, _, _ = by_text[text]
+            # ② 分图编号/分图题小五号黑体（GBT-B06、附录F 序号38/39）
+            self.assertTrue(name.startswith("WenQuanYiZenHei"), (text, name))
+            self.assertEqual(size, 9.0, (text, size))
+        # ③ 不通栏的图题注仍是「图N 题名」、五号黑体
+        self.assertIn("图5 甲型结构", by_text, by_text)
+        normal_name, normal_size, _, _ = by_text["图5 甲型结构"]
+        self.assertTrue(normal_name.startswith("WenQuanYiZenHei"), normal_name)
+        self.assertEqual(normal_size, 10.5, normal_size)
+        # ④ 分图题注在**自己那张**图之下（同页、横向重叠、图上题注下）
+        for text in ("a） Ⅰ型", "b) Ⅱ型"):
+            _, _, caption, page_number = by_text[text]
+            above = [
+                image for image in images.get(page_number, [])
+                if image[3] <= caption[1]
+                and min(image[2], caption[2]) - max(image[0], caption[0]) > 0
+            ]
+            self.assertTrue(above, (text, caption, images.get(page_number)))
+
+
+
+
+class ContinuationTableCaptionTests(unittest.TestCase):
+    """表跨页（续表）：完整表头 + 「表N 表名（续）」+ 单位陈述（GEN-114 / GEN-115）。
+
+    用户 2026-09-19 的通用要求：「表头实际由两行组成，接续到下一页时表头只显示了 1 行
+    （应完整识别表头）；接续表应显示表名并在表名后加「（续）」；应保留表头右侧的
+    「单位为毫米」」。依据 GB/T 1.1-2020 9.8.3（转页接排时重复表编号、表题可选 +「（续）」）
+    与 9.8.2/附录 F（单位陈述在表题之下、表框右上）。
+    """
+
+    ROOT = Path(__file__).resolve().parents[1]
+
+    def _render(self, *, data_rows: int, unit: bool = True):
+        try:
+            import pymupdf
+        except ImportError:  # pragma: no cover
+            self.skipTest("pymupdf unavailable")
+        import json
+
+        from leleby_ssir.builder import SSIRBuilder
+        from leleby_ssir.parser import CSMParser
+        from leleby_ssir.pdf_renderer import render_pdf_file
+
+        font = self.ROOT / "config" / "rendering" / "fonts" / "NotoSerifCJKsc-Regular.ttf"
+        if not font.is_file():
+            self.skipTest("font assets missing")
+        directory = tempfile.mkdtemp()
+        unit_attr = ' unit="毫米"' if unit else ""
+        rows = [
+            "| 尺寸代号 | 规格代号 |  |  |",
+            "| --- | --- | --- | --- |",
+            "|  | 规格甲 | 规格乙 | 规格丙 |",
+        ]
+        rows += [f"| $Φd_{{{index}}}$ | {index}.0 | {index + 1}.0 | {index + 2}.0 |" for index in range(1, data_rows + 1)]
+        canon = (
+            "---\n"
+            "csm-version: 1.0\n"
+            "document-type: standard\n"
+            "document-identifier: GB_T_30819-2024\n"
+            "standard-number: GB/T 30819—2024\n"
+            "title: 机器人用谐波齿轮减速器\n"
+            "language: zh-CN\n"
+            "---\n\n"
+            "# 机器人用谐波齿轮减速器\n\n"
+            "## 4.3　结构尺寸\n\n"
+            "结构尺寸见表6。\n\n"
+            f'<!-- ssir:table id="t6" header-rows="2" caption-number="6"{unit_attr} -->\n'
+            "**表6 CS-Ⅰ系列减速器结构尺寸表**\n"
+            + "\n".join(rows)
+            + "\n"
+            '<!-- ssir:table-merge table="t6" row="0" column="1" rowspan="2" colspan="1" -->\n'
+            '<!-- ssir:table-merge table="t6" row="0" column="2" rowspan="1" colspan="3" -->\n'
+        )
+        source = Path(directory) / "t.canonical.md"
+        source.write_text(canon, encoding="utf-8")
+        ssir = SSIRBuilder().build(CSMParser().read(str(source)))
+        ssir_path = Path(directory) / "t.ssir.json"
+        ssir_path.write_text(json.dumps(ssir, ensure_ascii=False), encoding="utf-8")
+        target = Path(directory) / "t.pdf"
+        render_pdf_file(str(ssir_path), str(target), toc_depth=None)
+        document = pymupdf.open(str(target))
+        pages: list[list[tuple[str, tuple, list[tuple[str, str]]]]] = []
+        for page in document:
+            lines: list[tuple[str, tuple, list[tuple[str, str]]]] = []
+            for block in page.get_text("dict")["blocks"]:
+                if block.get("type") != 0:
+                    continue
+                for line in block["lines"]:
+                    text = "".join(span["text"] for span in line["spans"]).strip()
+                    if text:
+                        spans = [(span["text"], span["font"]) for span in line["spans"]]
+                        lines.append((text, tuple(line["bbox"]), spans))
+            pages.append(lines)
+        return ssir, pages, document
+
+    @staticmethod
+    def _find(lines: list[tuple[str, tuple, list]], needle: str) -> list[tuple]:
+        return [bbox for text, bbox, _ in lines if needle in text]
+
+    def test_continuation_page_repeats_caption_unit_and_full_header(self) -> None:
+        ssir, pages, document = self._render(data_rows=60)
+        # ① 解析层：表头是两行（GEN-114），第 2 行也标成表头
+        table = ssir["tables"][0]
+        self.assertEqual([row["isHeader"] for row in table["rows"][:3]], [True, True, False])
+        # ② 表跨了多页：表首页之后的每一页都是续表
+        first_table_page = next(
+            index for index, lines in enumerate(pages)
+            if self._find(lines, "CS-Ⅰ系列减速器结构尺寸表") and not self._find(lines, "（续）")
+        )
+        continuation = [index for index, lines in enumerate(pages) if self._find(lines, "（续）")]
+        self.assertGreater(len(continuation), 0, pages)
+        self.assertEqual(continuation, list(range(first_table_page + 1, len(pages))), pages)
+        for page in continuation:
+            lines = pages[page]
+            # 表名 +（续）
+            self.assertTrue(
+                any("CS-Ⅰ系列减速器结构尺寸表（续）" in line[0] for line in lines),
+                (page, lines),
+            )
+            # 单位为毫米保留在续页，且只有一次（不重复堆叠）
+            unit = self._find(lines, "单位为毫米")
+            self.assertEqual(len(unit), 1, (page, lines))
+            # 完整表头（两行）都在续页重复：第 1 行「尺寸代号/规格代号」+ 第 2 行「规格甲…」
+            for label in ("尺寸代号", "规格代号", "规格甲", "规格乙", "规格丙"):
+                self.assertTrue(self._find(lines, label), (page, label, lines))
+            # 次序：表名（续） → 单位为毫米 → 表头第 1 行 → 表头第 2 行
+            cap = self._find(lines, "（续）")[0]
+            self.assertLess(cap[1], unit[0][1], (page, cap, unit))
+            self.assertLess(unit[0][1], self._find(lines, "尺寸代号")[0][1], (page, lines))
+            self.assertLess(
+                self._find(lines, "尺寸代号")[0][1], self._find(lines, "规格甲")[0][1], (page, lines)
+            )
+            # 单位行右对齐（表框右上，GB/T 1.1-2020 表 F.1 序号 37）
+            self.assertGreater(unit[0][2], document[page].rect.width / 2 + 100, (page, unit))
+            # 「（续）」五号宋体、表编号与表题五号黑体（表 F.1 序号 38）
+            caption_line = next(line for line in lines if "（续）" in line[0])
+            fonts = {text: font for text, font in caption_line[2] if text.strip()}
+            continuation_font = next(font for text, font in caption_line[2] if "（续）" in text)
+            name_font = next(font for text, font in caption_line[2] if "CS-Ⅰ" in text)
+            self.assertIn("NotoSerifCJKsc-Regular", continuation_font, fonts)
+            self.assertNotEqual(name_font, continuation_font, fonts)
+            self.assertIn("Hei", name_font, fonts)  # 黑体（标目字体）
+        # ③ 表首页照旧：题注不带（续），单位行在
+        first = pages[first_table_page]
+        self.assertFalse(self._find(first, "（续）"), first)
+        self.assertTrue(self._find(first, "CS-Ⅰ系列减速器结构尺寸表"), first)
+        self.assertTrue(self._find(first, "单位为毫米"), first)
+        document.close()
+
+    def test_short_table_gets_no_continuation_rows(self) -> None:
+        # 反例：表不跨页时既没有「（续）」也不会多印一行单位陈述
+        _, pages, document = self._render(data_rows=3, unit=False)
+        for lines in pages:
+            self.assertFalse(self._find(lines, "（续）"), lines)
+        self.assertEqual(sum(len(self._find(lines, "单位为毫米")) for lines in pages), 0)
+
+
+class InlineMathVariableStyleTests(unittest.TestCase):
+    """行内 math 的变量斜体与上划线（GEN-116；GB/T 1.1-2020 10.4.6、GBT-B12/GBT-X06）。
+
+    现象（2026-09-19 用户报告）：「6.4 的公式下的参数解释中，参数符号上面的 overline 短横线都没有
+    正确渲染」+「两个 $ 之间的参数也没有变成斜体字（整个标准都存在这个问题）」。源版面实测
+    （GB_T_30819-2024 p25 的 6.4 式中、GB_T_5171.1-2014 p10）：量符号 η/P/n/T/R/i/Φ 用**斜体**
+    字形，下标数字与描述性下标、单位（kW、r/min、MΩ）、数字与数学算子（Δ）用正体；量符号上的
+    短横线是**压在字母上方**的矢量短横线。
+    """
+
+    ROOT = Path(__file__).resolve().parents[1]
+
+    def test_overlined_symbol_keeps_the_bar_and_italic(self) -> None:
+        out = _markup(r"$ \overline{η}$ ─ 传动效率；")
+        self.assertEqual(out, "<i>η</i>\u0304 ─ 传动效率；")
+
+    def test_nested_overline_form_is_not_lost(self) -> None:
+        # MinerU 的 raw 写 `\overline { { \eta } }`：旧拍平把它整条拍成空串
+        # （`_latex_expand_nested` 先拆命令、`\eta` 又被当未知命令丢弃）。
+        self.assertEqual(_markup(r"$ \overline { { \eta } }$ ─ 传动效率；"), "<i>η</i>\u0304 ─ 传动效率；")
+
+    def test_variables_italic_scripts_upright(self) -> None:
+        self.assertEqual(_markup(r"$K_{T}$"), "<i>K</i><sub>T</sub>")
+        self.assertEqual(_markup(r"$P_{N}$"), "<i>P</i><sub>N</sub>")
+        self.assertEqual(_markup(r"$ \overline{P}_{1}$"), "<i>P</i>\u0304<sub>1</sub>")
+        self.assertEqual(_markup(r"$\Phi d_{1}$"), "<i>Φd</i><sub>1</sub>")
+        self.assertEqual(_markup(r"$i$ ─ 传动比。"), "<i>i</i> ─ 传动比。")
+
+    def test_units_operators_and_footnote_markers_stay_upright(self) -> None:
+        self.assertEqual(_markup(r"$\mathrm{kPa}$"), "kPa")
+        self.assertEqual(_markup(r"$100\mathrm{M}\Omega$"), '100<font size="2.625" color="white">中</font>MΩ')
+        self.assertEqual(_markup(r"$m^{2}$"), "m<super>2</super>")          # 单位幂：基字正体
+        self.assertEqual(_markup(r"$10^{-3}$"), "10<super>−3</super>")
+        self.assertEqual(_markup(r"$\Delta t$"), "Δ<i>t</i>")                # 算子正体、变量斜体
+        self.assertEqual(_markup(r"$^{a}$"), "<super>a</super>")             # 表脚注标记：无基字
+        self.assertEqual(_markup(r"$T _ { \mathrm { n } } / 2$"), "<i>T</i><sub>n</sub>/2")
+        # 不带花括号的单字符下标（MinerU 表格单元格常见写法）：旧码把 `_` 当普通字符
+        # 保留（拍出 "T_P"），下标语义丢失、字母连成一段被整体当量符号。
+        self.assertEqual(_markup(r"$T_P$"), "<i>T</i><sub>P</sub>")
+        self.assertEqual(_markup(r"$2U_N$"), "2<i>U</i><sub>N</sub>")
+
+    def test_real_pdf_symbols_are_italic_with_the_bar(self) -> None:
+        try:
+            import pymupdf
+        except ImportError:  # pragma: no cover
+            self.skipTest("pymupdf unavailable")
+        import json
+
+        from leleby_ssir.builder import SSIRBuilder
+        from leleby_ssir.parser import CSMParser
+        from leleby_ssir.pdf_renderer import render_pdf_file
+
+        oblique = self.ROOT / "config" / "rendering" / "fonts" / "NotoSerifCJKsc-Oblique.ttf"
+        body = self.ROOT / "config" / "rendering" / "fonts" / "NotoSerifCJKsc-Regular.ttf"
+        if not oblique.is_file() or not body.is_file():
+            self.skipTest("font assets missing")
+        directory = tempfile.mkdtemp()
+        canon = (
+            "---\n"
+            "csm-version: 1.0\n"
+            "document-type: standard\n"
+            "document-identifier: GB_T_30819-2024\n"
+            "standard-number: GB/T 30819—2024\n"
+            "title: 机器人用谐波齿轮减速器\n"
+            "language: zh-CN\n"
+            "---\n\n"
+            "# 机器人用谐波齿轮减速器\n\n"
+            "## 6.4　传动效率\n\n"
+            "式中：\n\n"
+            "$ \\overline{η}$ ─ 传动效率；\n\n"
+            "$ \\overline{P}_{1}$ ─ 输入端功率算术平均值，单位为千瓦（kW）；\n"
+        )
+        source = Path(directory) / "t.canonical.md"
+        source.write_text(canon, encoding="utf-8")
+        ssir_path = Path(directory) / "t.ssir.json"
+        ssir_path.write_text(json.dumps(SSIRBuilder().build(CSMParser().read(str(source))), ensure_ascii=False), encoding="utf-8")
+        target = Path(directory) / "t.pdf"
+        render_pdf_file(str(ssir_path), str(target), toc_depth=None)
+        document = pymupdf.open(str(target))
+        spans = [
+            (span["text"], span["font"], round(span["size"], 1))
+            for page in document
+            for block in page.get_text("dict")["blocks"] if block.get("type") == 0
+            for line in block["lines"]
+            for span in line["spans"]
+        ]
+        document.close()
+        eta = [index for index, (text, _, _) in enumerate(spans) if "η" in text]
+        self.assertTrue(eta, spans[:12])
+        text, font, size = spans[eta[0]]
+        self.assertIn("Oblique", font, spans[:12])          # 量符号斜体（GEN-108 机斜字族）
+        self.assertEqual(size, 10.5)
+        # 短横线（U+0304 组合上划线）紧跟在符号之后——pymupdf 把它并进下一个 span。
+        self.assertTrue(spans[eta[0] + 1][0].startswith("\u0304"), spans[eta[0]:eta[0] + 3])
+        power = [index for index, (text, _, _) in enumerate(spans) if text.strip().startswith("P")]
+        self.assertTrue(power, spans[:12])
+        self.assertTrue(spans[power[0] + 1][0].startswith("\u0304"), spans[power[0]:power[0] + 3])
+        subscript = [span for span in spans[power[0]:power[0] + 4] if "Oblique" not in span[1]]
+        self.assertTrue(any(text == "1" for text, _, _ in subscript), spans[power[0]:power[0] + 4])
 
 
 if __name__ == "__main__":
