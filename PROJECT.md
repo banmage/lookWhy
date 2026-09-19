@@ -446,14 +446,23 @@ lookWhy/
     ③ 续表要**重复全部表头行**并补「表N 表题（续）」（「（续）」五号宋体）与「单位为××」右对齐行，且题注不得与表框拆到两页
     （`_table_caption_keep_height` + `CondPageBreak`）。既有 canonical **必须与 raw 同源回放**（`tools/replay_table_header_rows.py`）：
     raw 是 normalize 的上游，只改 canonical 的话下一次 normalize 重跑就会覆盖回去（实测被并发会话覆盖过一次）。
+    **症状「续表少一行表头」先跑干跑，再怀疑代码**：`tools/replay_table_header_rows.py`（不带 `--apply`）按 canonical 自带的
+    `ssir:table-merge` 指令从 `row="0"` 的最大 rowspan 推表头行数——报出 `header-rows 1 → 2` 就是 **canonical 掉了回放**
+    （规则与 raw 都对：raw 由同一规则写出，当前 `normalize` 实测会把 raw 的值原样带到 canonical）；`--apply` 后重建
+    （`tools/build_ssir.py <canonical>`，不改写 canonical），干跑回到 0 命中即幂等、也证明期间没人再改。表头行数只落在
+    canonical 的指令行上，`parse → SSIR(isHeader)` → `render`（`repeatRows`）全链照抄该值，所以「续表少一行」在
+    canonical 属性正确时不会发生（GB_T_30819-2024 表2 实测：p14 续表只重复首行、缺「润滑油润滑(O)｜润滑脂润滑(G)」行）。
 
 27. **行内公式（`$…$`）拍平必须保住「变量斜体 + 上划线」（GEN-116；docs/12 §3.68）**：
     行内 math 只能拍平成文本，而拍平链路会丢掉两条版式约定：`\overline`/`\bar` 是「未知命令」，`_latex_expand_nested`
     先把它连命令带花括号拆掉（`\overline { { \eta } }` 形态更是拍成空串）；拍平只输出字符、没有斜体约定（源版面是
-    「量符号斜体、单位与下标正体」）。三条规矩：① 上划线 → 内容 + **U+0304 组合上划线**（ink 以笔位为中心、advance 0，
-    紧跟字母即压在字母上方）；② 基字位置的拉丁/希腊字母 → 斜体哨兵（GEN-108 机斜字族），`\mathrm`/`\text` 内容、
+    「量符号斜体、单位与下标正体」）。三条规矩：① 上划线 → **矢量短横线**（区间哨兵 → reportlab `<u offset=… width=…>`，
+    宽度 = 被覆盖 run 的推进宽、高度 = 该字符**在其实际字面**里的墨迹高度 + 0.19em）。**不要再用字体的组合上划线
+    U+0304**：它属 CJK em 框（0.268em 宽、固定在 em 框顶），x 高字母悬空半字宽、cap 字母（P/T/X）整条埋进顶衬线
+    （5171.1 的 X̄ 因此「看不出上划线」）；② 基字位置的拉丁/希腊字母 → 斜体哨兵（GEN-108 机斜字族），`\mathrm`/`\text` 内容、
     上/下标、数字、算子（Δ/Σ/Π/∂/Ω）与「紧跟 `^{…}` 的单字母基字」（单位幂 m²）保持正体；
-    ③ 替换顺序：直立遮罩与上划线必须在 `_latex_expand_nested` **之前**，斜体化在拍平当步完成（区域哨兵只包住该片段），
+    ③ 替换顺序：直立遮罩与上划线哨兵必须在 `_latex_expand_nested` **之前**，哨兵 → `<u>` 必须在 `_wrap_greek_letters`
+    **之后**（否则量不到希腊字形的墨迹），斜体化在拍平当步完成（区域哨兵只包住该片段），
     否则「数值-单位固定字隙」等既有文本规则会被哨兵挡住。改 `_latex_to_text` 或 `_markup` 的拍平链路时先跑
     `tests/test_pdf_renderer.py::InlineMathVariableStyleTests` 与跨语料片段审计（8 份 canonical 538 处行内 math）。
 
@@ -466,9 +475,43 @@ lookWhy/
     （9 份语料 A/B 逐节点相同，渲染产物不变）。改 `parser._bare_heading_candidates` /
     `_promoted_bare_headings` / `builder` 标题拆分时先跑 `tests/test_csm_to_ssir.py::GluedHeadingNumberTests`。
 
-## 9. 测试与验证惯例
+29. **脚注与表角注标记（GEN-118/119；docs/12 §3.71）**：条文脚注引用点 `[foot:N]`、定义
+    `<!--ssir:foot:N-->注释文字<!--ssir:/foot-->`（开闭之间可换行；写在引用段之后，渲染仍落引用所在页页脚）；
+    表内角注一律 `$^{a}$`，注文按 `a）注文` 形态。旧写法不做兼容：`[^N]`/`[^N]:` → `CSM-STRUCT-008`，
+    `[:sup:…]`/`[:sub:…]`/`[:/sup]`/`[:/sub]` → `CSM-STRUCT-009`（只告警、不解析）。改 `parser._parse_body`
+    的脚注分支 / `_reclassify_footnote_definitions` / `csm_renderer` 的 footnote 写回 / `pipeline` 的脚注-表注回收时，
+    先跑 `tests/test_parser_title_and_phrase_repairs.py`、`tests/test_mineru_footnote_placement.py`、
+    `tests/test_mineru_table_note_markers.py`。
 
-- 改完代码跑 `./.venv/bin/python -m unittest discover`（全量单测，当前 555 例）。
+## 9. 测试与验证惯例
+30. **宽表横排判据② 是「可行性」不是软需求（GEN-120；docs/12 §3.72）**：横排可行性只看列下界
+    （`列数 × (2×单元格边距 + 一个汉字宽) ≤ 横排可用宽`）；Σ列**软需求**（表头自然宽 + 12pt/列、
+    数据 80% 分位 + 8pt/列）只是列宽分配的**目标**，不能当否决线——旋转后的列宽和竖排一样是
+    「按可用宽分配 + 折行」得到的（源版面的横排表头本就折行排）。GEN-114 把多行表头（表头行 = 首行
+    最大 rowspan）正确识别后 `header_min` 会显著变大，若判据② 仍比较软需求，宽表会被误判「旋转后
+    排不下」而从横排退回竖排（GB/T 5171.1-2014 表9：Σ软需求 938.5pt > 横排可用宽 688.2pt，而列下界
+    和 442pt ≤ 688.2pt → 应横排）。改 `_table_landscape_widths` 判据② 或 `_table_column_demands` 的
+    表头口径时先跑 `tests/test_pdf_renderer.py::MultiRowHeaderLandscapeTests`（含 RED 前提自证）与
+    跨语料横排 A/B（页数/警告/旋转页集合三项全等）。
+
+31. **列宽起点 = 列下界与「数据需求」取大（GEN-121；docs/12 §3.73）**：折行代价买入（GEN-110）只按
+    「加宽能省下多少行」分配，从列下界起步时，一个「自然需求大、但加宽省不下行数」的列（长格由 `<br>`
+    固定断行的写法，如 GB/T 5171.1-2014 表18 的名称列）会被饿在下界附近而不必要折行，余量堆到别的列
+    （实测 158.0/267.3pt，源版面 198.5/235.5pt）。起点取 `max(列下界, 数据需求 = 80% 分位 + 8pt)`，
+    Σ起点 ≤ 版心时生效；**不要**把表头底线（自然宽 + 12pt）当起点（源版面长表头本就折行，30819 表4）。
+    改 `_table_column_widths` 前先跑 `tests/test_pdf_renderer.py::ColumnWidthDataNeedFloorTests`
+    （夹具 `tests/fixtures/table18_columns.canonical.md`）。
+
+32. **希腊字母从拉丁字形族取形（GEN-122；docs/12 §3.73 第 4 条）**：Noto Serif CJK 把 U+03C6 画成
+    「圆圈 + 贯穿竖线」的全高形（y∈[-215,681]/1000 em，x 高只有 516）——小写 φ 读起来像大写 Φ；
+    reportlab 内置 Symbol 的 φ 也是这一形。profile 用 `fonts.greek` / `fonts.greek-italic`（+ `-file`，
+    本库为 Times 度量的 Liberation Serif 正体/斜体）声明拉丁字形族，`_markup` 收尾 `_wrap_greek_letters`
+    按位置换族：`<i>…</i>`（GEN-116 的变量判定）内用拉丁斜体，其余（单位 μ/Ω、算子 Δ/Σ）用正体
+    （GBT-B12）。未声明该字族时不替换。`_markup` 的行为依赖渲染期写入的模块槽位 → 相关单测必须
+    **显式 setUp 声明字族**，别依赖用例顺序。纯文本量符号（`cosφ`）的斜体化属语义判定，未做。
+
+
+- 改完代码跑 `./.venv/bin/python -m unittest discover`（全量单测，当前 552 例）。
 - 全流程验证用金标准 PDF：`corpus/golden/Q_003.pdf`（企业标准 6 页，快）、
   `JB_T_14425-2023.pdf`（OCR 型 21 页）、`GB_T_25141-2022.pdf`（国标 18 页）。
 - 验证清单：roundtrip passed、渲染 warnings 数量合理（企业标准 ICS/CCS 缺失

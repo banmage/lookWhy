@@ -125,9 +125,9 @@ class TitleAndGuidePhraseRepairTests(unittest.TestCase):
             "\n"
             "## 2 规范性引用文件\n"
             "\n"
-            "GB/T 20000.4—2003[^1]标准化工作指南 第4部分：标准中涉及安全的内容\n"
+            "GB/T 20000.4—2003[foot:1]标准化工作指南 第4部分：标准中涉及安全的内容\n"
             "\n"
-            "[^1]: GB/T 20000.4—2003已修订，即将被批准为GB/T 20002.4。\n"
+            "<!--ssir:foot:1-->GB/T 20000.4—2003已修订，即将被批准为GB/T 20002.4。<!--ssir:/foot-->\n"
         )
         blocks, issues = _parse(body)
         notes = [b for b in blocks if b.kind == "footnote"]
@@ -147,7 +147,7 @@ class TitleAndGuidePhraseRepairTests(unittest.TestCase):
             "\n"
             "## 2 规范性引用文件\n"
             "\n"
-            "GB/T 20000.4—2003[^1]标准化工作指南 第4部分：标准中涉及安全的内容[^1]: GB/T 20000.4—2003已修订，即将被批准为GB/T 20002.4。\n"
+            "GB/T 20000.4—2003[foot:1]标准化工作指南 第4部分：标准中涉及安全的内容<!--ssir:foot:1-->GB/T 20000.4—2003已修订，即将被批准为GB/T 20002.4。<!--ssir:/foot-->\n"
         )
         csm = (
             "---\n"
@@ -196,10 +196,10 @@ class TitleAndGuidePhraseRepairTests(unittest.TestCase):
             self.assertEqual(content.get("footnoteAnchorRef"), chapter2["id"])
             # csm 回环：render 输出保留 [^1]: 定义，可再解析为 footnote。
             rendered = render_csm(ssir)
-            self.assertIn("[^1]: GB/T 20000.4—2003已修订", rendered)
-            self.assertIn("GB/T 20000.4—2003[^1]", rendered)
+            self.assertIn("<!--ssir:foot:1-->GB/T 20000.4—2003已修订，即将被批准为GB/T 20002.4。<!--ssir:/foot-->", rendered)
+            self.assertIn("GB/T 20000.4—2003[foot:1]", rendered)
             # canonical 写回为“段尾同行”形态：定义紧随其角标段落末尾。
-            self.assertIn("内容[^1]: GB/T 20000.4—2003已修订", rendered)
+            self.assertIn("<!--ssir:foot:1-->GB/T 20000.4—2003已修订，即将被批准为GB/T 20002.4。<!--ssir:/foot-->", rendered)
             q = _P(d) / "f.render.md"
             q.write_text(rendered, encoding="utf-8")
             from leleby_ssir.parser import CSMParser
@@ -214,14 +214,16 @@ class TitleAndGuidePhraseRepairTests(unittest.TestCase):
             "\n"
             "## 4.6 分类\n"
             "\n"
-            "…或编制为单独的标准[^2]。[^2]: 这种情况，该标准属于“分类标准”。[^3]: 第三条说明。\n"
+            "…或编制为单独的标准[foot:2]。"
+            "<!--ssir:foot:2-->这种情况，该标准属于“分类标准”。<!--ssir:/foot-->"
+            "<!--ssir:foot:3-->第三条说明。<!--ssir:/foot-->\n"
         )
         blocks, issues = _parse(body)
         kinds = [b.kind for b in blocks]
         self.assertEqual(kinds, ["heading", "heading", "paragraph", "footnote", "footnote"])
         para = blocks[2]
-        self.assertNotIn("[^2]:", para.text)
-        self.assertIn("[^2]", para.text)
+        self.assertNotIn("<!--ssir:foot:2--><!--ssir:/foot-->", para.text)
+        self.assertIn("[foot:2]", para.text)
         f1, f2 = blocks[3], blocks[4]
         self.assertEqual(f1.data.get("label"), "2")
         self.assertIn("分类标准", f1.data.get("text", ""))
@@ -232,7 +234,7 @@ class TitleAndGuidePhraseRepairTests(unittest.TestCase):
 
 
 class FootnoteDefinitionBindingTests(unittest.TestCase):
-    """CSM-STRUCT-005 扩展（2026-09-06）：段首粘连定义的剥离 + 脚注块按 [^N] 锚点重定位。
+    """CSM-STRUCT-005 扩展（2026-09-06）：段首粘连定义的剥离 + 脚注块按 [foot:N] 锚点重定位。
 
     页脚绘制以锚点落页为准：定义行若与下一条目粘连成段（回收脚本漏插后空行）会
     以正文身份渲染；定义若停留在远离锚点的位置（落进后续列表区）会被画到错误页
@@ -247,9 +249,9 @@ class FootnoteDefinitionBindingTests(unittest.TestCase):
             "\n"
             "## 2 规范性引用文件\n"
             "\n"
-            "GB/T 20000.4—2003[^1]标准化工作指南 第4部分:标准中涉及安全的内容\n"
+            "GB/T 20000.4—2003[foot:1]标准化工作指南 第4部分:标准中涉及安全的内容\n"
             "\n"
-            "[^1]: GB/T 20000.4—2003已修订,即将被批准为GB/T 20002.4《标准中特定内容的起草第4部分:标准中涉及安全的内容》。\n"
+            "<!--ssir:foot:1-->GB/T 20000.4—2003已修订,即将被批准为GB/T 20002.4《标准中特定内容的起草第4部分:标准中涉及安全的内容》。<!--ssir:/foot-->\n"
             "GB/T 20001.4 标准编写规则 第4部分：化学分析方法\n"
             "\n"
             "GB/T 20002.3 标准中特定内容的起草 第3部分：产品标准中涉及环境的内容\n"
@@ -263,24 +265,31 @@ class FootnoteDefinitionBindingTests(unittest.TestCase):
         self.assertEqual(len(entry), 1)
         # 归类 + 绑定后 footnote 紧跟其锚点段
         idx = blocks.index(notes[0])
-        self.assertIn("[^1]", blocks[idx - 1].text)
+        self.assertIn("[foot:1]", blocks[idx - 1].text)
 
-    def test_wrapped_multiline_def_is_not_split(self) -> None:
-        # 反例：定义首行无句末标点（换行续写的长定义）→ 不剥离、不猜。
+    def test_multiline_definition_pair_is_one_footnote(self) -> None:
+        """GEN-118：开闭指令对之间可以换行——整对算一条脚注；闭合标记之后的行
+        仍是普通段落（定义不再靠「句末标点」猜测，旧启发式已退役）。"""
         body = (
             "# 标准编写规则 第10部分：产品标准\n"
             "\n"
             "## 2 规范性引用文件\n"
             "\n"
-            "正文[^1]。\n"
+            "正文[foot:1]。\n"
             "\n"
-            "[^1]: 这是很长很长的定义说明\n"
-            "继续第二行的解释文字。\n"
+            "<!--ssir:foot:1-->这是很长很长的定义说明\n"
+            "继续第二行的解释文字。<!--ssir:/foot-->\n"
+            "\n"
+            "这一段在闭合标记之后，仍是普通段落。\n"
         )
         blocks, issues = _parse(body)
-        self.assertFalse(any(b.kind == "footnote" for b in blocks))
-        joined = [b.text for b in blocks if b.kind == "paragraph"]
-        self.assertTrue(any("很长很长的定义说明" in text and "继续第二行" in text for text in joined))
+        notes = [b for b in blocks if b.kind == "footnote"]
+        self.assertEqual(len(notes), 1)
+        self.assertIn("继续第二行的解释文字", notes[0].data.get("text", ""))
+        self.assertTrue(any(
+            b.kind == "paragraph" and b.text.startswith("这一段在闭合标记之后")
+            for b in blocks
+        ))
 
     def test_far_def_relocated_to_anchor_paragraph(self) -> None:
         # 定义停留在远离锚点的位置（GB_T_20001.10-2014 脚注 2 型：锚点在 6.4.2、
@@ -290,7 +299,7 @@ class FootnoteDefinitionBindingTests(unittest.TestCase):
             "\n"
             "## 6 要素的起草\n"
             "\n"
-            "6.4.2 根据具体情况，该要素可并入技术要求(见6.5)，也可编制为单独的标准[^2]。\n"
+            "6.4.2 根据具体情况，该要素可并入技术要求(见6.5)，也可编制为单独的标准[foot:2]。\n"
             "\n"
             "6.4.3 其它条文。\n"
             "\n"
@@ -298,7 +307,7 @@ class FootnoteDefinitionBindingTests(unittest.TestCase):
             "\n"
             "产品标准中技术要求为必备要素。\n"
             "\n"
-            "[^2]: 这种情况，该标准属于“分类标准”，不属于产品标准。\n"
+            "<!--ssir:foot:2-->这种情况，该标准属于“分类标准”，不属于产品标准。<!--ssir:/foot-->\n"
             "\n"
             "## 7 其它要素\n"
             "\n"
@@ -311,7 +320,7 @@ class FootnoteDefinitionBindingTests(unittest.TestCase):
         prev = blocks[idx - 1]
         self.assertEqual(prev.kind, "paragraph")
         self.assertIn("6.4.2", prev.text)
-        self.assertIn("[^2]", prev.text)
+        self.assertIn("[foot:2]", prev.text)
         self.assertTrue(any(b.kind == "heading" and "6.5" in b.text for b in blocks))
 
     def test_relocation_skips_without_unique_anchor(self) -> None:
@@ -323,7 +332,7 @@ class FootnoteDefinitionBindingTests(unittest.TestCase):
             "\n"
             "正文内容。\n"
             "\n"
-            "[^7]: 没有对应锚点的悬空定义。\n"
+            "<!--ssir:foot:7-->没有对应锚点的悬空定义。<!--ssir:/foot-->\n"
         )
         blocks1, _ = _parse(body1)
         notes1 = [b for b in blocks1 if b.kind == "footnote"]
@@ -335,11 +344,11 @@ class FootnoteDefinitionBindingTests(unittest.TestCase):
             "\n"
             "## 5 条文\n"
             "\n"
-            "甲处引用[^3]。\n"
+            "甲处引用[foot:3]。\n"
             "\n"
-            "乙处再引用[^3]。\n"
+            "乙处再引用[foot:3]。\n"
             "\n"
-            "[^3]: 定义文本。\n"
+            "<!--ssir:foot:3-->定义文本。<!--ssir:/foot-->\n"
         )
         blocks2, _ = _parse(body2)
         notes2 = [b for b in blocks2 if b.kind == "footnote"]

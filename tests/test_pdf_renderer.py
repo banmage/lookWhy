@@ -101,6 +101,16 @@ class LatexToTextTests(unittest.TestCase):
 
 
 class MarkupNormalisationTests(unittest.TestCase):
+
+    def setUp(self) -> None:
+        """显式声明希腊字形族（GEN-122），用例不依赖执行顺序。"""
+        from leleby_ssir import pdf_renderer as _renderer
+
+        previous = (_renderer._GREEK_FONT, _renderer._GREEK_ITALIC_FONT)
+        _renderer._GREEK_FONT, _renderer._GREEK_ITALIC_FONT = "LiberationSerif", "LiberationSerif-Italic"
+        self.addCleanup(setattr, _renderer, "_GREEK_FONT", previous[0])
+        self.addCleanup(setattr, _renderer, "_GREEK_ITALIC_FONT", previous[1])
+
     def test_markup_flattens_inline_math(self):
         text = "式中： $K _ { \\mathrm { ~ T ~ } }$ 堵转转矩灵敏度，单位为牛米每安培 $( \\mathrm { N } \\cdot \\mathrm { m } / \\mathrm { A } )$"
         out = _markup(text)
@@ -139,9 +149,9 @@ class MarkupNormalisationTests(unittest.TestCase):
         # 「变量——解释」中，变量与破折号之间、破折号与解释之间各空四分之一汉字；
         # 用固定字隙哨兵（白字），不是空格——两端对齐拉伸不到它。
         gap = '<font size="2.625" color="white">中</font>'
-        self.assertEqual(_markup(r"$\Delta t$——绕组温升，单位为开尔文(K)；"), f"Δ<i>t</i>{gap}——{gap}绕组温升，单位为开尔文(K)；")
+        self.assertEqual(_markup(r"$\Delta t$——绕组温升，单位为开尔文(K)；"), f'<font name="LiberationSerif">Δ</font><i>t</i>{gap}——{gap}绕组温升，单位为开尔文(K)；')
         self.assertEqual(_markup(r"$R _ { 2 }$——试验结束时的绕组电阻，单位为欧姆(Ω)；"),
-                         f"<i>R</i><sub>2</sub>{gap}——{gap}试验结束时的绕组电阻，单位为欧姆(Ω)；")
+                         f"<i>R</i><sub>2</sub>{gap}——{gap}试验结束时的绕组电阻，单位为欧姆(<font name=\"LiberationSerif\">Ω</font>)；")
         self.assertEqual(_markup("k ——常数，对铜绕组为234.5；"), f"k{gap}——{gap}常数，对铜绕组为234.5；")
         # 列项 marker「——」不是变量解释项；无破折号的正文段落不受影响。
         self.assertEqual(_markup("——增加了第3章“术语和定义”；"), "——增加了第3章“术语和定义”；")
@@ -158,7 +168,7 @@ class MarkupNormalisationTests(unittest.TestCase):
         self.assertEqual(_markup("持续2h 30min"), f"持续2{gap}h 30{gap}min")
         self.assertEqual(_markup("偏差应在±10 %范围内"), "偏差应在±10%范围内")
         self.assertEqual(_markup("34.05% 63%~68%"), "34.05% 63%~68%")
-        self.assertEqual(_markup("525 μm"), f"525{gap}μm")
+        self.assertEqual(_markup("525 μm"), f'525{gap}<font name="LiberationSerif">μ</font>m')
         # 分表/分图代号（GB/T 1.1 9.8.1.3 引用的 “表2a”）不是单位，不插间隙；
         # 列项引用（“4.2b)”）按排版惯例留间隙；表/图前的量值不受排除影响。
         self.assertEqual(
@@ -879,49 +889,36 @@ class UntitledClauseFlushTests(unittest.TestCase):
         self.assertEqual(_list_marker("●"), "●")
 
     def test_table_cell_superscripts_generic_tokens(self) -> None:
-        # 通用行内角标标记（docs/07 §6.7，2026-09-11 通用化，GBT-X04 执行侧）：
-        #   [:sup:a] … [:/sup]  上标注解区（角标字符 + 注解文字，闭标记不渲染）
-        #   [:sub:2] … [:/sub]  下标注解区
-        #   [:sup:a/]           自闭合 = 空注解区（引用点）
-        # 哨兵经 _markup 的 XML 转义后恢复为真实 <super>/<sub> 标签。
+        """表内角标一律通用行内公式上角标（GEN-119，2026-09-19 用户裁定）。
+
+        GB/T 1.1-2020 9.12.2 / 附录 F：表注由标记与解释成对组成。2026-09-19 起
+        表内角标**只**写 `$^{a}$`（正体、小号、上移；未上榜 `[:sup:a]` 注解区家族
+        ——含 `[:/sup]`、更早的 `[:^a]`/`[^a]…[^a/]`——已退役）；注文按源版面的
+        `a）注文` 形态另排（同格多条以 `<br>` 分隔，canonical 显式书写）。
+        """
         def rendered(text: str) -> str:
             return _markup(_table_cell_superscripts(text))
 
         # 引用点：词中（20001.10 表1 表头型）与词尾
-        self.assertEqual(rendered("要素[:sup:a/]的编排"), "要素<super>a</super>的编排")
-        self.assertEqual(rendered("表述形式[:sup:a/]"), "表述形式<super>a</super>")
+        self.assertEqual(rendered("要素$^{a}$的编排"), "要素<super>a</super>的编排")
+        self.assertEqual(rendered("表述形式$^{a}$"), "表述形式<super>a</super>")
         self.assertEqual(
-            rendered("程序指示[:sup:b/]\x00BR\x00追溯/证实方法[:sup:c/]"),
+            rendered("程序指示$^{b}$\x00BR\x00追溯/证实方法$^{c}$"),
             "程序指示<super>b</super>\x00BR\x00追溯/证实方法<super>c</super>",
         )
-        # 注解区（单条）
+        # 注文行的行首标记：canonical 写 a）注文，渲染端只做上标还原
+        self.assertEqual(rendered("a）黑体表示“必备的”。"), "a）黑体表示“必备的”。")
         self.assertEqual(
-            rendered("[:sup:a]黑体表示“必备的”。[:/sup]"), "<super>a</super>黑体表示“必备的”。"
+            rendered("a）黑体表示“必备的”。\x00BR\x00b）“程序指示”中的指示型条款…。"),
+            "a）黑体表示“必备的”。\x00BR\x00b）“程序指示”中的指示型条款…。",
         )
-        # 注解区（多注连排）：相邻两对之间自动换行，canonical 不写 <br>
-        self.assertEqual(
-            rendered("[:sup:a]黑体表示“必备的”。[:/sup][:sup:b]“程序指示”中的指示型条款…。[:/sup]"),
-            "<super>a</super>黑体表示“必备的”。\x00BR\x00<super>b</super>“程序指示”中的指示型条款…。",
-        )
-        # 注解区（旧 canonical 的 <br> 分格写法在调用点先转哨兵，仍按换行处理）
-        self.assertEqual(
-            rendered("[:sup:a]黑体表示“必备的”。[:/sup]\x00BR\x00[:sup:b]“程序指示”中的指示型条款…。[:/sup]"),
-            "<super>a</super>黑体表示“必备的”。\x00BR\x00<super>b</super>“程序指示”中的指示型条款…。",
-        )
-        # 注文以引号开头（GB_T_20001.6-2017 表1 实测形态）不依赖字形猜测
-        self.assertEqual(
-            rendered("[:sup:b]“程序指示”中的指示型条款。[:/sup]"), "<super>b</super>“程序指示”中的指示型条款。"
-        )
-        # 下标注解区；角标字符可为多字符（1)、†、a) 等）
-        self.assertEqual(rendered("[:sub:2]注解文字。[:/sub]"), "<sub>2</sub>注解文字。")
-        self.assertEqual(rendered("匝间绝缘[:sup:a)/]"), "匝间绝缘<super>a)</super>")
-        # 闭标记无字面残留
-        self.assertNotIn("[:", rendered("[:sup:c]追溯/证实方法中的…。[:/sup]"))
-        # 旧形式（按字母成对定义，迁移期兼容）仍按同一语义渲染
-        self.assertEqual(rendered("要素[:^a]的编排"), "要素<super>a</super>的编排")
-        self.assertEqual(rendered("[^a]黑体表示“必备的”。[^a/]"), "<super>a</super>黑体表示“必备的”。")
-        # GFM 条文脚注引用（表内）仍为 “N)”（脚注规则不变）
-        self.assertEqual(rendered("见注[^1]"), "见注<super>1)</super>")
+        # 多字符角标（1)、†、a) 等）与下标
+        self.assertEqual(rendered("匝间绝缘$^{a)}$"), "匝间绝缘<super>a)</super>")
+        self.assertEqual(rendered("注解$_{2}$"), "注解<sub>2</sub>")
+        # 退役写法不再有特殊语义（按普通文本渲染，不产生角标）
+        self.assertNotIn("<super>", rendered("[:sup:a]注文[:/sup]"))
+        # 条文脚注引用（表内）：[foot:N] → “N)”
+        self.assertEqual(rendered("见注[foot:1]"), "见注<super>1)</super>")
 
     def test_table_cell_superscripts_plain_letters_stay_plain(self) -> None:
         # 2026-09-07 移除“汉字后小写字母=上标”字形猜测（词尾/词中/行首解释
@@ -945,7 +942,7 @@ class UntitledClauseFlushTests(unittest.TestCase):
         self.assertEqual(rendered("B相"), "B相")
         self.assertEqual(rendered("编写a)中所述"), "编写a)中所述")
         # 词尾引用点经显式标记还原（20001.10/20001.5 表1 表头型）
-        self.assertEqual(rendered("要素所允许的表述形式[:sup:a/]"), "要素所允许的表述形式<super>a</super>")
+        self.assertEqual(rendered("要素所允许的表述形式$^{a}$"), "要素所允许的表述形式<super>a</super>")
 
 
     def test_body_footnote_explanation_marker_superscript(self) -> None:
@@ -1243,11 +1240,11 @@ class TableCellLineBreakTests(unittest.TestCase):
     Regression (2026-08-31, GB_T_20001.6-2017 表1)：单元格 "术语和定义
     ……程序确立程序指示b追溯/证实方法……规范性附录" 被 OCR 压成单行，恢复为
     <br> 连接的多行后，_markup 必须把它转成 <br/>（不能折叠为空格），且
-    行尾表注引用点（2026-09-07 起为显式 [:^b] 标记）仍触发上标。
+    行尾表注引用点（2026-09-07 起为显式 $^{b}$ 标记）仍触发上标。
     """
 
     def test_br_becomes_line_break_and_footnote_superscript_fires(self) -> None:
-        cell = "术语和定义<br>……<br>程序确立<br>程序指示[:^b]<br>追溯/证实方法[:^c]<br>……<br>规范性附录"
+        cell = "术语和定义<br>……<br>程序确立<br>程序指示$^{b}$<br>追溯/证实方法$^{c}$<br>……<br>规范性附录"
         marked = cell.replace("<br>", "\x00BR\x00")
         out = _markup(_table_cell_superscripts(marked)).replace("\x00BR\x00", "<br/>")
         self.assertIn("<br/>", out)
@@ -1264,6 +1261,16 @@ class TableCellLineBreakTests(unittest.TestCase):
 
 
 class Gb3100SuperscriptTableNoteTests(unittest.TestCase):
+
+    def setUp(self) -> None:
+        """显式声明希腊字形族（GEN-122），用例不依赖执行顺序。"""
+        from leleby_ssir import pdf_renderer as _renderer
+
+        previous = (_renderer._GREEK_FONT, _renderer._GREEK_ITALIC_FONT)
+        _renderer._GREEK_FONT, _renderer._GREEK_ITALIC_FONT = "LiberationSerif", "LiberationSerif-Italic"
+        self.addCleanup(setattr, _renderer, "_GREEK_FONT", previous[0])
+        self.addCleanup(setattr, _renderer, "_GREEK_ITALIC_FONT", previous[1])
+
     """GB_3100-2026 六项排版修复回归（2026-09-02）。
 
     Fix C/D：HTML <sup>/<sub> 与缺字形 Unicode 上标（⁰⁵⁶⁷⁸⁹⁻⁺，Noto Serif
@@ -1314,7 +1321,7 @@ class Gb3100SuperscriptTableNoteTests(unittest.TestCase):
             _markup("$6 . 6 2 6 0 7 0 1 5 \\times 1 0 ^ { - 3 4 } \\mathrm { J } \\mathrm { s } ;$"),
             f"6.62607015×10<super>−34</super>{_UNIT_GAP}J s ;",
         )
-        self.assertEqual(_markup("$\\cdot \\Delta V _ { \\mathrm { c s } }$"), "·Δ<i>V</i><sub>cs</sub>")
+        self.assertEqual(_markup("$\\cdot \\Delta V _ { \\mathrm { c s } }$"), '·<font name="LiberationSerif">Δ</font><i>V</i><sub>cs</sub>')
         self.assertEqual(_markup("$K _ { \\mathrm { c d } }$"), "<i>K</i><sub>cd</sub>")
 
     def test_table_note_cell_split_into_per_note_parts(self) -> None:
@@ -2378,6 +2385,209 @@ class WideTableLandscapeTests(unittest.TestCase):
         self.assertTrue(_table_exceeds_frame(grid, _BODY_MEASURE, frame_height))
 
 
+class MultiRowHeaderLandscapeTests(unittest.TestCase):
+    """多行表头不得否决横排（GEN-120，2026-09-19；用户裁定「表头续排修复不得破坏
+
+    『表过宽自动转横排』判定」）。
+
+    现象（GB/T 5171.1-2014 表9）：GEN-114 把表头行数按首行最大 rowspan 正确识别为
+    4 行（该表首行「轴承类别」rowspan=4）后，判据② 用「Σ列**软需求**（表头自然宽
+    + 12pt/列）」当可行性否决线：软需求 938.5 > 横排可用宽 688.2 → 判定「旋转后排
+    不下」→ 表9 由横排退回竖排（源排版为整表旋转 90°）。可行性应与竖排同口径——只
+    看列下界（列数 × 17pt = 442 ≤ 688.2），软需求只是列宽分配的目标。
+
+    夹具 tests/fixtures/wide_table.canonical.md 的表 9 与真实表 9 同形；这里把
+    ``header-rows`` 由 1 改成 4（= GEN-114 回放后的实际取值）复现回归。
+    """
+
+    ROOT = Path(__file__).resolve().parents[1]
+    FIXTURE = ROOT / "tests" / "fixtures" / "wide_table.canonical.md"
+    FRAME = 688.1574803149606  # A4 高 − 上下边距 − Frame 内衬（GEN-103 横排可用宽）
+    FONT_SIZE = 9.0
+    _IMG = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
+
+    def _rows(self, header_rows: int) -> list[dict]:
+        import tempfile as _tempfile
+
+        from leleby_ssir.builder import SSIRBuilder
+        from leleby_ssir.parser import CSMParser
+
+        text = self.FIXTURE.read_text(encoding="utf-8").replace(
+            'header-rows="1"', f'header-rows="{header_rows}"', 1
+        )
+        with _tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "f.canonical.md"
+            source.write_text(text, encoding="utf-8")
+            tables = SSIRBuilder().build(CSMParser().read(str(source)))["tables"]
+        return [t for t in tables if t.get("colCount") == 26][0]["rows"]
+
+    def test_soft_demand_over_frame_is_not_a_landscape_veto(self) -> None:
+        """判据②（GEN-120）：软需求可超横排可用宽，列下界排得下即应横排。
+
+        夹具前提自证：4 行表头时 Σ软需求 > 688.2（旧判据在此否决横排），而列下界和
+        26 × 17 = 442 ≤ 688.2。直接判据同时钉住另一侧：列下界都排不下（64 列 =
+        1088pt）时不得横排。
+        """
+        from reportlab.platypus import Table
+
+        from leleby_ssir import pdf_renderer as renderer
+
+        rows = self._rows(4)
+        self.assertEqual([i for i, row in enumerate(rows) if row.get("isHeader")], [0, 1, 2, 3])
+        need, _header_min, _body_need, _content = renderer._table_column_demands(
+            rows, 26, self.FONT_SIZE, {}, self._IMG
+        )
+        lower = 2 * renderer._TABLE_CELL_PADDING + self.FONT_SIZE
+        self.assertGreater(sum(need), self.FRAME)
+        self.assertLessEqual(lower * 26, self.FRAME)
+        previous = renderer._ROTATED_TABLE_MEASURE
+        renderer._ROTATED_TABLE_MEASURE = self.FRAME
+        self.addCleanup(setattr, renderer, "_ROTATED_TABLE_MEASURE", previous)
+        grid = Table([[f"C{index}" for index in range(26)]], colWidths=[_BODY_MEASURE / 26] * 26)
+        portrait = [lower] * 26  # 竖排列宽全被压到下界（判据③a）
+        widths = renderer._table_landscape_widths(
+            rows, 26, self.FONT_SIZE, {}, self._IMG, _BODY_MEASURE, grid, portrait_widths=portrait
+        )
+        self.assertIsNotNone(widths)
+        self.assertAlmostEqual(sum(widths), self.FRAME, delta=1e-3)
+        # 列下界都排不下 → 横排也不可行，保持竖排（规则不外溢）
+        self.assertIsNone(
+            renderer._table_landscape_widths(
+                rows, 64, self.FONT_SIZE, {}, self._IMG, _BODY_MEASURE, grid, portrait_widths=portrait
+            )
+        )
+
+    def test_multi_row_header_table_still_rotates_in_rendered_pdf(self) -> None:
+        """端到端：4 行表头的 26 列表在 PDF 里整体旋转 90°（题注随表、表头落订口一侧）。"""
+        import json
+        import tempfile as _tempfile
+
+        try:
+            import pymupdf
+        except ImportError:  # pragma: no cover - 环境缺 pymupdf 时跳过
+            self.skipTest("pymupdf unavailable")
+        font = self.ROOT / "config" / "rendering" / "fonts" / "NotoSerifCJKsc-Regular.ttf"
+        if not font.is_file():
+            self.skipTest("body font asset missing")
+        from leleby_ssir.builder import SSIRBuilder
+        from leleby_ssir.parser import CSMParser
+        from leleby_ssir.pdf_renderer import render_pdf_file
+
+        text = self.FIXTURE.read_text(encoding="utf-8").replace(
+            'header-rows="1"', 'header-rows="4"', 1
+        )
+        with _tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "f.canonical.md"
+            source.write_text(text, encoding="utf-8")
+            ssir = Path(directory) / "t.ssir.json"
+            ssir.write_text(
+                json.dumps(SSIRBuilder().build(CSMParser().read(str(source))), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            target = Path(directory) / "t.pdf"
+            render_pdf_file(str(ssir), str(target), toc_depth=None)
+            document = pymupdf.open(str(target))
+            rotated: set[str] = set()
+            upright: set[str] = set()
+            for page in document:
+                for block in page.get_text("dict")["blocks"]:
+                    for line in block.get("lines", []):
+                        label = "".join(span["text"] for span in line["spans"]).strip()
+                        if label not in {"表9", "轴承类别", "声功率级/dB(A)", "表10", "试验方法"}:
+                            continue
+                        if line["dir"] == (0.0, -1.0):
+                            rotated.add(label)
+                        else:
+                            upright.add(label)
+            document.close()
+        self.assertCountEqual(list(rotated), ["声功率级/dB(A)", "轴承类别", "表9"])
+        self.assertCountEqual(list(upright), ["表10", "试验方法"])
+
+
+class ColumnWidthDataNeedFloorTests(unittest.TestCase):
+    """折行代价买入不得把列饿到「数据需求」之下（GEN-121，2026-09-19，用户报告）。
+
+    现象（GB/T 5171.1-2014 表18，夹具 tests/fixtures/table18_columns.canonical.md 同形）：
+    三列「项目 / 名称 / 容差」，源版面列宽 [27.1, 198.5, 235.5]pt。分配器从每列**下界**
+    （17pt）起步、只按「加宽省下的行数」买入：「名称」列的长格由 `<br>` 固定断行（源版面
+    的 a)/b)/c) 分行写法）→ 加宽省不下行数 → 被饿到 158.0pt（其数据需求 184.8pt）而
+    不必要折行，余量全堆到「容差」列（267.3pt > 需求 223.1pt）。起点改为
+    ``max(列下界, 该列数据需求 = 80% 分位 + 边距)`` 后实测 [26.7, 188.7, 239.6]。
+
+    只取**数据需求**作起点、不取表头底线（表头自然宽 + 12pt）：源版面的长表头本就折行排
+    （GEN-110 的 GB/T 30819-2024 表4：表头长、数据短 → 起点仍按数据）。
+    """
+
+    ROOT = Path(__file__).resolve().parents[1]
+    FIXTURE = ROOT / "tests" / "fixtures" / "table18_columns.canonical.md"
+
+    def test_rendered_name_column_keeps_its_data_need(self) -> None:
+        import json
+        import tempfile as _tempfile
+
+        try:
+            import pymupdf
+        except ImportError:  # pragma: no cover
+            self.skipTest("pymupdf unavailable")
+        font = self.ROOT / "config" / "rendering" / "fonts" / "NotoSerifCJKsc-Regular.ttf"
+        if not font.is_file():
+            self.skipTest("body font asset missing")
+        from leleby_ssir.builder import SSIRBuilder
+        from leleby_ssir.parser import CSMParser
+        from leleby_ssir.pdf_renderer import render_pdf_file
+
+        with _tempfile.TemporaryDirectory() as directory:
+            ssir = Path(directory) / "t.ssir.json"
+            ssir.write_text(
+                json.dumps(SSIRBuilder().build(CSMParser().read(str(self.FIXTURE))), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            target = Path(directory) / "t.pdf"
+            render_pdf_file(str(ssir), str(target), toc_depth=None)
+            document = pymupdf.open(str(target))
+            columns: list[float] = []
+            for page in document:
+                xs = sorted(
+                    {round(d["rect"].x0, 1) for d in page.get_drawings() if 5 < d["rect"].height and d["rect"].width < 1.5}
+                    | {round(d["rect"].x1, 1) for d in page.get_drawings() if 5 < d["rect"].height and d["rect"].width < 1.5}
+                )
+                if len(xs) == 4:
+                    columns = [round(xs[i + 1] - xs[i], 1) for i in range(3)]
+                    break
+            document.close()
+        self.assertEqual(len(columns), 3, columns)
+        self.assertAlmostEqual(sum(columns), 455.0, delta=1.5)
+        # 「名称」列（中列）必须达到它的数据需求（≈184.8pt），而不是被挤到 158pt 折行
+        self.assertGreaterEqual(columns[1], 180.0, columns)
+        # 「容差」列不得吞掉多余宽度（源版面 235.5pt，实测修复后 ≈239.6pt）
+        self.assertLessEqual(columns[2], 245.0, columns)
+
+    def test_tight_budget_still_respects_the_column_lower_bound(self) -> None:
+        """Σ数据需求超版心时退回旧起点（下界起步 + 买入），列下界仍然成立。"""
+        from leleby_ssir.pdf_renderer import _table_column_widths
+
+        image_re = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
+        rows = [
+            {
+                "rowIndex": index,
+                "isHeader": index == 0,
+                "cells": [
+                    {"colIndex": i, "colspan": 1, "rowspan": 1, "text": text, "isHeader": index == 0}
+                    for i, text in enumerate(cells)
+                ],
+            }
+            for index, cells in enumerate([
+                ["项目", "名称", "容差"],
+                ["1", "效率η", "—0.15(1—η)，最多为—0.04"],
+                ["2", "交流电动机的功率因数 cosφ", "—(1—cosφ)/6，最少—0.02，最多—0.05"],
+            ])
+        ]
+        frame = 200.0  # 版心远小于三列需求之和
+        widths = _table_column_widths(rows, 3, 9.0, {}, image_re, frame_width=frame)
+        self.assertAlmostEqual(sum(widths), frame, delta=1e-3)
+        self.assertGreaterEqual(min(widths), 2 * 4.0 + 9.0 - 1e-6, widths)
+
+
 class TallWideTablePaginationTests(unittest.TestCase):
     """长宽表竖排分页（GEN-103 判据③的实例回归，2026-09-17）。
 
@@ -2837,39 +3047,102 @@ class ContinuationTableCaptionTests(unittest.TestCase):
 
 
 class InlineMathVariableStyleTests(unittest.TestCase):
-    """行内 math 的变量斜体与上划线（GEN-116；GB/T 1.1-2020 10.4.6、GBT-B12/GBT-X06）。
 
-    现象（2026-09-19 用户报告）：「6.4 的公式下的参数解释中，参数符号上面的 overline 短横线都没有
-    正确渲染」+「两个 $ 之间的参数也没有变成斜体字（整个标准都存在这个问题）」。源版面实测
-    （GB_T_30819-2024 p25 的 6.4 式中、GB_T_5171.1-2014 p10）：量符号 η/P/n/T/R/i/Φ 用**斜体**
-    字形，下标数字与描述性下标、单位（kW、r/min、MΩ）、数字与数学算子（Δ）用正体；量符号上的
-    短横线是**压在字母上方**的矢量短横线。
-    """
-
+    # 上划线定位用的字面（GEN-116）：profile 的 fonts.body / fonts.italic。
+    BODY_FACE = "NotoSerifSC"
+    ITALIC_FACE = "NotoSerifCJKsc-Oblique"
     ROOT = Path(__file__).resolve().parents[1]
 
-    def test_overlined_symbol_keeps_the_bar_and_italic(self) -> None:
+    def setUp(self) -> None:
+        """显式声明希腊字形族（GEN-122）与上划线定位字面（GEN-116），用例不依赖执行顺序。"""
+        from leleby_ssir import pdf_renderer as _renderer
+
+        previous = (
+            _renderer._GREEK_FONT, _renderer._GREEK_ITALIC_FONT,
+            _renderer._MATH_BODY_FACE, _renderer._MATH_ITALIC_FACE,
+        )
+        _renderer._GREEK_FONT, _renderer._GREEK_ITALIC_FONT = "LiberationSerif", "LiberationSerif-Italic"
+        _renderer._MATH_BODY_FACE, _renderer._MATH_ITALIC_FACE = self.BODY_FACE, self.ITALIC_FACE
+        for name, value in zip(
+            ("_GREEK_FONT", "_GREEK_ITALIC_FONT", "_MATH_BODY_FACE", "_MATH_ITALIC_FACE"), previous
+        ):
+            self.addCleanup(setattr, _renderer, name, value)
+        self._register_faces()
+
+    def _register_faces(self) -> None:
+        """登记上划线用到的真实字形资产：短横线高度取自**字形墨迹**，缺资产无法断言。"""
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+
+        faces = {
+            self.BODY_FACE: "NotoSerifCJKsc-Regular.ttf",
+            self.ITALIC_FACE: "NotoSerifCJKsc-Oblique.ttf",
+            "LiberationSerif": "LiberationSerif-Regular.ttf",
+            "LiberationSerif-Italic": "LiberationSerif-Italic.ttf",
+        }
+        for name, filename in faces.items():
+            path = self.ROOT / "config" / "rendering" / "fonts" / filename
+            if not path.is_file():
+                self.skipTest(f"font asset missing: {path}")
+            if name not in pdfmetrics.getRegisteredFontNames():
+                pdfmetrics.registerFont(TTFont(name, str(path), subfontIndex=0))
+
+    r"""行内 math 的变量斜体与上划线（GEN-116；GB/T 1.1-2020 10.4.6、GBT-B12/GBT-X06）。
+
+    现象（2026-09-19 用户报告，二轮）：「6.4 的公式下 $ 之间的 \overline 短横线很短、和字母粘连」
+    「5171.1 A.2 的 \overline 没有任何效果」。根因：一轮用**字体的组合上划线 U+0304** 画短横线，
+    而该字形属于 CJK em 框（ink 0.268em 宽、纵向 0.668–0.717em，advance 0），与被覆盖字母
+    无关——η/n 悬空且只有半个字母宽，P/T/X 正好压进字母顶衬线（实测 5171.1 的 X̄ 整条埋在 X
+    的顶衬线里，视觉上「没有效果」）。源版面实测（GB_T_30819-2024 p26 的 6.4 式中、p26 的 n̄：
+    矢量线，厚 0.558pt、长 4.98pt = 字母推进宽、位于字母墨迹上方 0.19em；GB_T_5171.1-2014
+    p27 的 X̄ 同为字母墨迹上方 0.18em）→ 改为 reportlab 的 **矢量线** `<u offset=…>`，
+    高度 = 被覆盖字符在**其实际字面**里的墨迹高度 + 0.19em。
+    """
+
+    def test_overlined_symbol_becomes_a_vector_bar(self) -> None:
         out = _markup(r"$ \overline{η}$ ─ 传动效率；")
-        self.assertEqual(out, "<i>η</i>\u0304 ─ 传动效率；")
+        self.assertEqual(
+            out,
+            '<u offset="0.661*f" width="0.056*f">'
+            '<i><font name="LiberationSerif-Italic">η</font></i></u> ─ 传动效率；',
+        )
 
     def test_nested_overline_form_is_not_lost(self) -> None:
         # MinerU 的 raw 写 `\overline { { \eta } }`：旧拍平把它整条拍成空串
         # （`_latex_expand_nested` 先拆命令、`\eta` 又被当未知命令丢弃）。
-        self.assertEqual(_markup(r"$ \overline { { \eta } }$ ─ 传动效率；"), "<i>η</i>\u0304 ─ 传动效率；")
+        self.assertEqual(
+            _markup(r"$ \overline { { \eta } }$ ─ 传动效率；"),
+            '<u offset="0.661*f" width="0.056*f">'
+            '<i><font name="LiberationSerif-Italic">η</font></i></u> ─ 传动效率；',
+        )
+
+    def test_overline_height_comes_from_the_letter_glyph(self) -> None:
+        """高度按被覆盖字符的**字形墨迹**：拉丁与 CJK 字族的同一字母差 0.7pt 以上。"""
+        from leleby_ssir import pdf_renderer as _renderer
+
+        self.assertAlmostEqual(_renderer._face_ink_em("LiberationSerif-Italic", "η"), 0.471, places=3)
+        self.assertAlmostEqual(_renderer._face_ink_em("NotoSerifCJKsc-Oblique", "X"), 0.728, places=3)
+        # 大写与 x 高字母各按自己的墨迹（源版面同为相对量：0.849em / 0.638em）
+        self.assertLess(
+            _renderer._face_ink_em("NotoSerifCJKsc-Oblique", "n"),
+            _renderer._face_ink_em("NotoSerifCJKsc-Oblique", "P"),
+        )
+        self.assertIsNone(_renderer._face_ink_em("NoSuchFace", "X"))   # 取不到 → 调用方兜底
 
     def test_variables_italic_scripts_upright(self) -> None:
         self.assertEqual(_markup(r"$K_{T}$"), "<i>K</i><sub>T</sub>")
         self.assertEqual(_markup(r"$P_{N}$"), "<i>P</i><sub>N</sub>")
-        self.assertEqual(_markup(r"$ \overline{P}_{1}$"), "<i>P</i>\u0304<sub>1</sub>")
-        self.assertEqual(_markup(r"$\Phi d_{1}$"), "<i>Φd</i><sub>1</sub>")
+        # 上划线只压基字：下标留在 `<u>` 之外
+        self.assertEqual(_markup(r"$ \overline{P}_{1}$"), '<u offset="0.918*f" width="0.056*f"><i>P</i></u><sub>1</sub>')
+        self.assertEqual(_markup(r"$\Phi d_{1}$"), '<i><font name="LiberationSerif-Italic">Φ</font>d</i><sub>1</sub>')
         self.assertEqual(_markup(r"$i$ ─ 传动比。"), "<i>i</i> ─ 传动比。")
 
     def test_units_operators_and_footnote_markers_stay_upright(self) -> None:
         self.assertEqual(_markup(r"$\mathrm{kPa}$"), "kPa")
-        self.assertEqual(_markup(r"$100\mathrm{M}\Omega$"), '100<font size="2.625" color="white">中</font>MΩ')
+        self.assertEqual(_markup(r"$100\mathrm{M}\Omega$"), '100<font size="2.625" color="white">中</font>M<font name="LiberationSerif">Ω</font>')
         self.assertEqual(_markup(r"$m^{2}$"), "m<super>2</super>")          # 单位幂：基字正体
         self.assertEqual(_markup(r"$10^{-3}$"), "10<super>−3</super>")
-        self.assertEqual(_markup(r"$\Delta t$"), "Δ<i>t</i>")                # 算子正体、变量斜体
+        self.assertEqual(_markup(r"$\Delta t$"), '<font name="LiberationSerif">Δ</font><i>t</i>')                # 算子正体、变量斜体
         self.assertEqual(_markup(r"$^{a}$"), "<super>a</super>")             # 表脚注标记：无基字
         self.assertEqual(_markup(r"$T _ { \mathrm { n } } / 2$"), "<i>T</i><sub>n</sub>/2")
         # 不带花括号的单字符下标（MinerU 表格单元格常见写法）：旧码把 `_` 当普通字符
@@ -2916,26 +3189,285 @@ class InlineMathVariableStyleTests(unittest.TestCase):
         render_pdf_file(str(ssir_path), str(target), toc_depth=None)
         document = pymupdf.open(str(target))
         spans = [
-            (span["text"], span["font"], round(span["size"], 1))
+            (span["text"], span["font"], round(span["size"], 1), span["bbox"], span["origin"][1])
             for page in document
             for block in page.get_text("dict")["blocks"] if block.get("type") == 0
             for line in block["lines"]
             for span in line["spans"]
         ]
+        # 短横线是**矢量线**（不再输出 U+0304 字符）：取页面里的横线对象。
+        bars = [
+            drawing["rect"]
+            for page in document
+            for drawing in page.get_drawings()
+            if (drawing.get("width") or 0) > 0.2 and abs(drawing["rect"].y0 - drawing["rect"].y1) < 0.5
+        ]
+        text_layer = "".join(page.get_text() for page in document)
         document.close()
-        eta = [index for index, (text, _, _) in enumerate(spans) if "η" in text]
+        eta = [index for index, (text, _, *_) in enumerate(spans) if "η" in text]
         self.assertTrue(eta, spans[:12])
-        text, font, size = spans[eta[0]]
-        self.assertIn("Oblique", font, spans[:12])          # 量符号斜体（GEN-108 机斜字族）
+        text, font, size, bbox, baseline = spans[eta[0]]
+        # 量符号斜体：拉丁字母用 GEN-108 机斜字族；希腊字母用拉丁斜体字形（GEN-122）
+        self.assertTrue("Oblique" in font or "Italic" in font, spans[:12])
         self.assertEqual(size, 10.5)
-        # 短横线（U+0304 组合上划线）紧跟在符号之后——pymupdf 把它并进下一个 span。
-        self.assertTrue(spans[eta[0] + 1][0].startswith("\u0304"), spans[eta[0]:eta[0] + 3])
-        power = [index for index, (text, _, _) in enumerate(spans) if text.strip().startswith("P")]
+        self.assertNotIn("\u0304", text_layer)          # 不再用组合上划线冒充短横线
+        # 横线覆盖整个量符号（宽度 = 该字形推进宽）、位于字母墨迹上方 0.19em：
+        # η 在拉丁斜体字面里墨迹高 0.471em → 短横线 0.661em = 6.94pt。
+        bar = next(
+            (rect for rect in bars if abs(rect.x0 - bbox[0]) < 0.5 and abs(rect.x1 - bbox[2]) < 0.5),
+            None,
+        )
+        self.assertIsNotNone(bar, [tuple(round(v, 2) for v in r) for r in bars])
+        self.assertAlmostEqual(baseline - bar.y0, 0.661 * 10.5, delta=0.2)
+        power = [index for index, (text, *_) in enumerate(spans) if text.strip().startswith("P")]
         self.assertTrue(power, spans[:12])
-        self.assertTrue(spans[power[0] + 1][0].startswith("\u0304"), spans[power[0]:power[0] + 3])
+        _, _, _, power_bbox, power_baseline = spans[power[0]]
+        power_bar = next(
+            (rect for rect in bars if abs(rect.x0 - power_bbox[0]) < 0.5 and abs(rect.x1 - power_bbox[2]) < 0.5),
+            None,
+        )
+        self.assertIsNotNone(power_bar, [tuple(round(v, 2) for v in r) for r in bars])
+        # P 是 cap 字母（墨迹 0.728em）→ 短横线更高，且不压进字母顶（源版面同为相对量）
+        self.assertAlmostEqual(power_baseline - power_bar.y0, 0.918 * 10.5, delta=0.2)
         subscript = [span for span in spans[power[0]:power[0] + 4] if "Oblique" not in span[1]]
-        self.assertTrue(any(text == "1" for text, _, _ in subscript), spans[power[0]:power[0] + 4])
+        self.assertTrue(any(text == "1" for text, *_ in subscript), spans[power[0]:power[0] + 4])
+
+    def test_only_the_overlined_symbol_gets_a_bar(self) -> None:
+        """同一行里未加 `\\overline` 的同名符号不得被连成一条横线（reportlab us_lines 分组）。"""
+        try:
+            import pymupdf
+        except ImportError:  # pragma: no cover
+            self.skipTest("pymupdf unavailable")
+        import json
+
+        from leleby_ssir.builder import SSIRBuilder
+        from leleby_ssir.parser import CSMParser
+        from leleby_ssir.pdf_renderer import render_pdf_file
+
+        directory = tempfile.mkdtemp()
+        canon = (
+            "---\n"
+            "csm-version: 1.0\n"
+            "document-type: standard\n"
+            "document-identifier: GB_T_10401-2023\n"
+            "standard-number: GB/T 10401—2023\n"
+            "title: 试验方法\n"
+            "language: zh-CN\n"
+            "---\n\n"
+            "# 试验方法\n\n"
+            "## A.1　空载数据\n\n"
+            "$ \\overline{I}$ 中——相应各点的电流 $I_i$ 的平均数，单位为安培（A）；\n"
+        )
+        source = Path(directory) / "t.canonical.md"
+        source.write_text(canon, encoding="utf-8")
+        ssir_path = Path(directory) / "t.ssir.json"
+        ssir_path.write_text(json.dumps(SSIRBuilder().build(CSMParser().read(str(source))), ensure_ascii=False), encoding="utf-8")
+        target = Path(directory) / "t.pdf"
+        render_pdf_file(str(ssir_path), str(target), toc_depth=None)
+        document = pymupdf.open(str(target))
+        bars = [
+            drawing["rect"]
+            for page in document
+            for drawing in page.get_drawings()
+            if (drawing.get("width") or 0) > 0.2 and abs(drawing["rect"].y0 - drawing["rect"].y1) < 0.5
+        ]
+        line = next(
+            (
+                line
+                for page in document
+                for block in page.get_text("dict")["blocks"] if block.get("type") == 0
+                for line in block["lines"]
+                if "平均数" in "".join(span["text"] for span in line["spans"])
+            ),
+            None,
+        )
+        document.close()
+        self.assertIsNotNone(line, "电流平均数行未渲染")
+        spans = line["spans"]
+        # 两个变量 I：前者带 `\overline`、后者不带（同一行、同名符号）
+        eyes = [span for span in spans if span["text"] == "I"]
+        self.assertEqual(len(eyes), 2, spans)
+
+        def bars_over(span):
+            return [
+                rect
+                for rect in bars
+                if abs(rect.x0 - span["bbox"][0]) < 0.5
+                and abs(rect.x1 - span["bbox"][2]) < 0.5
+                and span["bbox"][1] - 12 <= rect.y0 <= span["origin"][1]
+            ]
+
+        # 短横线只压带 `\overline` 的那个 I（同名符号不得被连成一条长横线）
+        self.assertEqual(len(bars_over(eyes[0])), 1, [tuple(round(v, 2) for v in r) for r in bars])
+        self.assertEqual(bars_over(eyes[1]), [], [tuple(round(v, 2) for v in r) for r in bars])
 
 
 if __name__ == "__main__":
     unittest.main()
+
+class GreekLetterFaceTests(unittest.TestCase):
+
+    def setUp(self) -> None:
+        """显式声明希腊字形族（GEN-122），用例不依赖执行顺序。"""
+        from leleby_ssir import pdf_renderer as _renderer
+
+        previous = (_renderer._GREEK_FONT, _renderer._GREEK_ITALIC_FONT)
+        _renderer._GREEK_FONT, _renderer._GREEK_ITALIC_FONT = "LiberationSerif", "LiberationSerif-Italic"
+        self.addCleanup(setattr, _renderer, "_GREEK_FONT", previous[0])
+        self.addCleanup(setattr, _renderer, "_GREEK_ITALIC_FONT", previous[1])
+
+    """希腊字母从拉丁字族取形（GEN-122，2026-09-19，用户报告）。
+
+    现象（GB/T 5171.1-2014 表18）：canonical 与 PDF 文本层都是小写 U+03C6，但**字形**
+    看起来像大写 Φ——Noto Serif CJK 把 U+03C6 画成「圆圈 + 贯穿竖线」的全高形（实测
+    y∈[-215,681]/1000 em，而 x 高只有 516）；reportlab 内置 Symbol 的 φ 也是这一形。
+    源版面同格的 `cos` 用正体 E-BZ、`φ` 用**斜体拉丁** E-BX（带尾的小写 φ）。修复：
+    profile 声明拉丁（Times 度量）字形族 `fonts.greek` / `fonts.greek-italic`，希腊
+    字母按其所在位置换族——变量位置（`<i>…</i>`，GEN-116 的判定）用拉丁斜体，其余
+    （单位 μ/Ω、算子 Δ/Σ）用正体（GBT-B12：变量斜体、其他正体）。
+    """
+
+    ROOT = Path(__file__).resolve().parents[1]
+    FIXTURE = ROOT / "tests" / "fixtures" / "table18_columns.canonical.md"
+
+    def _with_faces(self, upright: str, italic: str):
+        from leleby_ssir import pdf_renderer as renderer
+
+        previous = (renderer._GREEK_FONT, renderer._GREEK_ITALIC_FONT)
+        renderer._GREEK_FONT, renderer._GREEK_ITALIC_FONT = upright, italic
+        self.addCleanup(setattr, renderer, "_GREEK_FONT", previous[0])
+        self.addCleanup(setattr, renderer, "_GREEK_ITALIC_FONT", previous[1])
+        return renderer
+
+    def test_plain_text_greek_uses_the_upright_latin_face(self) -> None:
+        renderer = self._with_faces("LatinUpright", "LatinItalic")
+        markup = renderer._markup("交流电动机的功率因数 cosφ")
+        self.assertIn('<font name="LatinUpright">φ</font>', markup)
+
+    def test_greek_in_a_variable_position_uses_the_italic_latin_face(self) -> None:
+        renderer = self._with_faces("LatinUpright", "LatinItalic")
+        self.assertIn('<font name="LatinItalic">φ</font>', renderer._markup(r"$\varphi$"))
+        # 单位/算子位置（Ω、Δ）保持正体
+        self.assertIn('<font name="LatinUpright">Ω</font>', renderer._markup("100 MΩ"))
+        self.assertIn('<font name="LatinUpright">Δ</font>', renderer._markup(r"$\Delta t$"))
+
+    def test_without_a_declared_greek_face_nothing_changes(self) -> None:
+        renderer = self._with_faces("", "")
+        self.assertNotIn("<font name=", renderer._markup("cosφ MΩ"))
+
+    def test_rendered_phi_span_uses_the_latin_face(self) -> None:
+        """端到端：表18 夹具里的 φ 在 PDF 里由拉丁字族绘制（修复前为 NotoSerifCJKsc-Regular）。"""
+        import json
+        import tempfile as _tempfile
+
+        try:
+            import pymupdf
+        except ImportError:  # pragma: no cover
+            self.skipTest("pymupdf unavailable")
+        from leleby_ssir.builder import SSIRBuilder
+        from leleby_ssir.parser import CSMParser
+        from leleby_ssir.pdf_renderer import render_pdf_file
+
+        with _tempfile.TemporaryDirectory() as directory:
+            ssir = Path(directory) / "t.ssir.json"
+            ssir.write_text(
+                json.dumps(SSIRBuilder().build(CSMParser().read(str(self.FIXTURE))), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            target = Path(directory) / "t.pdf"
+            render_pdf_file(str(ssir), str(target), toc_depth=None)
+            document = pymupdf.open(str(target))
+            faces = {
+                span["font"]
+                for page in document
+                for block in page.get_text("dict")["blocks"]
+                for line in block.get("lines", [])
+                for span in line["spans"]
+                if "φ" in span["text"]
+            }
+            document.close()
+        self.assertEqual(faces, {"LiberationSerif"}, faces)
+
+
+class AnnexHeadingBlockTests(unittest.TestCase):
+    """GBT-B05（10.4.1、图 E.12、附录 F 表 F.1 序号 25—28）：附录编号、作用（规范性/
+    资料性）、标题各占一行居中，三行同用五号黑体，且**紧排**（行间无额外空行）。
+
+    现象（2026-09-19 用户报告）：渲染稿里附录主标题比正文/章标题还大，三行间距过松
+    （GB_T_20001.10-2014 附录 B：三行 12/10.5/14pt、行位置差 31.7/28.7pt）。源版面
+    实测（GB_T_20001.10-2014 附录 A/B、GB_T_10401-2023 附录 A—C）三行同号、编号行→
+    性质行 14.2pt ≤ 正文行距 15.7pt。断言取真实 PDF 文本层（字号/字体/坐标）。
+    """
+
+    def test_annex_heading_lines_are_body_size_and_tight(self) -> None:
+        try:
+            import pymupdf
+        except ImportError:  # pragma: no cover - 环境缺 pymupdf 时跳过
+            self.skipTest("pymupdf unavailable")
+        import json
+        import tempfile as _tempfile
+
+        from leleby_ssir.builder import SSIRBuilder
+        from leleby_ssir.parser import CSMParser
+        from leleby_ssir.pdf_renderer import render_pdf_file
+
+        canon = (
+            "---\n"
+            "csm-version: 1.0\n"
+            "document-type: standard\n"
+            "document-identifier: GB_T_20001.10-2014\n"
+            "standard-number: GB/T 20001.10—2014\n"
+            "title: 产品标准编写规则\n"
+            "language: zh-CN\n"
+            "---\n\n"
+            "# 产品标准编写规则\n\n"
+            "## 1 范围\n\n"
+            "本标准规定了产品标准的编写规则。\n\n"
+            "## 附录 B（资料性） 包装、运输、贮存要求的编写规则\n\n"
+            "### B.1 包装\n\n"
+            "需要对产品的包装提出要求时，可将有关内容编入标准。\n"
+        )
+        with _tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "t.canonical.md"
+            source.write_text(canon, encoding="utf-8")
+            ssir_path = Path(directory) / "t.ssir.json"
+            ssir_path.write_text(
+                json.dumps(SSIRBuilder().build(CSMParser().read(str(source))), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            target = Path(directory) / "t.pdf"
+            render_pdf_file(str(ssir_path), str(target), toc_depth=None)
+            document = pymupdf.open(str(target))
+            rows = [
+                ("".join(span["text"] for span in line["spans"]).strip(), line["spans"], line["bbox"])
+                for page in document
+                for block in page.get_text("dict")["blocks"]
+                if block.get("type") == 0
+                for line in block.get("lines", [])
+            ]
+            document.close()
+
+        def pick(predicate):
+            for text, spans, bbox in rows:
+                if predicate(text):
+                    return text, spans, bbox
+            self.fail(f"未找到目标行：{[text for text, _, _ in rows]}")
+
+        _, letter_spans, letter_box = pick(lambda text: text.startswith("附") and "录" in text)
+        _, status_spans, status_box = pick(lambda text: "资料性" in text)
+        _, title_spans, title_box = pick(lambda text: text.startswith("包装、运输、贮存"))
+        _, body_spans, _ = pick(lambda text: text.startswith("需要对产品的包装"))
+
+        # ① 三行同用五号黑体（不得比章标题/正文更大）
+        for label, spans in (("附录编号", letter_spans), ("性质", status_spans), ("标题", title_spans)):
+            sizes = {round(span["size"], 1) for span in spans}
+            self.assertEqual(sizes, {10.5}, (label, sizes))
+            self.assertTrue(all(span["font"].startswith("WenQuanYiZenHei") for span in spans), (label, spans))
+        # ② 与正文同号（GBT-B05「五号黑体」）
+        self.assertEqual({round(span["size"], 1) for span in body_spans}, {10.5})
+        # ③ 三行紧排：相邻行位置差 = 正文行距（18pt），无额外空行
+        self.assertAlmostEqual(status_box[1] - letter_box[1], 18.0, delta=1.0)
+        self.assertAlmostEqual(title_box[1] - status_box[1], 18.0, delta=1.0)
+        # ④ 三行居中：水平中心一致
+        centers = [round((box[0] + box[2]) / 2, 1) for box in (letter_box, status_box, title_box)]
+        self.assertLess(max(centers) - min(centers), 1.0, centers)

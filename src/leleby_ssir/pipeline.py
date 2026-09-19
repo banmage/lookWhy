@@ -1755,15 +1755,11 @@ def _plain_note_cell_text(cell: str) -> str:
     """表注单元格去角标标记后的纯注文文本（开标记 → 其角标字符、闭标记删除）。
 
     供表注行判型与“连排注文拆条”使用——对已 token 化的单元格（新通用形式
-    ``[:sup:a]注文[:/sup]`` 或迁移前的旧形式 ``[^a]注文[^a/]``）同样可还原出注文
+    ``a）注文`` 形态）同样可还原出注文
     本体，保证恢复流程幂等（结果只取决于注文文本本身）。
     """
-    from leleby_ssir.parser import INLINE_SCRIPT_CLOSE_RE, INLINE_SCRIPT_OPEN_RE
-
-    text = INLINE_SCRIPT_CLOSE_RE.sub("", str(cell))
-    text = INLINE_SCRIPT_OPEN_RE.sub(lambda m: m.group(2), text)
-    text = re.sub(r"\[\^([a-z])/\]", "", text)  # 旧形式（迁移期兼容）
-    return re.sub(r"\[\^([a-z])\]", r"\1", text)
+    # 规则对应: GEN-119（[:sup:…] 家族已退役）——单元格文本可直接还原。
+    return re.sub(r"<br\s*/?>", " ", str(cell)).strip()
 
 
 def _cell_note_letters(plain: str) -> set[str]:
@@ -1822,12 +1818,12 @@ def _note_item_boundaries(
 
 
 def _wrap_note_items(plain: str, marks: list[tuple[str, int, int]]) -> str:
-    """逐条注包装为通用角标标记 ``[:sup:x]注文[:/sup]``（连排，不写 ``<br>``）。
+    """逐条注写成 ``a）注文``（多条以 ``<br>`` 分隔同格排布；GEN-119）。
 
     ``marks`` 的元组是 (字母, 标记位, 注文本体起点)：注文区间取到**下一条标记位**
-    为止，md 里残存的字面标记字母因此不会混进上一条注文（PDF 补位条的标记位与正文
-    起点相同，无字面字母可留）。多条注在同一单元格内**连排**——标记成对自定界，
-    渲染端在相邻两对之间自动换行（2026-09-11 用户裁定，docs/07 §6.7）。
+    为止，md 里残存的字面标记字母因此不会混进上一条注文。2026-09-19 用户裁定：
+    角标一律写通用行内公式上角标 ``$^{a}$``（锚点处），注文按源版面的 ``a）注文``
+    形态排布——旧的 ``[:sup:a]注文[:/sup]`` 注解区语法已退役（docs/07 §6.7）。
     规则对应: GBT-X04 / GBT-C18 执行侧。
     """
     if not marks:
@@ -1839,7 +1835,7 @@ def _wrap_note_items(plain: str, marks: list[tuple[str, int, int]]) -> str:
     for index, (letter, _mark, start) in enumerate(marks):
         end = marks[index + 1][1] if index + 1 < len(marks) else len(plain)
         text = plain[start:end].strip()
-        parts.append(f"[:sup:{letter}]{text}[:/sup]" if text else f"[:sup:{letter}/]")
+        parts.append(f"{letter}）{text}" if text else f"{letter}）")
     return "".join(parts)
 
 
@@ -1882,8 +1878,8 @@ def _recover_table_note_markers(markdown: str, pdf: Path) -> tuple[str, int]:
     - 找不到唯一匹配/定义行缺失/字母已存在 → 不改。幂等：已恢复的单元格以
       字母结尾（尾部）或锚文本后已跟该字母（词中），再次运行不重复补。
     2026-09-07（语法定案）输出改为**显式标记**；2026-09-11 起标记通用化为
-    “行内角标标记”（docs/07 §6.7）：锚点补回写自闭合引用点 ``[:sup:x/]``，
-    表注定义行逐条改写为 ``[:sup:x]注文[:/sup]``（多条以 <br> 分隔同格排布；
+    固定字面标记（docs/07 §6.7；GEN-119）：锚点补回写通用行内上角标 ``$^{x}$``，
+    表注定义行逐条改写为 ``a）注文``（多条以 <br> 分隔同格排布；
     段首字母可后随引号/汉字）。已 token 化的内容幂等（先还原纯注文再重新拆条，
     结果只取决于注文文本；锚点命中检查对已带标记的单元格天然不再匹配）。
     规则对应: GBT-X04（表注由标记与解释成对组成）/ GBT-C18（表脚注上标）；
@@ -2003,7 +1999,7 @@ def _recover_table_note_markers(markdown: str, pdf: Path) -> tuple[str, int]:
         if not note_slots:
             continue
         # 表注定义行 token 化：把“a注文…b注文…”连排注文逐条改写为通用角标标记
-        # “[:sup:x]注文[:/sup]”（多条以 <br> 分隔同格排布）；md 丢掉的注文
+        # “a）注文”（多条以 <br> 分隔同格排布）；md 丢掉的注文
         # 标记字母用源 PDF 的注文头文本定位后补回。幂等：先去掉既有标记还原纯注文
         # 再重新拆条，结果只取决于注文文本本身。
         group_letters: set[str] = set()
@@ -2069,7 +2065,7 @@ def _recover_table_note_markers(markdown: str, pdf: Path) -> tuple[str, int]:
                     start, end = pipes[cell_index] + 1, pipes[cell_index + 1]
                     raw = line[start:end]
                     replace_at = start + len(raw.rstrip()) - 1  # 末尾字母（去行尾空白定位）
-                    lines[line_index] = line[:replace_at] + f"[:sup:{letter}/]" + line[replace_at + 1:]
+                    lines[line_index] = line[:replace_at] + f"$^{{{letter}}}$" + line[replace_at + 1:]
                     recovered += 1
                 continue
             # 形态 b：词中。锚文本在单元格中部出现、后随汉字、该处尚未有该字母。
@@ -2111,7 +2107,7 @@ def _insert_table_cell_marker(line: str, cell_index: int, letter: str) -> str:
     start, end = pipes[cell_index] + 1, pipes[cell_index + 1]
     text = line[start:end]
     insert_at = start + len(text.rstrip())
-    return line[:insert_at] + f"[:sup:{letter}/]" + line[insert_at:]
+    return line[:insert_at] + f"$^{{{letter}}}$" + line[insert_at:]
 
 
 def _insert_table_cell_marker_at(line: str, cell_index: int, letter: str, offset_in_cell: int) -> str:
@@ -2130,7 +2126,7 @@ def _insert_table_cell_marker_at(line: str, cell_index: int, letter: str, offset
     insert_at = start + lead + offset_in_cell
     if insert_at < start or insert_at > pipes[cell_index + 1]:
         return line
-    return line[:insert_at] + f"[:sup:{letter}/]" + line[insert_at:]
+    return line[:insert_at] + f"$^{{{letter}}}$" + line[insert_at:]
 
 
 def _recover_pdf_footnotes(md_path: Path, pdf: Path) -> int:
@@ -2231,12 +2227,12 @@ def _recover_pdf_footnotes(md_path: Path, pdf: Path) -> int:
             label = str(order)
             digits = token[:-1]
             def_text = note_by.get((page_index, token), "")
-            if _re.search(rf"\[\^{re.escape(label)}\]:", new_text):
+            if _re.search(rf"<!--\s*ssir:foot:{re.escape(label)}\s*-->", new_text):
                 continue
             if def_text:
                 defs.append((token, label, def_text))
                 replaced += 1
-            if any_marker or f"[^{label}]" in new_text:
+            if any_marker or f"[foot:{label}]" in new_text:
                 continue
             page_obj = document[page_index]
             norm = []
@@ -2271,7 +2267,7 @@ def _recover_pdf_footnotes(md_path: Path, pdf: Path) -> int:
                     break
             if hit < 0 or not tail_used:
                 continue
-            new_text = new_text[: hit + len(tail_used)] + f"[^{label}]" + new_text[hit + len(tail_used) + len(digits):]
+            new_text = new_text[: hit + len(tail_used)] + f"[foot:{label}]" + new_text[hit + len(tail_used) + len(digits):]
     if not defs:
         return 0
     final_text = _place_footnote_definitions(new_text, defs)
@@ -2293,7 +2289,7 @@ def _place_footnote_definitions(markdown_text: str, defs: list[tuple[str, str, s
     lines = markdown_text.split("\n")
     insert_before: dict[int, list[str]] = {}
     for token, label, def_text in defs:
-        if f"[^{label}]:" in markdown_text:
+        if f"<!--ssir:foot:{label}-->" in markdown_text:
             continue  # 幂等：定义已存在
         num = token[:-1]
         converted = False
@@ -2302,17 +2298,17 @@ def _place_footnote_definitions(markdown_text: str, defs: list[tuple[str, str, s
             indent = ln[: len(ln) - len(stripped)]
             if stripped.startswith(f"{num}) ") or stripped.startswith(f"{num}） "):
                 rest = stripped.split(" ", 1)[1]
-                lines[i] = f"{indent}[^{label}]: {rest}"
+                lines[i] = f"{indent}<!--ssir:foot:{label}-->{rest}<!--ssir:/foot-->"
                 converted = True
                 break
             if stripped.startswith(f"{num}）") or stripped.startswith(f"{num})"):
                 rest = stripped[len(num) + 1:].lstrip()
-                lines[i] = f"{indent}[^{label}]: {rest}"
+                lines[i] = f"{indent}<!--ssir:foot:{label}-->{rest}<!--ssir:/foot-->"
                 converted = True
                 break
         if converted:
             continue
-        anchor_line = next((i for i, ln in enumerate(lines) if f"[^{label}]" in ln), None)
+        anchor_line = next((i for i, ln in enumerate(lines) if f"[foot:{label}]" in ln), None)
         if anchor_line is None:
             continue  # 锚点标记不在（半途产物）→ 不猜
         # 越过锚点段连续非空行（同段多行）与段后空行带 → 插入点 = 段后首个内容行
@@ -2321,7 +2317,7 @@ def _place_footnote_definitions(markdown_text: str, defs: list[tuple[str, str, s
             j += 1
         while j < len(lines) and not lines[j].strip():
             j += 1
-        insert_before.setdefault(j, []).append(["", f"[^{label}]: {def_text}", ""])
+        insert_before.setdefault(j, []).append(["", f"<!--ssir:foot:{label}-->{def_text}<!--ssir:/foot-->", ""])
     if not insert_before:
         return "\n".join(lines)
     final: list[str] = []

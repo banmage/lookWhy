@@ -14,7 +14,6 @@ from typing import Any
 
 import yaml
 
-from .parser import inline_script_item_breaks
 from .validation import validate_ssir
 
 try:  # reportlab 依赖在 render 函数内延迟导入；占位类需在模块层可继承
@@ -51,10 +50,18 @@ _ROTATED_TABLE_MEASURE: float | None = None
 # 旋转 Flowable 类：reportlab 延迟导入（依赖可选），类在 render_pdf 内定义后写进本
 # 槽位（与 _LABEL_FONT 同法）；None = 不横排。
 _ROTATED_TABLE_CLASS: type | None = None
+# 希腊字母字形族（GEN-122）：CJK 字族把 U+03C6 画成「圆圈 + 贯穿竖线」的全高形（读作
+# 大写 Φ），源版面用的是拉丁斜体（GB_T_5171.1-2014 表18 实测：`cos` 正体 E-BZ、
+# `φ` 斜体 E-BX）。由 render_pdf 依 profile 的 fonts.greek / fonts.greek-italic 写入；
+# 空 = 不替换（单表渲染 / 单测）。
+_GREEK_FONT: str = ""
+_GREEK_ITALIC_FONT: str = ""
 
 
-def _register_emphasis_family(profile: dict[str, Any], *, body: str, bold: str, primary: str, warnings: list[str]) -> None:
-    """注册强调字形字族（docs/07 §6.1；GEN-108）。
+def _register_emphasis_family(
+    profile: dict[str, Any], *, body: str, bold: str, primary: str, warnings: list[str]
+) -> tuple[str, str]:
+    """注册强调字形字族（docs/07 §6.1；GEN-108），返回 ``(斜体, 粗斜体)`` 成员名。
 
     reportlab 的 ``<b>``/``<i>`` **只从已注册字族取成员**：字体未登记字族时两个标签
     被静默忽略（实测 `普通 <b>粗</b> <i>斜</i>` 出来仍是同一字体、无告警）——与
@@ -67,6 +74,9 @@ def _register_emphasis_family(profile: dict[str, Any], *, body: str, bold: str, 
 
     斜体资产由 ``tools/prepare_oblique_font.py`` 生成；文件缺失时退回同字族的直立
     字形并在渲染报告记一条告警（不伪造、不静默）。
+
+    返回的斜体成员同时是**行内 math 上划线**定位用的字面（GEN-116：拉丁变量由
+    ``<i>`` 承载，其墨迹高度决定短横线高度），故两个名字都是调用方要用的。
     """
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
@@ -99,6 +109,7 @@ def _register_emphasis_family(profile: dict[str, Any], *, body: str, bold: str, 
     pdfmetrics.registerFontFamily(body, normal=body, bold=bold, italic=italic, boldItalic=bold_italic)
     for hei_name in {primary, bold}:
         pdfmetrics.registerFontFamily(hei_name, normal=hei_name, bold=hei_name, italic=hei_italic, boldItalic=hei_italic)
+    return italic, bold_italic
 
 
 def _example_box_inner_width(doc_width: float) -> float:
@@ -228,18 +239,38 @@ def render_pdf(
     if label_font_name and label_font_name not in pdfmetrics.getRegisteredFontNames():
         pdfmetrics.registerFont(TTFont(label_font_name, str(label_font_file), subfontIndex=0))
     _LABEL_FONT = label_font_name
+    # 希腊字母字形族（GEN-122）：CJK 字族的 φ 是全高「Φ 形」，与源版面的小写 φ 不符；
+    # 希腊字母改从拉丁（Times 度量）字族取形，正体/斜体两份（斜体用于变量位置）。
+    global _GREEK_FONT, _GREEK_ITALIC_FONT
+    greek_name = str(profile["fonts"].get("greek") or "")
+    greek_italic_name = str(profile["fonts"].get("greek-italic") or "")
+    for face, key in ((greek_name, "greek-file"), (greek_italic_name, "greek-italic-file")):
+        if not face:
+            continue
+        face_file = Path(profile["fonts"].get(key) or "")
+        if not face_file.is_file():
+            raise FileNotFoundError(f"Greek font not found: {face_file}")
+        if face not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(TTFont(face, str(face_file), subfontIndex=0))
+    _GREEK_FONT = greek_name
+    _GREEK_ITALIC_FONT = greek_italic_name or greek_name
     # 强调字形（docs/07 §6.1；GEN-108）：`**粗体**`→黑体、`*斜体*`→机斜资产、
     # `***粗斜体***`→黑体粗机斜。reportlab 的 <b>/<i> 只认已注册字族成员，故必须
     # 在渲染前把字族登记好（未登记时两个标签被静默忽略，见 GBT-B10）。
     # 告警先收到本地列表：渲染报告对象在其下方才创建。
     emphasis_warnings: list[str] = []
-    _register_emphasis_family(
+    italic_face, _bold_italic_face = _register_emphasis_family(
         profile,
         body=body_font_name,
         bold=label_font_name or font_name,
         primary=font_name,
         warnings=emphasis_warnings,
     )
+    # 行内 math 上划线的定位字面（GEN-116）：`<u offset=…>` 的高度取被覆盖字母在
+    # **该字面**里的墨迹高度，故渲染前必须知道「正文」与「斜体（变量）」两张默认字面。
+    global _MATH_BODY_FACE, _MATH_ITALIC_FACE
+    _MATH_BODY_FACE = body_font_name
+    _MATH_ITALIC_FACE = italic_face or body_font_name
 
     page = profile["page"]
     margins = page["margin-mm"]
@@ -970,11 +1001,15 @@ def _styles(base: Any, profile: dict[str, Any], font: str, body_font: str, cente
         "table": ParagraphStyle("gbt-table", parent=base["BodyText"], fontName=body_font, fontSize=rules["table"]["size-pt"], leading=rules["table"]["leading-pt"], alignment=center),
         "table-body": ParagraphStyle("gbt-table-body", parent=base["BodyText"], fontName=body_font, fontSize=rules["table"]["size-pt"], leading=rules["table"]["leading-pt"], alignment=left, wordWrap="CJK"),
         "toc-title": ParagraphStyle("gbt-toc-title", parent=base["Title"], fontName=font, fontSize=16, leading=22, alignment=center, spaceAfter=14),
-        # GB/T 1.1 annex heading block: 附录 letter, status and title are
-        # centred, in that order, with the title in the largest size.
-        "annex-letter": ParagraphStyle("gbt-annex-letter", parent=base["Heading2"], fontName=font, fontSize=12, leading=20, alignment=center, spaceBefore=6, spaceAfter=4),
-        "annex-status": ParagraphStyle("gbt-annex-status", parent=base["Heading3"], fontName=font, fontSize=10.5, leading=16, alignment=center, spaceAfter=4),
-        "annex-title": ParagraphStyle("gbt-annex-title", parent=base["Heading2"], fontName=font, fontSize=14, leading=22, alignment=center, spaceAfter=14),
+        # GB/T 1.1-2020 10.4.1、图 E.12、附录 F 表 F.1 序号 25—28（GBT-B05）：
+        # 附录编号、作用（规范性/资料性）、标题各占一行居中，三行**同用五号
+        # （正文字号）黑体**，且紧排——行距取正文行距、行间无空行。源版面实测
+        # （GB_T_20001.10-2014 附录 A/B、GB_T_10401-2023 附录 A—C）三行同号、
+        # 编号行→性质行 14.2pt ≤ 正文行距 15.7pt。此前的 12/10.5/14pt +
+        # leading 20/16/22 使「附录 X」比章标题（12pt）还大、三行间距达 31.7pt。
+        "annex-letter": ParagraphStyle("gbt-annex-letter", parent=base["Heading2"], fontName=font, fontSize=body["size-pt"], leading=body["leading-pt"], alignment=center, spaceBefore=0, spaceAfter=0),
+        "annex-status": ParagraphStyle("gbt-annex-status", parent=base["Heading2"], fontName=font, fontSize=body["size-pt"], leading=body["leading-pt"], alignment=center, spaceBefore=0, spaceAfter=0),
+        "annex-title": ParagraphStyle("gbt-annex-title", parent=base["Heading2"], fontName=font, fontSize=body["size-pt"], leading=body["leading-pt"], alignment=center, spaceBefore=0, spaceAfter=14),
         # 附录编写示例块（GB/T 20001 表框/图框内容，CSM-OCR-006）：示例文档
         # 标题黑体居中；示例内部的编号标题（如 4 技术要求）用黑体加粗顶格，
         # 与正文章条区分（它们是示例文档自带的编号，不是本标准章条）。
@@ -2014,14 +2049,10 @@ _TABLE_NOTE_CELL_RE = re.compile(r"^注\s*\d*\s*[:：]")
 # - 自闭合 [:sup:a/]（= 空注解区）：角标插在此处，即“引用点”（表注引用、
 #   单元格内被注释内容之后）。
 # 配对校验与旧形式迁移见 parser（CSM-STRUCT-007）。
-_INLINE_SCRIPT_OPEN_RE = re.compile(
-    r"\[:(?P<script>sup|sub):(?P<char>[^\[\]/\s]{1,4})(?P<self>/)?\]"
-)
-_INLINE_SCRIPT_CLOSE_RE = re.compile(r"\[:/(?P<script>sup|sub)\]")
-# 旧形式（2026-09-07 语法定案版）：[:^a] 引用点、[^a]…[^a/] 注文段；parser 迁移。
-_TABLE_NOTE_CITE_RE = re.compile(r"\[\:\^([a-z])\]")
-_TABLE_NOTE_DEF_OPEN_RE = re.compile(r"\[\^([a-z])\]")
-_TABLE_NOTE_DEF_CLOSE_RE = re.compile(r"\[\^([a-z])\/\]")
+# 规则对应: GEN-119（2026-09-19 用户裁定）：旧的「行内角标标记」族
+# `[:sup:a]` / `[:sub:2]` / `[:/sup]` / `[:/sub]`（含旧式 `[:^a]`、`[^a]…[^a/]`）
+# **不再支持**；表内角注一律写通用行内公式上角标 `$^{a}$`（正体、小号、上移），
+# 注文由表后的 `a）…` 行/表注行承担，关联逻辑不变。
 
 
 def _split_table_note_parts(cell_text: str) -> list[str]:
@@ -2042,8 +2073,8 @@ def _split_table_note_parts(cell_text: str) -> list[str]:
 
 
 def _footnote_superscripts(text: str) -> str:
-    # GFM 条文脚注标记 [^N]（docs/07 §6.7 / CSM-OCR-014 回收产物）→ 上角标 “N)”。
-    text = re.sub(r"\[\^([0-9A-Za-z_-]+)\]", lambda m: "\x00SUP\x00" + m.group(1) + ")\x00/SUP\x00", text)
+    # 条文脚注引用 [foot:N]（docs/07 §6.7；GEN-118 / CSM-OCR-014 回收产物）→ 上角标 “N)”。
+    text = re.sub(r"\[foot:([0-9A-Za-z_-]+)\]", lambda m: "\x00SUP\x00" + m.group(1) + ")\x00/SUP\x00", text)
     """脚注标记渲染为上角标——正文/图脚注安全版（GBT-X04 执行侧）。
 
     GB/T 1.1-2020 9.12.2：图表脚注用小写拉丁字母 a)、b) 上标，脚注由标记与
@@ -2074,35 +2105,18 @@ def _table_cell_superscripts(text: str) -> str:
     """表格单元格/表注的脚注角标渲染（GBT-X04 / GBT-C18 执行侧）。
 
     2026-09-11 起按**通用行内角标标记**处理（docs/07 §6.7）：
-    - 自闭合 `[:sup:a/]` / `[:sub:2/]` → 角标字符（引用点：表注引用、被注释内容后）；
-    - 成对 `[:sup:a]…[:/sup]` → 开标记处的角标字符 + 注解区文本（表注注文、
-      注/脚注解释文字），闭标记不渲染；
-    - 旧形式 `[:^a]` / `[^a]…[^a/]` 兼容渲染（parser 会迁移为新形式，见
-      CSM-STRUCT-007）；
-    - GFM 条文脚注 `[^N]`（表内引用条文脚注时）→ 上标 “N)”（不变，docs/07 §6.7）；
+    - GFM 条文脚注 `[foot:N]`（表内引用条文脚注时）→ 上标 “N)”（docs/07 §6.7；GEN-118）；
     - 拍平指数还原（s−1→s⁻¹、N/m2→N/m²、10-2→10⁻²、10²4→10²⁴）只保留
       **抽取里有证据**的分支（显式负号 / Unicode 上标字形 / 单位字母锚点）；
       「10+纯数字」的纯猜测分支已删除（GEN-104，2026-09-15：抽取层对
       “10 的正幂”没有任何字号或标签证据，`105`(温度等级)/`1024 bit`/
       `107`/`10800` 这类普通数值会被整串改写成 10 的幂）；
-    - 表注列项连排（同格多条注）：相邻两对标记之间**自动换行**——canonical 连排
-      不写 <br>，此处按 inline_script_item_breaks 插换行哨兵（2026-09-11 用户裁定）。
+    - 表注列项连排（同格多条注）：`注1：…注2：…` 由 `_split_table_note_parts` 拆条。
     语料表注锚点/注文全部为显式标记后，单元格内字面小写字母（单位 kg/m、mm、
     变量等）一律按普通文本渲染，不做任何字形猜测。
     """
-    text = inline_script_item_breaks(text)
-    text = _INLINE_SCRIPT_CLOSE_RE.sub("", text)
-    text = _INLINE_SCRIPT_OPEN_RE.sub(
-        lambda m: f"\x00{'SUP' if m.group('script') == 'sup' else 'SUB'}\x00{m.group('char')}\x00/{'SUP' if m.group('script') == 'sup' else 'SUB'}\x00",
-        text,
-    )
-    # 旧形式兼容（parser 迁移前的 canonical/SSIT 仍可能带着）。
-    text = _TABLE_NOTE_DEF_CLOSE_RE.sub("", text)
-    text = _TABLE_NOTE_DEF_OPEN_RE.sub(lambda m: f"\x00SUP\x00{m.group(1)}\x00/SUP\x00", text)
-    text = _TABLE_NOTE_CITE_RE.sub(lambda m: f"\x00SUP\x00{m.group(1)}\x00/SUP\x00", text)
-    # GFM 条文脚注引用（[^N] → 上标 “N)”）；只做引用转换，不做任何字母字形
     # 猜测（正文解释行的行首字母规则见 _footnote_superscripts，仅用于表外段落）。
-    text = re.sub(r"\[\^([0-9A-Za-z_-]+)\]", lambda m: f"\x00SUP\x00{m.group(1)})\x00/SUP\x00", text)
+    text = re.sub(r"\[foot:([0-9A-Za-z_-]+)\]", lambda m: f"\x00SUP\x00{m.group(1)})\x00/SUP\x00", text)
     # 上角标还原（2026-09-02，GB_3100-2026 表2/表3/附录B 等）：MinerU 文本抽取
     # 把上标拍平成普通字符——s−1→s⁻¹、N/m2→N/m²、10-2→10⁻²、10²4→10²⁴。
     # 只作用于表格单元格（上下文受限，单元格几乎必是单位/量值），正文不做
@@ -3117,6 +3131,21 @@ def _table_column_widths(
     if budget <= lower * len(content_cols):
         return [frame_width / col_count] * col_count
     widths = [floor if c not in content_cols else lower for c in range(col_count)]
+    # 起点 = max(列下界, 该列**数据需求**)（GEN-121）：折行代价买入只看「加宽能省多少行」，
+    # 从下界起步时，一个「自然需求大、但再宽也省不下几行」的列（如 5171.1 表18 的「名称」列，
+    # 长格已被 <br> 断开）会被饿在下界附近而不必要地折行，另一列的余量却继续堆高
+    # （实测表18：名称列 158pt vs 源版面 198.5pt、容差列 267pt vs 源版面 235.5pt）。
+    # 表头底线（header_min，自然宽 + 12pt）不作起点：源版面的长表头本就折行排（GEN-110 的
+    # 30819 表4 案例）。
+    data_need = _table_column_demands(
+        rows, col_count, font_size, cell_image_sizes, cell_image_re
+    )[2]
+    baseline = [
+        floor if c not in content_cols else max(lower, float(data_need[c] or 0.0) + 0.0)
+        for c in range(col_count)
+    ]
+    if sum(baseline) <= budget:
+        widths = baseline
     # 阶梯宽度上限按「该单元格最多能拿到的组宽」取：其余列各自至少保留下界 lower，
     # 更宽的目标在这个表格里根本买不起（探它只是浪费折行测量）。
     reachable = [max(lower, min(frame_width, budget - lower * (col_count - (end - start)))) for _row, start, end, _h, _t in raw_cells]
@@ -3300,7 +3329,13 @@ def _table_landscape_widths(
     横排（整表旋转 90°、表头落订口一侧，与 GB/T 5171.1-2014 表9 源排版同向）需三条
     同时成立：
       ① 本容器内整表按需排不下（Σ列需求 > 容器宽）——列只能被压到折行；
-      ② 横排可用宽（页面版心高）能整表按需排下（Σ列需求 ≤ 横排可用宽）；
+      ② 横排**可行**：旋转后每列至少能拿到「列下界」（左右边距 + 一个汉字宽），即
+         ``列数 × 下界 ≤ 横排可用宽``。软需求（自然宽/分位）只作列宽分配**目标**，
+         不作可行性否决线——旋转后的列宽同竖排一样是「按可用宽分配 + 折行」得到的，
+         只要列下界排得下就有可读解；拿软需求总和当否决线时，多行表头的自然宽
+         （``header_min``，+12pt）会把软需求顶到横排可用宽之上而误判「排不下」
+         （GEN-120：GB/T 5171.1-2014 表9 26 列 × 4 行表头，Σ软需求 938.5 >
+         横排可用宽 688.2 → 误判竖排；列下界和 442 ≤ 688.2 → 应横排）；
       ③ 竖排**不可用**：二选一——
          a) 竖排列宽分配后仍有**半数以上（且 ≥3）的列被压到下界**（= 左右边距 + 一个
             汉字宽 → 每行只排得下一个字，读不成表；26 列的 表9 即此类）；或
@@ -3317,9 +3352,11 @@ def _table_landscape_widths(
         rows, col_count, font_size, cell_image_sizes, cell_image_re
     )
     total_need = sum(need)
-    if total_need <= content_width or total_need > measure:
-        return None
+    # 列下界 = 左右边距 + 一个汉字宽（每行至少排得下一个字）；横排可行性只看下界
+    # （GEN-120，见 docstring ②）。
     lower = 2 * _TABLE_CELL_PADDING + font_size
+    if total_need <= content_width or lower * max(1, col_count) > measure:
+        return None
     squeezed = False
     if portrait_widths:
         at_lower = sum(1 for width in portrait_widths if width <= lower + 0.01)
@@ -3758,6 +3795,50 @@ def _list_marker_gap(style: Any, marker: str, marker_size: float) -> str:
     return _fixed_gap(-style.firstLineIndent - stringWidth(marker, style.fontName, marker_size))
 
 
+_GREEK_LETTER_RE = re.compile(r"[\u0370-\u03ff\u1f00-\u1fff]+")
+
+
+def _wrap_greek_letters(escaped: str) -> str:
+    """把希腊字母换成拉丁字族的显式字形（GEN-122）。
+
+    Noto Serif CJK 把 U+03C6 画成「圆圈 + 贯穿竖线」的全高形（实测 y∈[-215,681]/
+    1000 em，而 x 高只有 516）——小写 φ 读起来就是大写 Φ；reportlab 内置 Symbol 的
+    φ 也是这一形。拉丁（Times 度量）字族的 φ 是带尾的小写形，与源版面一致。
+    斜体位置（``<i>…</i>`` 内，GEN-116 的变量判定）用拉丁**斜体**字形，其余（单位
+    μ/Ω、算子 Δ/Σ 等）用正体——GBT-B12「变量斜体、其他正体」。字体未登记
+    （``_GREEK_FONT`` 为空）时原样返回。
+    """
+    if not _GREEK_FONT:
+        return escaped
+    out: list[str] = []
+    italic = 0
+    index = 0
+    length = len(escaped)
+    while index < length:
+        chunk = escaped[index]
+        if chunk == "<":
+            tag_end = escaped.find(">", index)
+            if tag_end != -1:
+                tag = escaped[index:tag_end + 1]
+                if tag == "<i>":
+                    italic += 1
+                elif tag == "</i>":
+                    italic = max(0, italic - 1)
+                out.append(tag)
+                index = tag_end + 1
+                continue
+        if "\u0370" <= chunk <= "\u03ff" or "\u1f00" <= chunk <= "\u1fff":
+            match = _GREEK_LETTER_RE.match(escaped, index)
+            run = match.group(0)
+            face = _GREEK_ITALIC_FONT if italic else _GREEK_FONT
+            out.append(f'<font name="{face}">{run}</font>')
+            index = match.end()
+            continue
+        out.append(chunk)
+        index += 1
+    return "".join(out)
+
+
 def _markup(text: str, em_size: float | None = None) -> str:
     text = str(text)
     # 公式变量解释项（「式中：」下方逐项，GB/T 1.1-2020 9.9.3/10.4.3；CSM-OCR-018）：
@@ -3887,6 +3968,11 @@ def _markup(text: str, em_size: float | None = None) -> str:
     # （`***X***` → `<b><i>X</i></b>`，嵌套由配对顺序保证）。
     escaped = escaped.replace("\x00EMB\x00", "<b>").replace("\x00/EMB\x00", "</b>")
     escaped = escaped.replace("\x00EMI\x00", "<i>").replace("\x00/EMI\x00", "</i>")
+    escaped = _wrap_greek_letters(escaped)
+    # 行内 math 的上划线（GEN-116 执行侧）：`\overline{X}` 的区间哨兵换成矢量线，
+    # 高度按区间内字符的实际字面（`<i>` / `<font name=…>`）取墨迹高度——必须在希腊
+    # 字面替换之后，否则希腊字母还没带上字面标签、量不到字形。
+    escaped = _render_math_overline(escaped)
     return _restore_literal_stars(escaped)
 
 
@@ -4008,7 +4094,28 @@ _MATH_REGION_OPEN = "\x00MATH\x00"      # 行内 math 区域边界（斜体化�
 _MATH_REGION_CLOSE = "\x00/MATH\x00"
 _MATH_UPRIGHT_OPEN = "\x00UPR\x00"      # \mathrm/\text 等直立内容（不斜体化的遮罩）
 _MATH_UPRIGHT_CLOSE = "\x00/UPR\x00"
-_MATH_OVERLINE = "\x00BAR\x00"          # \overline/\bar → U+0304 组合上划线
+# `\overline{X}`/`\bar{X}` 的**区间**哨兵（2026-09-19 二轮修正）：内容包在两者之间，
+# escape 之后由 `_render_math_overline` 换成 reportlab 的矢量线 `<u offset=…>`。
+# 不用字体的组合上划线 U+0304：CJK 字族该字形的 ink 只有 0.268em 宽、纵向落在
+# 0.668–0.717em（em 框顶），与被覆盖字母无关——x 高字母（η/n）悬空且只有半个字母宽，
+# cap 字母（P/T/X）刚好压进字母顶衬线里（实测 GB_T_5171.1-2014 的 X̄ 整条埋进 X 的
+# 顶衬线，用户报「没有任何效果」；GB_T_30819-2024 的 P̄ 报「和下面文字粘连」）。
+_MATH_OVERLINE_OPEN = "\x00OVL\x00"
+_MATH_OVERLINE_CLOSE = "\x00/OVL\x00"
+# 上划线几何（源版面实测；GEN-116 执行侧）：
+#   GB_T_30819-2024 p26（6.4 式中）——短横线是**矢量线**，厚度 0.558pt、长 4.98pt
+#   （= 被覆盖字母 n 的推进宽），位于 n 的墨迹（0.448em）上方 0.19em（= 0.638em）；
+#   T̄ 同理（cap 0.662em + 0.19em = 0.849em）。
+#   GB_T_5171.1-2014 p27（A.2）——X̄ 的短横线位于 X 墨迹上方 0.18em，长 0.57× 字宽。
+# 归纳为：**压在字母墨迹上方约 0.19em、长度取变量 run 的推进宽**（源版面 0.57–1.21×）。
+_OVERLINE_CLEARANCE_EM = 0.19
+_OVERLINE_WIDTH_EM = 0.056              # 源版面厚度 0.558pt @ 9.96pt 变量字号
+_OVERLINE_FALLBACK_INK_EM = 0.72        # 取不到字形墨迹时的兜底（cap 高度量级）
+# 上划线定位要问「这个字符在当前字面里有多高」：字面由 `_markup` 末尾的实际标签决定
+# （`<i>` → 拉丁机斜字族、`<font name=…>` → 该字面），两张**默认**字面由 render_pdf
+# 依 profile 写入（同 _GREEK_FONT / _LABEL_FONT 机制；空 = 单表渲染 / 单测，按兜底处理）。
+_MATH_BODY_FACE: str = ""
+_MATH_ITALIC_FACE: str = ""
 # 直立内容命令：单位与说明文字（源版面正体）
 _MATH_UPRIGHT_COMMANDS = (
     "mathrm", "text", "textrm", "textup", "textnormal", "textsf", "texttt", "operatorname", "mbox",
@@ -4025,28 +4132,29 @@ _MATH_VARIABLE_LETTERS = set(ascii_letters) | set(
 def _inline_math_text(latex: str) -> str:
     """行内 $…$ → 可读文本，并保住变量斜体与上划线两条约定（GEN-116）。
 
-    * **上划线**：`\\overline{X}`/`\\bar{X}` → 内容 + U+0304 组合上划线——源版面用
-      矢量短横线压在字母上方；该字形的墨迹以**笔位为中心**（Noto Serif CJK 实测
-      xMin/xMax = ∓134/1000 em、advance 0），紧跟字母绘制即落在字母上方。
+    * **上划线**：`\\overline{X}`/`\\bar{X}` → 内容包进 OVL 区间哨兵——源版面是压在
+      字母上方、长约一个字宽的**矢量短横线**，故在 `_markup` 末尾换成 reportlab 的
+      `<u offset=…>`（放在字母上方的一条矢量线，宽度即该 run 的推进宽），见
+      `_render_math_overline`。
     * **变量斜体**：基字位置的拉丁/希腊字母由 `_italicize_math_regions` 在 `_markup`
       末尾包成斜体哨兵（`\\x00EMI\\x00`，GEN-108 的机斜字形）；`\\mathrm{}`/`\\text{}`
       内容、上下标内容、数学算子（Δ/Σ/Π/∂）、紧跟 `^{…}` 的单字母基字（语料实测
       全是单位 m²/m³ 与 10 的幂）保持正体。
     """
     text = latex.strip()
-    # ① 上划线先替换成记号：`\overline`/`\bar` 是「未知命令」，`_latex_expand_nested`
+    # ① 上划线先替换成区间哨兵：`\overline`/`\bar` 是「未知命令」，`_latex_expand_nested`
     #    与 `_latex_to_text` 都会连命令带花括号一起丢掉（同族的
     #    `\overline { { \eta } }` 形态更会拍成空串）。嵌套形态（MinerU 常写 `{ { X } }`）
     #    先处理，再处理单层——`\{…\}?\}` 式的可选括号会把外层 `_ { X }` 的收尾括号一起
     #    吃掉，把下标组拍坏。必须在 `_latex_expand_nested` **之前**做。
     text = re.sub(
         r"\\(?:overline|bar)\s*\{\s*\{\s*([^{}]*?)\s*\}\s*\}",
-        lambda match: match.group(1) + _MATH_OVERLINE,
+        lambda match: _MATH_OVERLINE_OPEN + match.group(1) + _MATH_OVERLINE_CLOSE,
         text,
     )
     text = re.sub(
         r"\\(?:overline|bar)\s*\{\s*([^{}]*?)\s*\}",
-        lambda match: match.group(1) + _MATH_OVERLINE,
+        lambda match: _MATH_OVERLINE_OPEN + match.group(1) + _MATH_OVERLINE_CLOSE,
         text,
     )
     # ② 直立内容（\mathrm{kPa}、\text{米} 等）包上遮罩：这些字符不参与斜体化。
@@ -4055,7 +4163,7 @@ def _inline_math_text(latex: str) -> str:
     mask = lambda match: _MATH_UPRIGHT_OPEN + re.sub(r"\s+", "", match.group(1)) + _MATH_UPRIGHT_CLOSE
     text = re.sub(rf"\\(?:{commands})\s*\{{\s*\{{\s*([^{{}}]*?)\s*\}}\s*\}}", mask, text)
     text = re.sub(rf"\\(?:{commands})\s*\{{\s*([^{{}}]*?)\s*\}}", mask, text)
-    return _latex_to_text(text).replace(_MATH_OVERLINE, "\u0304")
+    return _latex_to_text(text)
 
 
 def _inline_math_markup(latex: str) -> str:
@@ -4132,6 +4240,123 @@ def _italicize_math_variables(segment: str) -> str:
         index += 1
     return "".join(out)
 
+
+# 字形墨迹查询（上划线定位用）：face 名 → 字体文件 → fontTools TTFont；两级缓存。
+_FACE_FILE_CACHE: dict[str, str] = {}
+_GLYPH_INK_CACHE: dict[tuple[str, str], float | None] = {}
+_FONT_TOOL_CACHE: dict[str, Any] = {}
+
+
+def _face_ink_em(face: str, char: str) -> float | None:
+    """字符在字面 ``face`` 中的墨迹高度（em，基线以上）；取不到返回 None。
+
+    规则对应: GEN-116（上划线压在**被覆盖字母的墨迹**上方 0.19em，见
+    `_OVERLINE_CLEARANCE_EM`）。高度必须问「这张字面的这个字形」，不能按字号或
+    em 框推算：模型里的字面有拉丁（Times 度量，x 高 0.471em、cap 0.655em）与
+    CJK（x 高 0.531em、cap 0.728em）两族，同一字母差 0.06em 以上。
+
+    取不到（fontTools 未安装 / 字体非 TrueType / 字形缺失 / 字面未注册）返回
+    None——调用方按 `_OVERLINE_FALLBACK_INK_EM` 兜底，不猜。
+    """
+    if not face or not char:
+        return None
+    key = (face, char)
+    if key in _GLYPH_INK_CACHE:
+        return _GLYPH_INK_CACHE[key]
+    ink: float | None = None
+    try:
+        from reportlab.pdfbase import pdfmetrics
+
+        font_file = _FACE_FILE_CACHE.get(face)
+        if font_file is None:
+            font_file = str(getattr(pdfmetrics.getFont(face).face, "filename", "") or "")
+            _FACE_FILE_CACHE[face] = font_file
+        font = _FONT_TOOL_CACHE.get(font_file)
+        if font is None and font_file:
+            from fontTools.ttLib import TTFont
+
+            font = TTFont(font_file, fontNumber=0, lazy=True)
+            _FONT_TOOL_CACHE[font_file] = font
+        if font is not None:
+            glyph_name = font.getBestCmap().get(ord(char))
+            if glyph_name and glyph_name in font["glyf"]:
+                glyph = font["glyf"][glyph_name]
+                ink = float(glyph.yMax) / float(font["head"].unitsPerEm)
+    except Exception:                      # 缺 fontTools / CFF 轮廓 / 字体未注册
+        ink = None
+    _GLYPH_INK_CACHE[key] = ink
+    return ink
+
+
+_OVL_TAG_RE = re.compile(r"<(/?)([A-Za-z]+)([^>]*)>")
+_OVL_FACE_ATTR_RE = re.compile(r'name\s*=\s*"([^"]*)"')
+
+
+def _overline_markup(inner: str) -> str:
+    """OVL 区间内容 → reportlab 的矢量上划线 `<u offset=… width=…>内容</u>`。
+
+    高度 = 区间内各字符在**其实际字面**里的墨迹高度取最大 + `_OVERLINE_CLEARANCE_EM`：
+    字面从区间里的标签读出——`<i>…</i>` 是拉丁机斜字族（GEN-108，
+    `_MATH_ITALIC_FACE`），`<font name=…>` 是显式字面（希腊字母换拉丁字族，
+    GEN-122），其余为段落正文（`_MATH_BODY_FACE`）。于是「希腊 η 用拉丁斜体字形」
+    与「拉丁 P 用 CJK 机斜字形」各按自己字形的墨迹定位。
+
+    宽度与偏移都写成字号倍数（`*f`）：reportlab 在**该片段的字号**上换算，不同字号
+    的表格式/注文里短横线随之缩放（源版面同为相对量）。
+    """
+    faces: list[str] = [_MATH_BODY_FACE]
+    ink = 0.0
+    position = 0
+    while position < len(inner):
+        char = inner[position]
+        if char == "<":
+            match = _OVL_TAG_RE.match(inner, position)
+            if match:
+                closing, name = bool(match.group(1)), match.group(2).lower()
+                if name == "i":
+                    if closing:
+                        if len(faces) > 1:
+                            faces.pop()
+                    else:
+                        faces.append(_MATH_ITALIC_FACE or faces[-1])
+                elif name == "font":
+                    if closing:
+                        if len(faces) > 1:
+                            faces.pop()
+                    else:
+                        named = _OVL_FACE_ATTR_RE.search(match.group(3))
+                        faces.append(named.group(1) if named else faces[-1])
+                position = match.end()
+                continue
+        ink = max(ink, _face_ink_em(faces[-1], char) or _OVERLINE_FALLBACK_INK_EM)
+        position += 1
+    offset = ink + _OVERLINE_CLEARANCE_EM
+    return (
+        f'<u offset="{offset:.3f}*f" width="{_OVERLINE_WIDTH_EM:.3f}*f">'
+        f"{inner}</u>"
+    )
+
+
+def _render_math_overline(escaped: str) -> str:
+    """把 OVL 区间哨兵换成矢量上划线（GEN-116 执行侧；`_markup` 末尾调用）。
+
+    必须在 `_wrap_greek_letters` **之后**：希腊字母那时才被包上 `<font name=…>`，
+    上划线才知道该按哪张字形的墨迹定位。未闭合区间原样输出（不猜）。
+    """
+    out: list[str] = []
+    index = 0
+    while True:
+        start = escaped.find(_MATH_OVERLINE_OPEN, index)
+        if start < 0:
+            out.append(escaped[index:])
+            return "".join(out)
+        out.append(escaped[index:start])
+        end = escaped.find(_MATH_OVERLINE_CLOSE, start + len(_MATH_OVERLINE_OPEN))
+        if end < 0:
+            out.append(escaped[start:])
+            return "".join(out)
+        out.append(_overline_markup(escaped[start + len(_MATH_OVERLINE_OPEN):end]))
+        index = end + len(_MATH_OVERLINE_CLOSE)
 
 
 # 块级公式按**显示样式**排版（GEN-109）：canonical 的 `ssir:formula` 是 LaTeX 的 display

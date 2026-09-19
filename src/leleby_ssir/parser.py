@@ -103,9 +103,20 @@ _PART_TITLE_RE = re.compile(r"^第\s*(?:\d+|[一二三四五六七八九十百�
 # GB/T 1.1 规范性引用文件固定引导语“下列文件对于本文件的应用……”：OCR 偶把“下”
 # 误读为形近字“卜”（GB_T_20001.10-2014 第 2 章，整句起点形态，安全修复）。
 _REFERENCE_GUIDE_OCR_RE = re.compile(r"^卜列文件对于本文件")
-# GFM 脚注定义行：[^1]: 文本（docs/07 §6.7；OCR 常把上标与正文粘连后于页脚残留
-# “1） 文本” 形态，回收时统一转为本语法）。
-_FOOTNOTE_DEF_RE = re.compile(r"^\[\^([0-9A-Za-z_-]+)\]:\s*(.*)$")
+# 规则对应: GEN-118（脚注标记改形）。正文引用点 `[foot:N]`；定义 = 指令对
+# `<!--ssir:foot:N-->注释文字<!--ssir:/foot-->`（写在引用段落之后；渲染端仍绘到
+# 引用所在页页脚——「其他逻辑不变」）。旧 GFM 写法 `[^N]` / `[^N]:` 已废弃：
+# 解析时按 CSM-STRUCT-008 报 issue 并提示迁移，迁移工具 tools/replay_footnote_markers.py。
+FOOTNOTE_CITE_RE = re.compile(r"\[foot:([0-9A-Za-z_-]+)\]")
+FOOTNOTE_MARKER_PREFIX = "foot:"
+_FOOTNOTE_DEF_RE = re.compile(
+    r"<!--\s*ssir:foot:([0-9A-Za-z_-]+)\s*-->(.*?)<!--\s*ssir:/foot\s*-->", re.S
+)
+_FOOTNOTE_DEF_OPEN_RE = re.compile(r"<!--\s*ssir:foot:([0-9A-Za-z_-]+)\s*-->")
+_FOOTNOTE_DEF_CLOSE = "<!--ssir:/foot-->"
+# 旧写法（GFM 脚注，2026-09-19 由 GEN-118 取代）：仅用于识别并提示迁移。
+LEGACY_FOOTNOTE_DEF_RE = re.compile(r"^\[\^([0-9A-Za-z_-]+)\]:\s*(.*)$")
+LEGACY_FOOTNOTE_CITE_RE = re.compile(r"\[\^([0-9A-Za-z_-]+)\](?!:)")
 # 定义行内容以句末标点收尾（允许后随闭引号/闭括号）＝ 该行是完整的单行定义、
 # 下一行属于其它内容；用于把“段首定义行粘连后续内容行”的合并段剥离定义
 # （防止把换行续写的长定义误拆）。
@@ -291,107 +302,12 @@ _FORMULA_NUMBER_LABEL_RE = re.compile(r"([A-Za-z]?\d+(?:\.\d+)*)\s*$")
 ANNEX_HEADING_RE = re.compile(r"^附\s*录\s*([A-Z])(?![A-Za-z])")
 
 # ---------------------------------------------------------------------------
-# 行内角标标记（角标 = 上/下标字符 + 注解区；脚注/表注标记的统一语法）
+# 表内角注/脚注标记（GEN-119，2026-09-19 用户裁定）
 # ---------------------------------------------------------------------------
-# 通用形式（docs/07 §6.7；2026-09-11 通用化，取代按角标字符逐个定义标记对的
-# 旧形式 [:^a] / [^a]…[^a/]——那种写法 a~z 就是 26 对记号）：
-#   开标记 [:sup:a] / [:sub:2]  —— script = sup（上角标）/ sub（下角标），
-#                                  char = 角标所表示的字符（1—4 字，如 a、1)、*）；
-#   闭标记 [:/sup] / [:/sub]    —— 与最近未闭合的开标记配对，本身不渲染；
-#   自闭合 [:sup:a/]            —— 空注解区 = “引用点”（角标插在此处）。
-# 开闭之间的文本是该角标的**注解区**（表注注文、图表注、脚注解释文字），按普通
-# 文本渲染。配对校验与旧形式迁移见 _repair_inline_script_tokens（CSM-STRUCT-007）。
-# 角标字符不含 [/]：否则贪婪字符组会把自闭合的 "/" 吞进字符里（[:sup:a/] 变成
-# 字符 "a/" 且误判为未闭合的开标记）。
-INLINE_SCRIPT_TOKEN_RE = re.compile(
-    r"\[:(?P<script>sup|sub):(?P<char>[^\[\]/\s]{1,4})(?P<self>/)?\]|\[:/(?P<close>sup|sub)\]"
-)
-INLINE_SCRIPT_OPEN_RE = re.compile(r"\[:(sup|sub):([^\[\]/\s]{1,4})/?\]")
-INLINE_SCRIPT_CLOSE_RE = re.compile(r"\[:/(sup|sub)\]")
-# 旧形式（2026-09-07 语法定案版）：[:^a] 引用点、[^a]…[^a/] 注文段。parser 迁移。
-# 相邻的成对角标标记（同一单元格内的表注列项）之间**自动换行**：canonical 连排
-# 不写 <br>，渲染端在上一对的闭标记与下一对的开标记之间断行（docs/07 §6.7）。
-INLINE_SCRIPT_ITEM_BREAK_RE = re.compile(r"(\[:/(?:sup|sub)\])(?=\[:(?:sup|sub):)")
-LEGACY_SCRIPT_CITE_RE = re.compile(r"\[\:\^([a-z])\]")
-LEGACY_SCRIPT_OPEN_RE = re.compile(r"\[\^([a-z])\]")
-LEGACY_SCRIPT_CLOSE_RE = re.compile(r"\[\^([a-z])\/\]")
-
-
-def _migrate_legacy_script_tokens(text: str) -> tuple[str, int]:
-    """旧形式角标标记 → 通用行内角标标记（CSM-STRUCT-007；docs/07 §6.7）。
-
-    旧（2026-09-07 语法定案版，按角标字符逐对定义）：``[:^a]`` 引用点、
-    ``[^a]注文[^a/]`` 注文段；新（通用，一种形式覆盖任意字符）：
-    ``[:sup:a/]`` 引用点、``[:sup:a]注文[:/sup]`` 注解区。语义一一对应，
-    确定性迁移；返回 (迁移后文本, 迁移条数)。
-    """
-    migrated = 0
-
-    def _close(match: "re.Match[str]") -> str:
-        nonlocal migrated
-        migrated += 1
-        return "[:/sup]"
-
-    def _open(match: "re.Match[str]") -> str:
-        nonlocal migrated
-        migrated += 1
-        return f"[:sup:{match.group(1)}]"
-
-    def _cite(match: "re.Match[str]") -> str:
-        nonlocal migrated
-        migrated += 1
-        return f"[:sup:{match.group(1)}/]"
-
-    text = LEGACY_SCRIPT_CLOSE_RE.sub(_close, text)
-    text = LEGACY_SCRIPT_OPEN_RE.sub(_open, text)
-    return LEGACY_SCRIPT_CITE_RE.sub(_cite, text), migrated
-
-
-def _normalise_script_token_pairs(text: str) -> tuple[str, int]:
-    """行内角标标记配对校验与修复（CSM-STRUCT-007；docs/07 §6.7）。
-
-    成对规则：闭标记与**最近未闭合的开标记**配对；自闭合（``[:sup:a/]``）不参与
-    配对。修复（确定性，宽容模式继续）：
-    - 未闭合的开标记 → 文本末尾补配对闭标记（注解区延伸到文本末尾）；
-    - 孤立闭标记 → 删除；
-    - 闭标记 script 与配对的开标记不符 → 按开标记的 script 改写。
-    返回 (修复后文本, 修复条数)。
-    """
-    edits: list[tuple[int, int, str]] = []
-    stack: list[tuple[str, int, int]] = []  # (script, 开标记起始, 开标记结束)
-    for match in INLINE_SCRIPT_TOKEN_RE.finditer(text):
-        if match.group("close"):
-            script = match.group("close")
-            if not stack:
-                edits.append((match.start(), match.end(), ""))  # 孤立闭标记 → 删除
-                continue
-            open_script, _start, _end = stack.pop()
-            if open_script != script:
-                edits.append((match.start(), match.end(), f"[:/{open_script}]"))
-        elif not match.group("self"):
-            stack.append((match.group("script"), match.start(), match.end()))
-    trailing = ""
-    for script, _start, _end in stack:
-        trailing += f"[:/{script}]"
-    if trailing:
-        edits.append((len(text), len(text), trailing))
-    if not edits:
-        return text, 0
-    for start, end, replacement in sorted(edits, key=lambda item: item[0], reverse=True):
-        text = text[:start] + replacement + text[end:]
-    return text, len(edits)
-
-
-def inline_script_item_breaks(text: str) -> str:
-    """表注列项之间插入换行哨兵（渲染端专用；canonical 连排不写 <br>）。
-
-    ``[:sup:a]注文a[:/sup][:sup:b]注文b[:/sup]`` → 两对之间插 ``\x00BR\x00``
-    （pdf/docx 渲染端共用的换行哨兵）。只认“闭标记紧接开标记”的相邻对，故
-    单元格里的自闭合引用点不受影响。
-    """
-    return INLINE_SCRIPT_ITEM_BREAK_RE.sub(lambda m: m.group(1) + "\x00BR\x00", str(text))
-
-
+# 旧的「行内角标标记」族 `[:sup:a]` / `[:sub:2]` / `[:/sup]` / `[:/sub]`（含更早的
+# `[:^a]`、`[^a]…[^a/]`）**不再支持**：表内角注一律写通用行内公式上角标 `$^{a}$`
+# （正体、小号、上移；多标记连写 `$^{a、c}$`），注文由表后的 `a）…` 行/表注行承担，
+# 关联逻辑不变。遇旧标记按 CSM-STRUCT-009 报 issue 并提示改写。
 def _is_bare_enumeration(enum_lines: list[str]) -> bool:
     """裸列项判定（2026-09-02，GB_3100-2026 4.2 七个定义常量型）。
 
@@ -736,7 +652,6 @@ class CSMParser:
         fatal_errors.extend(self._repair_tables(blocks, issues))
         self._repair_stray_table_images(blocks, issues)
         self._repair_table_image_layout(blocks, issues)
-        self._repair_inline_script_tokens(blocks, issues)
         self._repair_list_markers(blocks, issues)
         self._repair_clause_numbers(blocks, issues)
         self._repair_term_entry_headings(blocks, issues)
@@ -751,6 +666,7 @@ class CSMParser:
         self._repair_ocr_guide_phrase(blocks, issues)
         self._repair_reference_entry_brackets(blocks, issues)
         self._reclassify_footnote_definitions(blocks, issues)
+        self._flag_retired_script_markers(blocks, issues)
         self._demote_sentence_headed_clauses(blocks, issues)
         self._demote_index_letter_headings(blocks, issues)
         fatal_errors.extend(self._classify_body_errors(parse_errors, issues))
@@ -971,6 +887,53 @@ class CSMParser:
                 i += 1
                 continue
 
+            # 规则对应: GEN-118——脚注定义指令对
+            # `<!--ssir:foot:N-->注释文字<!--ssir:/foot-->` 直接落为 footnote 块
+            # （不走通用 directive 处理：它不是 SSIR 指令，而是脚注定义载体）。
+            # 定义允许跨行（开标记与闭标记之间可以有换行），此处向下收集到闭标记。
+            footnote_def = _FOOTNOTE_DEF_RE.search(line)
+            if footnote_def is None and _FOOTNOTE_DEF_OPEN_RE.search(line):
+                collected = [line]
+                cursor = i + 1
+                while cursor < len(lines) and _FOOTNOTE_DEF_CLOSE not in collected[-1]:
+                    collected.append(lines[cursor])
+                    cursor += 1
+                merged = "\n".join(collected)
+                footnote_def = _FOOTNOTE_DEF_RE.search(merged)
+                if footnote_def is not None:
+                    blocks.append(
+                        Block(
+                            kind="footnote",
+                            start_line=line_no(i),
+                            end_line=line_no(cursor - 1),
+                            text=f"<!--ssir:foot:{footnote_def.group(1)}-->{footnote_def.group(2).strip()}{_FOOTNOTE_DEF_CLOSE}",
+                            data={"label": footnote_def.group(1), "text": footnote_def.group(2).strip()},
+                        )
+                    )
+                    i = cursor
+                    continue
+            if footnote_def:
+                # 一行内可有**多对**定义（回环写回每条独立成行，人工编辑可能连排）。
+                cursor = 0
+                for match in _FOOTNOTE_DEF_RE.finditer(line):
+                    leading = line[cursor: match.start()].strip()
+                    if leading:
+                        blocks.append(Block(kind="paragraph", start_line=line_no(i), end_line=line_no(i), text=leading))
+                    blocks.append(
+                        Block(
+                            kind="footnote",
+                            start_line=line_no(i),
+                            end_line=line_no(i),
+                            text=line[match.start(): match.end()],
+                            data={"label": match.group(1), "text": match.group(2).strip()},
+                        )
+                    )
+                    cursor = match.end()
+                trailing = line[cursor:].strip()
+                if trailing:
+                    blocks.append(Block(kind="paragraph", start_line=line_no(i), end_line=line_no(i), text=trailing))
+                i += 1
+                continue
             directive_match = DIRECTIVE_RE.match(line)
             if directive_match:
                 name = directive_match.group(1)
@@ -2069,68 +2032,52 @@ class CSMParser:
             index += 1  # 合并一对后继续向后扫描（封面与正文首页可能各出现一对）
 
     def _reclassify_footnote_definitions(self, blocks: list[Block], issues: list[CSMIssue]) -> None:
-        """GFM 脚注定义识别与绑定（[^1]: 文本 → kind=footnote，docs/07 §6.7）。
+        """脚注定义识别与绑定（GEN-118；docs/07 §6.7）。
 
-        接受三种 canonical 摆放形态（回环写回统一用“紧随段尾”同行情，见 docs/07）：
-        1) 定义独立成行（[^1]: 文本）；
-        2) 定义紧跟其角标所在段落末尾、拼在同一行（可多条连续：
-          “…[^1]: 甲。[^2]: 乙。”），解析时从段尾剥离为独立 footnote 块；
-        3) 段首定义行与后续内容粘连成一个多行段（回收脚本曾漏插后空行，定义行
-          直接贴在下一条目/内容行上）——首行定义以句末标点收尾时剥离为 footnote
-          块、其余行保留为段落；首行无句末标点的换行续写长定义不猜。
-        仅处理段落类块，不改注/示例/表格等。识别的 label/text 写入 block.data；
-        builder 据此输出 footnote 内容并写 footnoteMarker/footnoteAnchorRef。
+        语法：正文引用点 ``[foot:N]``；定义 = 指令对
+        ``<!--ssir:foot:N-->注释文字<!--ssir:/foot-->``。接受三种 canonical 摆放形态
+        （回环写回统一用「定义独立成行、紧随引用段之后」）：
+        1) 定义独立成行；
+        2) 定义与段落同处一行（人工编辑遗留），解析时从行内剥离为独立 footnote 块
+           （可多条连续）；
+        3) 段首定义行与后续内容粘连成一个多行段——剥离定义，其余行保留为段落。
+        仅处理段落类块。识别的 label/text 写入 block.data；builder 据此输出 footnote
+        内容并写 footnoteMarker/footnoteAnchorRef。
 
-        归类完成后按 label 把每个 footnote 块**绑定**到其锚点段（正文里含
-        “[^N]” 标记的块）之后：页脚绘制以锚点落页为准，定义若停留在 canonical
-        中的原始位置（远离锚点、甚至落进后续列表条目之间），渲染会把定义画到
-        错误页页脚。锚点唯一才搬，且已是锚点后“脚注连续段”一员时不搬；无锚点
-        或多个候选（正文多处引用该标记）保守原地保留。
+        归类完成后按 label 把每个 footnote 块**绑定**到其锚点段（正文里含 ``[foot:N]``
+        的块）之后：页脚绘制以锚点落页为准，定义若留在 canonical 原始位置（远离锚点、
+        甚至落进后续列表条目之间），渲染会把定义画到错误页页脚。锚点唯一才搬，且已是
+        锚点后「脚注连续段」一员时不搬；无锚点或多个候选（正文多处引用该标记）保守原地保留。
 
-        上标脚注标记 OCR 常与正文粘连（“—2003”+上标 1) → “—20031”），回收脚本把
-        标记还原为 GFM “[^N]”、定义文本还原为 “[^N]: …”；本步负责语义归类与绑定。
+        旧 GFM 写法（``[^N]`` 引用 / ``[^N]: 定义``）已废弃（GEN-118）：不再解析为脚注，
+        遇旧写法按 CSM-STRUCT-008 报 issue 并提示迁移，迁移工具
+        ``tools/replay_footnote_markers.py``。
         """
-        segment_re = re.compile(r"\[\^([0-9A-Za-z_-]+)\]:\s*")
 
-        def _classify_paragraph(text: str, start_line: int, end_line: int, issue_line: int) -> list[Block]:
-            """归类一段文本 → [正文段(可无), *footnote]（形态 1 整行 / 形态 2 段尾剥离）。"""
+        def _classify_line(text: str, start_line: int, end_line: int, issue_line: int) -> list[Block]:
+            """归类一行文本 → [正文段(可无), *footnote]（指令对整行 / 行内剥离）。"""
             stripped = text.strip()
-            whole = _FOOTNOTE_DEF_RE.match(stripped)
-            if whole and not stripped[whole.end():].strip():
-                # 形态 1：整行定义。
-                note = Block(
-                    kind="footnote", start_line=start_line, end_line=end_line,
-                    text=stripped,
-                    data={"label": whole.group(1), "text": whole.group(2)},
-                )
-                self._issue(
-                    issues, "CSM-STRUCT-005",
-                    f"GFM footnote definition recognised ([^{whole.group(1)}]: {whole.group(2)[:24]}...).",
-                    line=issue_line, repaired=True,
-                    repair_action="Reclassified the footnote definition line as a footnote block in memory.",
-                )
-                return [note]
-            segments = list(segment_re.finditer(stripped))
-            if not segments:
+            pairs = list(_FOOTNOTE_DEF_RE.finditer(stripped))
+            if not pairs:
                 return [Block(kind="paragraph", start_line=start_line, end_line=end_line, text=text)]
-            body = stripped[: segments[0].start()].rstrip()
-            if not body:
-                # 行首即定义但整行匹配失败（换行续写长定义等）——保守原样保留。
-                return [Block(kind="paragraph", start_line=start_line, end_line=end_line, text=text)]
-            out: list[Block] = [Block(kind="paragraph", start_line=start_line, end_line=end_line, text=body)]
-            for index, seg in enumerate(segments):
-                label = seg.group(1)
-                cut = segments[index + 1].start() if index + 1 < len(segments) else len(stripped)
-                content = stripped[seg.end(): cut].strip()
+            out: list[Block] = []
+            if pairs[0].start() > 0:
+                body = stripped[: pairs[0].start()].rstrip()
+                if body:
+                    out.append(Block(kind="paragraph", start_line=start_line, end_line=end_line, text=body))
+            for pair in pairs:
+                label = pair.group(1)
+                content = pair.group(2).strip()
                 out.append(Block(
                     kind="footnote", start_line=start_line, end_line=end_line,
-                    text=f"[^{label}]: {content}", data={"label": label, "text": content},
+                    text=f"<!--ssir:foot:{label}-->{content}{_FOOTNOTE_DEF_CLOSE}",
+                    data={"label": label, "text": content},
                 ))
                 self._issue(
                     issues, "CSM-STRUCT-005",
-                    f"GFM footnote definition recognised inline after its clause ([^{label}]: {content[:24]}...).",
+                    f"Footnote definition recognised (foot:{label}: {content[:24]}...).",
                     line=issue_line, repaired=True,
-                    repair_action="Split the trailing footnote definition(s) off the paragraph into footnote block(s).",
+                    repair_action="Reclassified the footnote definition as a footnote block in memory.",
                 )
             return out
 
@@ -2140,7 +2087,7 @@ class CSMParser:
                 rebuilt.append(block)
                 continue
             text_lines = block.text.split("\n")
-            # 形态 3：段首整行定义 + 粘连内容 → 逐个剥离定义行，内容行留作段落。
+            # 形态 3：段首定义行 + 粘连内容 → 逐个剥离定义行，内容行留作段落。
             peeled: list[Block] = []
             cursor = 0
             while cursor < len(text_lines):
@@ -2148,19 +2095,18 @@ class CSMParser:
                 if not line:
                     cursor += 1
                     continue
-                whole = _FOOTNOTE_DEF_RE.match(line)
-                trailing = line[whole.end():].strip() if whole else ""
+                whole = _FOOTNOTE_DEF_RE.fullmatch(line)
                 has_rest = any(ln.strip() for ln in text_lines[cursor + 1:])
-                if whole and not trailing and has_rest and _FOOTNOTE_DEF_END_RE.search(whole.group(2).rstrip()):
+                if whole and has_rest:
                     peeled.append(Block(
                         kind="footnote", start_line=block.start_line + cursor, end_line=block.start_line + cursor,
                         text=line,
-                        data={"label": whole.group(1), "text": whole.group(2)},
+                        data={"label": whole.group(1), "text": whole.group(2).strip()},
                     ))
                     self._issue(
                         issues, "CSM-STRUCT-005",
-                        f"GFM footnote definition glued to following content recognised "
-                        f"([^{whole.group(1)}]: {whole.group(2)[:24]}...).",
+                        f"Footnote definition glued to following content recognised "
+                        f"(foot:{whole.group(1)}: {whole.group(2)[:24]}...).",
                         line=block.start_line + cursor, repaired=True,
                         repair_action="Split the leading footnote definition line off the glued paragraph into a footnote block.",
                     )
@@ -2171,14 +2117,14 @@ class CSMParser:
                 rebuilt.extend(peeled)
                 remainder = "\n".join(text_lines[cursor:]).strip()
                 if remainder:
-                    rebuilt.extend(_classify_paragraph(
+                    rebuilt.extend(_classify_line(
                         remainder, block.start_line + cursor, block.end_line, block.start_line + cursor,
                     ))
                 continue
-            rebuilt.extend(_classify_paragraph(block.text, block.start_line, block.end_line, block.start_line))
+            rebuilt.extend(_classify_line(block.text, block.start_line, block.end_line, block.start_line))
         blocks[:] = rebuilt
 
-        # 绑定：把每个 footnote 块移到其锚点段（唯一含 “[^N]” 标记的非脚注块）之后。
+        # 绑定：把每个 footnote 块移到其锚点段（唯一含 “[foot:N]” 标记的非脚注块）之后。
         seen: set[tuple[str, int]] = set()
         while True:
             pick: tuple[int, tuple[str, int]] | None = None
@@ -2197,7 +2143,8 @@ class CSMParser:
             label = key[0]
             candidates = [
                 i for i, block in enumerate(blocks)
-                if i != f_index and block.kind != "footnote" and f"[^{label}]" in block.text
+                if i != f_index and block.kind != "footnote"
+                and any(m.group(1) == label for m in FOOTNOTE_CITE_RE.finditer(block.text))
             ]
             if len(candidates) != 1:
                 continue  # 无锚点 / 正文多处引用该标记 → 保守不动
@@ -2218,6 +2165,68 @@ class CSMParser:
                 line=note.start_line, repaired=True,
                 repair_action="Moved the footnote definition block directly after the block containing its anchor marker so page-bottom attribution lands on the anchor page.",
             )
+
+        # 定义块（解析阶段由指令对直接落块）统一报 CSM-STRUCT-005，便于人工核查。
+        for block in blocks:
+            if block.kind == "footnote" and str(block.text).startswith("<!--ssir:foot:"):
+                label = str(block.data.get("label", ""))
+                content = str(block.data.get("text", ""))
+                CSMParser._issue(
+                    issues, "CSM-STRUCT-005",
+                    f"Footnote definition recognised (foot:{label}: {content[:24]}...).",
+                    line=block.start_line, repaired=True,
+                    repair_action="Reclassified the footnote definition as a footnote block in memory.",
+                )
+
+        # 旧 GFM 写法（GEN-118）：不解析为脚注，报 issue 并提示迁移。
+        for block in blocks:
+            texts = [block.text]
+            if block.kind == "list":
+                texts = [str(item.get("text", "")) for item in block.data.get("items", [])]
+            elif block.kind == "table":
+                texts = [str(cell) for row in block.data.get("rows", []) for cell in row]
+            for text in texts:
+                legacy = (
+                    LEGACY_FOOTNOTE_DEF_RE.match(text.strip())
+                    or LEGACY_FOOTNOTE_CITE_RE.search(text)
+                )
+                if not legacy:
+                    continue
+                label = legacy.group(1)
+                self._issue(
+                    issues, "CSM-STRUCT-008",
+                    f"旧式 GFM 脚注标记 [{label}] 已废弃（GEN-118）：请改用引用点 [foot:{label}]"
+                    f"与定义对 <!--ssir:foot:{label}-->注释文字<!--ssir:/foot-->"
+                    f"（迁移工具 tools/replay_footnote_markers.py）。",
+                    line=block.start_line,
+                )
+                break
+
+    @staticmethod
+    def _flag_retired_script_markers(blocks: list[Block], issues: list[CSMIssue]) -> None:
+        """退役标记告警（GEN-119）：`[:sup:a]` / `[:sub:2]` / `[:/sup]` / `[:/sub]`
+        及其更早形态 `[:^a]`、`[^a]…[^a/]` 不再支持，按 CSM-STRUCT-009 报 issue 并
+        提示改用通用行内公式上角标 `$^{a}$`（表内角注），注文仍由表后的 `a）…` 行承担。
+        """
+        retired = re.compile(r"\[:(?:sup|sub):[^\[\]/\s]{1,4}/?\]|\[:/(?:sup|sub)\]|\[:\^[a-z]\]|\[\^[a-z](?:/)?\]")
+        for block in blocks:
+            texts = [block.text]
+            if block.kind == "list":
+                texts = [str(item.get("text", "")) for item in block.data.get("items", [])]
+            elif block.kind == "table":
+                texts = [str(cell) for row in block.data.get("rows", []) for cell in row]
+            for text in texts:
+                found = retired.search(text)
+                if not found:
+                    continue
+                CSMParser._issue(
+                    issues, "CSM-STRUCT-009",
+                    f"旧式行内角标标记 {found.group(0)} 已退役（GEN-119）：请改用通用行内公式"
+                    f"上角标 $^{{a}}$（表内角注；注文由表后的 a）… 行承担）。",
+                    line=block.start_line,
+                )
+                break
+
 
     def _repair_reference_entry_brackets(self, blocks: list[Block], issues: list[CSMIssue]) -> None:
         """参考文献条目方括号形态归一（CSM-OCR-013）。
@@ -2918,66 +2927,6 @@ class CSMParser:
             )
 
     @classmethod
-    def _repair_inline_script_tokens(cls, blocks: list[Block], issues: list[CSMIssue]) -> None:
-        """行内角标标记：旧形式迁移 + 配对校验（CSM-STRUCT-007；docs/07 §6.7）。
-
-        通用形式 = 开 ``[:sup:a]``/``[:sub:2]`` + 闭 ``[:/sup]``/``[:/sub]``
-        （成对；闭标记与最近未闭合的开标记配对、不渲染），或自闭合
-        ``[:sup:a/]``（引用点＝空注解区）。注解区文本（表注注文、图表注、脚注
-        解释文字）按普通文本渲染，与角标字符分离。
-
-        本修复做两件事（都确定性、幂等）：
-        - 旧形式迁移：``[:^a]`` → ``[:sup:a/]``、``[^a]X[^a/]`` → ``[:sup:a]X[:/sup]``；
-        - 配对校验：未闭合开标记 → 文本末尾补配对闭标记；孤立闭标记 → 删除；
-          闭标记 script 与开标记不符 → 按开标记改写。
-        作用范围：正文段落/注/示例/警示/引用/脚注、列项条目、表格单元格文本
-        （未知内容按 GEN-052 原样保留，不动）。
-        """
-        for block in blocks:
-            if block.kind in {"paragraph", "note", "example", "warning", "quote", "footnote"}:
-                fixed = cls._script_token_text(block.text, block.start_line, issues)
-                if fixed != block.text:
-                    block.text = fixed
-            elif block.kind == "list":
-                for item in block.data.get("items", []):
-                    original = str(item.get("text", ""))
-                    fixed = cls._script_token_text(original, block.start_line, issues)
-                    if fixed != original:
-                        item["text"] = fixed
-            elif block.kind == "table":
-                for row in block.data.get("rows", []):
-                    for index, cell in enumerate(row):
-                        fixed = cls._script_token_text(str(cell), block.start_line, issues)
-                        if fixed != str(cell):
-                            row[index] = fixed
-
-    @classmethod
-    def _script_token_text(cls, text: str, line: int | None, issues: list[CSMIssue]) -> str:
-        """单个文本片段的角标标记迁移 + 配对修复（返回修复后文本）。"""
-        fixed, migrated = _migrate_legacy_script_tokens(str(text))
-        if migrated:
-            cls._issue(
-                issues,
-                "CSM-STRUCT-007",
-                f"旧式角标标记迁移为通用形式（{migrated} 处）：[:^x] → [:sup:x/]、"
-                f"[^x]…[^x/] → [:sup:x]…[:/sup]。",
-                line=line,
-                repaired=True,
-                repair_action="Migrated the legacy per-character note tokens to the generic inline script tokens.",
-            )
-        fixed, repaired = _normalise_script_token_pairs(fixed)
-        if repaired:
-            cls._issue(
-                issues,
-                "CSM-STRUCT-007",
-                f"行内角标标记配对修复（{repaired} 处）：未闭合补闭标记 / 孤立闭标记删除 / "
-                f"script 不符按开标记改写。",
-                line=line,
-                repaired=True,
-                repair_action="Repaired unmatched inline script tokens (unclosed open, orphan close, script mismatch).",
-            )
-        return fixed
-
     @staticmethod
     def _repair_text_spacing(blocks: list[Block], issues: list[CSMIssue]) -> None:
         """Restore spacing OCR drops inside standard-document text (CSM-OCR-003/004).

@@ -45,7 +45,7 @@ def _make_pdf(directory: Path, runs: list[tuple[float | str, float, str, float]]
 class TableNoteMarkerRecoveryTests(unittest.TestCase):
     def test_trailing_superscript_marker_restored_to_header_cell(self) -> None:
         # 表头第 3 列“要素所允许的表述形式”末尾的上标 a（OCR 丢）→ 补回
-        # [:sup:a/] 引用点，与表注定义行“a黑体表示…”成对（GB_T_20001.10-2014 表1
+        # `$^{a}$` 引用点，与表注定义行“a）黑体表示…”成对（GB_T_20001.10-2014 表1
         # 复刻形态；2026-09-11 起为通用行内角标标记，不写字面字母）。
         md = _HEADER + "\n| --- | --- | --- |\n| 资料性概述要素 | 封面 | 文字 |\n" + _NOTE_ROWS + "\n"
         with tempfile.TemporaryDirectory() as directory:
@@ -64,8 +64,8 @@ class TableNoteMarkerRecoveryTests(unittest.TestCase):
             out, recovered = _recover_table_note_markers(md, pdf)
             # 1 处锚点引用点 + 1 行注文定义段包装
             self.assertEqual(recovered, 2)
-            self.assertIn("要素所允许的表述形式[:sup:a/]", out)
-            self.assertIn("| [:sup:a]黑体表示“必备要素”；正体表示“规范性要素”。[:/sup] |  |  |", out)
+            self.assertIn("要素所允许的表述形式$^{a}$", out)
+            self.assertIn("| a）黑体表示“必备要素”；正体表示“规范性要素”。 |  |  |", out)
             self.assertNotIn("| 资料性概述要素 | 封面 | 文字a |", out)
             # 幂等：再次运行不重复补。
             out2, recovered2 = _recover_table_note_markers(out, pdf)
@@ -74,7 +74,7 @@ class TableNoteMarkerRecoveryTests(unittest.TestCase):
 
     def test_literal_tail_marker_converted_to_token(self) -> None:
         # 单元格已有字面尾部字母（OCR 保留，如 GB_T_20001.5-2017 表1 “表述形式a”）
-        # 且几何确认该处是上标 → 字面字母改写为显式 [:sup:a/]（渲染端不做字形猜测）。
+        # 且几何确认该处是上标 → 字面字母改写为显式 `$^{a}$`（渲染端不做字形猜测）。
         md = "| 要素类型 | 要素的编排 | 要素所允许的表述形式a |\n| --- | --- | --- |\n| 资料性概述要素 | 封面 | 文字 |\n" + _NOTE_ROWS + "\n"
         with tempfile.TemporaryDirectory() as directory:
             pdf = _make_pdf(
@@ -88,7 +88,7 @@ class TableNoteMarkerRecoveryTests(unittest.TestCase):
             )
             out, recovered = _recover_table_note_markers(md, pdf)
             self.assertEqual(recovered, 2)  # 字面字母改写 + 注行包装
-            self.assertIn("要素所允许的表述形式[:sup:a/]", out)
+            self.assertIn("要素所允许的表述形式$^{a}$", out)
             self.assertNotIn("表述形式aa", out)
             # 幂等
             out2, recovered2 = _recover_table_note_markers(out, pdf)
@@ -115,7 +115,7 @@ class TableNoteMarkerRecoveryTests(unittest.TestCase):
         # “要素a的编排”式词中上标（2026-09-06 起支持唯一命中时补回），但本例归属
         # 不唯一：尾部有 资料性概述要素/规范性一般要素 两个单元格、词中有 表头
         # “要素类型”与“要素的编排”两处 → 双重歧义，保守不补锚点；注行定义段
-        # 仍做显式包装（[:sup:a]…[:/sup]）。
+        # 注行仍补回显式标记（`a）` 形态；GEN-119）。
         md = "| 要素类型 | 要素的编排 | 要素所允许的表述形式 |\n| --- | --- | --- |\n| 资料性概述要素 | 封面 | 文字 |\n| 规范性一般要素 | 范围 | 条文 |\n" + _NOTE_ROWS + "\n"
         with tempfile.TemporaryDirectory() as directory:
             pdf = _make_pdf(
@@ -130,13 +130,13 @@ class TableNoteMarkerRecoveryTests(unittest.TestCase):
             )
             out, recovered = _recover_table_note_markers(md, pdf)
             self.assertEqual(recovered, 1)  # 仅注行包装，锚点不猜
-            self.assertIn("| [:sup:a]黑体表示“必备要素”；正体表示“规范性要素”。[:/sup] |  |  |", out)
+            self.assertIn("| a）黑体表示“必备要素”；正体表示“规范性要素”。 |  |  |", out)
             self.assertNotIn("要素a的编排", out)
             self.assertIn("| 要素类型 | 要素的编排 | 要素所允许的表述形式 |", out)
 
     def test_midword_marker_restored_when_cell_unique(self) -> None:
         # 词中上标唯一命中（“要素a的编排”型、表内只有一处锚文本+汉字）→
-        # [:sup:a/] 引用点补到锚文本之后（GB_T_20001.10-2014 表1 表头同型）。
+        # `$^{a}$` 引用点补到锚文本之后（GB_T_20001.10-2014 表1 表头同型）。
         note_rows = "| 注：前后顺序即其在标准中呈现的位置。 |  |  |\n| a黑体表示“必备要素”。 |  |  |\n"
         md = "| 类别 | 要素的编排 | 允许的表述形式 |\n| --- | --- | --- |\n| 资料性概述 | 封面 | 文字 |\n| 规范性一般 | 范围 | 条文 |\n" + note_rows
         with tempfile.TemporaryDirectory() as directory:
@@ -152,7 +152,7 @@ class TableNoteMarkerRecoveryTests(unittest.TestCase):
             )
             out, recovered = _recover_table_note_markers(md, pdf)
             self.assertEqual(recovered, 2)  # 词中引用点 + 注行包装
-            self.assertIn("| 类别 | 要素[:sup:a/]的编排 |", out)
+            self.assertIn("| 类别 | 要素$^{a}$的编排 |", out)
             # 幂等：再跑不重复补
             out2, recovered2 = _recover_table_note_markers(out, pdf)
             self.assertEqual(recovered2, 0)
@@ -190,8 +190,8 @@ class TableNoteMarkerRecoveryTests(unittest.TestCase):
             )
             out, recovered = _recover_table_note_markers(md, pdf)
             self.assertEqual(recovered, 1)  # 仅注行包装
-            self.assertNotIn("文字[:sup:a/]", out)
-            self.assertIn("| [:sup:a]说明文字。[:/sup] |  |", out)
+            self.assertNotIn("文字$^{a}$", out)
+            self.assertIn("| a）说明文字。 |  |", out)
 
 
 class ConsecutiveNoteItemsTests(unittest.TestCase):
@@ -234,18 +234,18 @@ class ConsecutiveNoteItemsTests(unittest.TestCase):
             )
             out, _recovered = _recover_table_note_markers(md, pdf)
             self.assertIn(
-                "| [:sup:a]第12项说明。[:/sup]"
-                "[:sup:f]只有在产品标准中规定了外壳防护等级，在新产品设计定型时方进行试验。[:/sup]"
-                "[:sup:g]只有在产品标准中规定了工作期限，在新产品设计定型时方进行试验。[:/sup] |  |  |",
+                "| a）第12项说明。"
+                "f）只有在产品标准中规定了外壳防护等级，在新产品设计定型时方进行试验。"
+                "g）只有在产品标准中规定了工作期限，在新产品设计定型时方进行试验。 |  |  |",
                 out,
             )
             # 三条注各归其位：注文行里不出现空注、不出现字母错配。
-            note_row = [line for line in out.split("\n") if line.startswith("| [:sup:a]第12项说明")][0]
-            self.assertNotIn("[:sup:f/]", note_row)
-            self.assertNotIn("[:sup:g/]", note_row)
+            note_row = [line for line in out.split("\n") if line.startswith("| a）第12项说明")][0]
+            self.assertNotIn("[:", note_row)
+            self.assertIn("f）只有在产品标准中规定了外壳防护等级", note_row)
             self.assertNotIn("<br>", out)
-            self.assertIn("| 12 | 外壳防护等级试验[:sup:f/] | √ |", out)
-            self.assertIn("| 14 | 工作期限试验[:sup:g/] | √ |", out)
+            self.assertIn("| 12 | 外壳防护等级试验$^{f}$ | √ |", out)
+            self.assertIn("| 14 | 工作期限试验$^{g}$ | √ |", out)
             # 幂等：注文条数、字母归属都不再变化。
             out2, recovered2 = _recover_table_note_markers(out, pdf)
             self.assertEqual(recovered2, 0)
@@ -253,7 +253,7 @@ class ConsecutiveNoteItemsTests(unittest.TestCase):
 
     def test_mixed_missing_letters_are_filled_from_pdf_heads(self) -> None:
         # 八条连排（表20 形态）：md 只保留 a、g 两个字面字母，其余六条靠 PDF
-        # 注文头补位；输出连排不写 <br>，每条自成一对标记。
+        # 注文头补位；输出按 a）注文 形态连排（GEN-119）。
         defs = ["一条甲说明文字", "一条乙说明文字", "一条丙说明文字", "一条丁说明文字",
                 "一条戊说明文字", "一条己说明文字", "一条庚说明文字", "一条辛说明文字"]
         md = (
@@ -272,10 +272,10 @@ class ConsecutiveNoteItemsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             pdf = _make_pdf(Path(directory), runs)
             out, _recovered = _recover_table_note_markers(md, pdf)
-            cell = [line for line in out.split("\n") if line.startswith("| [:sup:a]")][0]
+            cell = [line for line in out.split("\n") if line.startswith("| a）")][0]
             for letter, head in zip("abcdefgh", defs):
-                self.assertIn(f"[:sup:{letter}]{head}。[:/sup]", cell)
-            self.assertEqual(cell.count("[:/sup]"), 8)
+                self.assertIn(f"{letter}）{head}。", cell)
+            self.assertNotIn("[:", cell)
             self.assertNotIn("<br>", cell)
             # 幂等
             out2, recovered2 = _recover_table_note_markers(out, pdf)

@@ -39,6 +39,14 @@ fonts:
   italic-file: config/rendering/fonts/NotoSerifCJKsc-Oblique.ttf
   bold-italic: NotoSansCJKsc-BoldOblique
   bold-italic-file: config/rendering/fonts/NotoSansCJKsc-BoldOblique.ttf
+  # 希腊字母字形族（GEN-122）：CJK 字族把 U+03C6 画成「圆圈 + 贯穿竖线」的全高形，
+  # 小写 φ 读起来像大写 Φ；源版面（GB_T_5171.1-2014 表18）用拉丁斜体。希腊字母改从
+  # 拉丁字族取形：greek 正体（单位 μ/Ω、算子 Δ/Σ）、greek-italic 斜体（变量位置，
+  # GBT-B12）。Liberation Serif 为 Times 度量，与源版面的拉丁字形最接近。
+  greek: LiberationSerif
+  greek-file: config/rendering/fonts/LiberationSerif-Regular.ttf
+  greek-italic: LiberationSerif-Italic
+  greek-italic-file: config/rendering/fonts/LiberationSerif-Italic.ttf
 styles:
   body: {size-pt: 10.5, leading-pt: 18, first-line-indent-em: 2, alignment: justify}
   section: {size-pt: 16, leading-pt: 22, alignment: center}

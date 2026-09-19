@@ -192,17 +192,17 @@ class _RenderState:
         prev_kind = self.last_kind
         self.last_kind = kind
         if kind == "footnote":
-            # canonical 写回：定义紧随其角标段落的段尾、拼在同一行（GB/T 版式
-            # 要求注释只出现在当页页脚，故定义与段落在文件中同处一行，渲染端
-            # 以 0 高占位锚定页底）；导入端两种形态均接受（docs/07 §6.7）。
-            m = re.match(r"^(\d+)[)）]\s*(.*)$", content.get("textContent", ""), re.S)
-            def_line = f"[^{m.group(1)}]: {m.group(2)}" if m else content.get("textContent", "")
-            if self.lines and self.lines[-1] == "" and prev_kind in ("paragraph", "footnote"):
-                self.lines.pop()
-                self.lines[-1] += def_line
-            else:
-                self.lines.append(def_line)
-            self.lines.append("")
+            # canonical 写回（GEN-118）：定义写成指令对、独立成行，紧随引用段之后；
+            # 渲染端把注文绘到引用所在页页脚（0 高占位锚定页底）。旧写法（定义拼在
+            # 段落同行、GFM 标记）已由 docs/07 §6.7 改为本形式，导入端三种摆放形态均接受。
+            text = content.get("textContent", "")
+            m = re.match(r"^(\d+)[)）]\s*(.*)$", text, re.S)
+            label = str(content.get("footnoteMarker") or "").strip() or (m.group(1) if m else "")
+            body = m.group(2) if m else text
+            if not label:
+                label = "1"
+            def_line = f"<!--ssir:foot:{label}-->{body}<!--ssir:/foot-->"
+            self.lines.extend([def_line, ""])
         elif kind in {"paragraph", "note", "example", "warning", "quote"}:
             text = content.get("textContent", "")
             if kind == "paragraph":

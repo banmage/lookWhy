@@ -5,13 +5,13 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 import re
-
-
-# GFM 脚注引用标记：[^N]（docs/07 §6.7）；用于把脚注定义与其注释的条款关联。
-_FOOTNOTE_REF_RE = re.compile(r"\[\^([0-9A-Za-z_-]+)\]")
 from typing import Any
 
-from .parser import EX_HEADER_RE, Block, CSMDocument, term_entry_pair
+from .parser import EX_HEADER_RE, FOOTNOTE_CITE_RE, Block, CSMDocument, term_entry_pair
+
+# 脚注引用标记 [foot:N]（docs/07 §6.7；GEN-118）：把脚注定义与其注释的条款关联；
+# 渲染端把它绘成上角标“N)”。定义侧的正则由 parser 统一持有。
+_FOOTNOTE_REF_RE = FOOTNOTE_CITE_RE
 
 
 def _slug(value: str) -> str:
