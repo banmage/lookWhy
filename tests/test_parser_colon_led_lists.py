@@ -56,7 +56,7 @@ class ColonLedListRepairTests(unittest.TestCase):
         items = _dash_list_after(blocks, "6.7.1.1")
         self.assertEqual(
             [it["text"] for it in items],
-            ["作为单独的章；", "融入技术要求(见6.5)中；", "成为标准的规范性附录；", "形成标准的单独部分。"],
+            ["作为单独的章；", "融入技术要求（见6.5）中；", "成为标准的规范性附录；", "形成标准的单独部分。"],
         )
         self.assertTrue(all(it["marker"] for it in items))
         # 末项不再是游离段落
@@ -93,7 +93,7 @@ class ColonLedListRepairTests(unittest.TestCase):
         intro = next(b for b in blocks if b.kind == "paragraph" and "产品分类一般包括下述内容" in b.text)
         self.assertTrue(intro.text.strip().endswith("："))
         items = _dash_list_after(blocks, "6.4.4")
-        self.assertEqual([it["text"] for it in items], ["分类原则与方法；", "划分的类别，如产品品种、型式(或型号)和规格及其系列；", "类别的识别，通常可用名称(一般由文字组成)、编码(一般由数字、字母或它们的组合而成)或标记(可由符号、字母、数字构成)进行识别。"])
+        self.assertEqual([it["text"] for it in items], ["分类原则与方法；", "划分的类别，如产品品种、型式（或型号）和规格及其系列；", "类别的识别，通常可用名称（一般由文字组成）、编码（一般由数字、字母或它们的组合而成）或标记（可由符号、字母、数字构成）进行识别。"])
         self.assertTrue(all(it["marker"] for it in items))
 
     def test_letter_family_markers_renumbered(self) -> None:
@@ -146,7 +146,7 @@ class ColonLedListRepairTests(unittest.TestCase):
         items = _dash_list_after(blocks, "根据行业和产品特点可选择下列一类或多类检验")
         self.assertEqual(
             [it["text"] for it in items],
-            ["型式检验(例行检验)、定型检验(鉴定检验)、首件检验等；", "出厂检验(常规检验、交收检验)、质量一致性检验等。"],
+            ["型式检验（例行检验）、定型检验（鉴定检验）、首件检验等；", "出厂检验（常规检验、交收检验）、质量一致性检验等。"],
         )
         self.assertTrue(all(it["marker"] for it in items))
         # 后续散文仍是独立段落

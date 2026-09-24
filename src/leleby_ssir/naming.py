@@ -104,11 +104,9 @@ REP_NORMALIZE_REPORT = "normalize-report"  # 02_canonical：纠错报告
 REP_SSIR = "ssir"                        # 03_ssir：结构化语义 JSON
 REP_SEMANTIC = "semantic"                # 03_ssir：TTL/JSON-LD 知识图谱投影（可选）
 REP_PARSE_REPORT = "parse-report"        # 03_ssir：解析报告
-REP_RENDER = "render"                    # 04_render：发布 PDF（.pdf）/中间渲染 CSM（.md）/doc_1 docx（.docx）
+REP_RENDER = "render"                    # 04_render：发布 PDF（.pdf）/ markdown 投影（.md）/ HTML 结构投影（.html）
 REP_RENDER_REPORT = "render-report"      # 04_render：渲染报告
 REP_RENDER_COMPARISON = "render-comparison"  # 04_render：原稿 vs 渲染 PDF 统计
-REP_VERIFY = "verify"                    # 05_verify：从渲染结果再抽取的 SSIR（回环输入）
-REP_ROUNDTRIP = "roundtrip"              # 05_verify：比较报告
 REP_DIFF = "diff"                        # 05_verify：详细差异（可选）
 REP_CHECKSUM = "checksum"                # 00_source：原始文件哈希
 
@@ -122,13 +120,12 @@ _REPRESENTATION_SUFFIXES = (
     ".render-comparison.json",
     ".parse-report.json",
     ".provenance.json",
-    ".roundtrip.json",
     ".checksum.sha256",
     ".semantic.jsonld",
     ".semantic.ttl",
     ".canonical.md",
+    ".render.html",
     ".render.md",
-    ".render.docx",
     ".render.pdf",
     ".ssir.json",
     ".verify.json",
@@ -160,3 +157,269 @@ def report_path(artifact: str | Path, representation: str) -> Path:
     """
     target = Path(artifact)
     return target.parent / f"{artifact_id(target.name)}.{representation}.json"
+
+
+# --- 文档元素标识（TDRS 命名规则） ----------------------------------------
+#
+# 依据：`技术文件智能审查系统（TDRS）设计说明文档v2.0.md`「附录：标准元素标识 /
+# 命名规则」（§一 标准号处理、§二 条款号引用格式、§四 附录、§五 项、§六 表图公式、
+# §八 变量 ID、§九 概念 ID、§十三 总结）。SSIR 中所有**元素标识**（结构化节点、
+# 表/图/公式、注、锚点）一律由此模块生成，不再使用 ``ssir:<文档>/…`` 旧形式。
+#
+#   {标准标识}#{条款路径}
+#     GB_T_1.1-2020#8.2.1            正文条
+#     GB_T_1.1-2020#8.2.1_a          列项 a)
+#     GB_T_1.1-2020#8.2.1_a_1        a) 下的 1)
+#     GB_T_1.1-2020#Annex_A          附录
+#     GB_T_1.1-2020#Annex_A.2.1      附录内条
+#     GB_T_1.1-2020#Table_3          表 3
+#     GB_T_1.1-2020#Figure_5         图 5
+#     GB_T_1.1-2020#Formula_3        公式 (3)
+#
+# 与 TDRS 的三处**有意偏离**（均为消除真实冲突，见 docs/16 §10.3）：
+#   ① 附录内的表/图/公式写 ``#Table_A.1`` / ``#Figure_E.1`` / ``#Formula_A.1``，
+#      不写 TDRS §六 的 ``#Annex_B.1``——同一附录下「A.1 条」与「表 A.1」否则会撞成
+#      同一标识（GB/T 1.1 语料里二者同号极常见）；
+#   ② 无编号的内容元素（段、注、示例、列项以外的块）追加 ``/<kind>-<序号>`` 段，
+#      因为 TDRS 只规定了编号元素与条款路径，未覆盖这些元素；
+#   ③ 无字母/数字 marker 的列表项（破折号、间隔号）用条款内运行序号 ``Item<序号>``
+#      （TDRS §五 只给 ``a``/``b`` 形态的字母项，marker 本身无法作后缀）。
+
+# 标准号转义（TDRS §一 / §十三）：/ 空格 : → _，一字线 → 半字线，连字符保留。
+def escape_standard_number(text: str) -> str:
+    """标准号原文 → 系统标识（TDRS §一转义规则）。
+
+    Examples::
+
+        GB/T 1.1—2020        -> GB_T_1.1-2020
+        GB 3100—2026         -> GB_3100-2026
+        GB/T 20001.10—2014   -> GB_T_20001.10-2014
+        ISO 80000-1:2022     -> ISO_80000-1_2022
+        IEC 60027            -> IEC_60027
+    """
+    raw = str(text).strip().replace("—", "-")
+    raw = raw.replace("/", "_").replace(":", "_")
+    return re.sub(r"\s+", "_", raw)
+
+
+_IDENTIFIER_RE = re.compile(r"^(?P<standard>[^#\s]+)#(?P<path>[^#\s]+)$")
+
+# 块级元素类型 → 标识前缀（TDRS §六）
+_ELEMENT_PREFIX = {"table": "Table", "figure": "Figure", "formula": "Formula", "note": "Note",
+                   "footnote": "Foot", "unknown": "Unknown", "example": "Example",
+                   "list": "List", "paragraph": "Paragraph", "block": "Block"}
+
+
+def element_id(standard_id: str, path: str) -> str:
+    """``{标准标识}#{条款路径}``（TDRS §二基本格式）。"""
+    standard = str(standard_id).strip()
+    if not standard or "#" in standard:
+        raise ValueError(f"非法标准标识（不得含 '#' 或为空）: {standard_id!r}")
+    clause = str(path).strip().lstrip("#")
+    if not clause:
+        raise ValueError("条款路径不得为空")
+    if re.search(r"\s", clause) or "#" in clause:
+        raise ValueError(f"条款路径不得含空白或 '#': {path!r}")
+    return f"{standard}#{clause}"
+
+
+def parse_element_id(identifier: str) -> tuple[str, str]:
+    """元素标识 → ``(标准标识, 条款路径)``；不符合格式时抛 ``ValueError``。"""
+    match = _IDENTIFIER_RE.match(str(identifier).strip())
+    if not match:
+        raise ValueError(f"非法元素标识: {identifier!r}")
+    return match.group("standard"), match.group("path")
+
+
+def _clean_tokens(values) -> list[str]:
+    tokens: list[str] = []
+    for value in values:
+        text = str(value).strip()
+        if not text:
+            continue
+        if text.endswith(")") or text.endswith("）"):
+            text = text[:-1]
+        text = text.strip().rstrip(".").replace("—", "-")
+        if text:
+            tokens.append(text)
+    return tokens
+
+
+def clause_path(number: str, items=()) -> str:
+    """正文条款路径：``8.2.1`` / ``8.2.1_a`` / ``8.2.1_a_1``（TDRS §二、§五）。"""
+    number = str(number).strip().replace(" ", "")
+    if not number:
+        raise ValueError("条款编号不得为空")
+    tokens = _clean_tokens(items)
+    return "_".join([number, *tokens]) if tokens else number
+
+
+def annex_path(letter: str, number: str = "", items=()) -> str:
+    """附录条款路径：``Annex_A`` / ``Annex_A.2.1`` / ``Annex_A.2.1_a``（TDRS §四、§五）。
+
+    ``number`` 允许写成 ``A.2.1``（源文件写法）或 ``2.1``（附录内相对编号），
+    两种写法归一为 ``Annex_A.2.1``。
+    """
+    letter = str(letter).strip()
+    for prefix in ("附录", "Annex_", "Annex"):
+        letter = letter.removeprefix(prefix).strip()
+    letter = letter.upper()
+    if not letter or not letter.isalpha():
+        raise ValueError(f"附录字母不合法: {letter!r}")
+    head = f"Annex_{letter}"
+    number = str(number).strip().replace(" ", "")
+    if number:
+        if re.fullmatch(rf"{re.escape(letter)}\..*", number, re.I):
+            number = number.split(".", 1)[1]
+        elif number.upper() == letter:
+            number = ""
+        head = f"{head}.{number}" if number else head
+    tokens = _clean_tokens(items)
+    return "_".join([head, *tokens]) if tokens else head
+
+
+def _clean_number(number: str) -> str:
+    """元素编号规范化：去空白、去尾部括号与句点（``a）``→``a``、``3)``→``3``）。
+
+    只保留 ``[A-Za-z0-9.-]``（TDRS 编号字符集 + 附录字母内的连字符）；无法规范化
+    （结果为空）时返回空串，由调用方回退到无编号分支，不生成非法标识。
+    """
+    text = str(number).strip().replace(" ", "").rstrip(")）]。.、")
+    return re.sub(r"[^A-Za-z0-9.-]", "", text)
+
+
+def numbered_element_path(kind: str, number: str) -> str:
+    """表/图/公式路径：``Table_3`` / ``Figure_5`` / ``Formula_3``（TDRS §六）。
+
+    ``number`` 带附录字母时（``A.1``）写作 ``Table_A.1``——见模块头的偏离①。
+    """
+    try:
+        prefix = _ELEMENT_PREFIX[str(kind).strip().lower()]
+    except KeyError:
+        raise ValueError(f"未知元素类型: {kind!r}") from None
+    number = _clean_number(number)
+    if not number:
+        raise ValueError(f"{kind} 编号不得为空")
+    return f"{prefix}_{number}"
+
+
+def table_element_id(standard_id: str, number: str) -> str:
+    return element_id(standard_id, numbered_element_path("table", number))
+
+
+def figure_element_id(standard_id: str, number: str) -> str:
+    return element_id(standard_id, numbered_element_path("figure", number))
+
+
+def formula_element_id(standard_id: str, number: str) -> str:
+    return element_id(standard_id, numbered_element_path("formula", number))
+
+
+def owned_element_id(owner_id: str, kind: str, label: str) -> str:
+    """属主元素下的从属元素（注/脚注/原样块）：``{owner}#Note_a``、``{owner}#Foot_1``。
+
+    属主是条款或表/图标识；``kind`` 取 §_ELEMENT_PREFIX 的键（note/footnote/unknown/…）。
+    """
+    try:
+        prefix = _ELEMENT_PREFIX[str(kind).strip().lower()]
+    except KeyError:
+        raise ValueError(f"未知元素类型: {kind!r}") from None
+    label = str(label).strip().replace(" ", "")
+    if not label:
+        raise ValueError(f"{kind} 标签不得为空")
+    standard, path = parse_element_id(owner_id)
+    return element_id(standard, f"{path}.{prefix}_{label}")
+
+
+def local_element_id(base_id: str, kind: str, index: int) -> str:
+    """无编号内容元素（内容位置槽）：``{base}#{kind}-{序号}``（偏离②，见模块头）。
+
+    用于**内容位置**（段落/列项/示例/块槽/注/脚注所在的内容元素）；表/图/公式等
+    编号元素**对象**另有其标识（``numbered_element_path``），内容槽只引用它们的标识。
+    """
+    standard, path = parse_element_id(base_id)
+    kind_key = str(kind).strip().lower()
+    if kind_key not in _ELEMENT_PREFIX:
+        raise ValueError(f"未知内容元素类型: {kind!r}")
+    return element_id(standard, f"{path}/{_ELEMENT_PREFIX[kind_key]}-{int(index):03d}")
+
+
+# --- 变量 ID / 概念 ID（TDRS §八、§九） ------------------------------------
+
+_GREEK = {
+    "alpha": "ALPHA", "beta": "BETA", "gamma": "GAMMA", "delta": "DELTA", "epsilon": "EPSILON",
+    "varepsilon": "EPSILON", "zeta": "ZETA", "eta": "ETA", "theta": "THETA", "vartheta": "THETA",
+    "iota": "IOTA", "kappa": "KAPPA", "lambda": "LAMBDA", "mu": "MU", "nu": "NU", "xi": "XI",
+    "pi": "PI", "rho": "RHO", "sigma": "SIGMA", "tau": "TAU", "upsilon": "UPSILON",
+    "phi": "PHI", "varphi": "PHI", "chi": "CHI", "psi": "PSI", "omega": "OMEGA",
+}
+_VAR_MARKS = {"overline": "OVERLINE", "bar": "OVERLINE", "underline": "UNDERLINE",
+              "vec": "VEC", "hat": "HAT", "tilde": "TILDE", "dot": "DOT", "ddot": "DDOT"}
+
+
+def _var_token(text: str) -> str:
+    """LaTeX 片段 → 变量 ID 片段（希腊字母按名、拉丁字母按字形、多字母符号原样大写）。"""
+    text = text.strip().strip("{}")
+    if not text:
+        return ""
+    if text.startswith("\\"):
+        name = text.lstrip("\\").strip()
+        if name in _GREEK:
+            return _GREEK[name]
+        return re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_").upper()
+    text = text.replace(",", " ").replace(";", " ")
+    parts = [part for part in re.split(r"[^A-Za-z0-9]+", text) if part]
+    return "_".join(part.upper() for part in parts)
+
+
+def variable_id(latex: str) -> str:
+    """数学符号 → 变量 ID（TDRS §八：``VAR_{主体}_{下标}_{上标}_{符号}``）。
+
+    Examples::
+
+        \\overline{\\eta}  -> VAR_ETA_OVERLINE
+        x_n^e            -> VAR_X_SUB_N_SUP_E
+        S_{ME,i}         -> VAR_S_SUB_ME_I
+    """
+    text = str(latex).strip().strip("$").strip()
+    if not text:
+        raise ValueError("变量 latex 不得为空")
+    marks: list[str] = []
+    for command, mark in _VAR_MARKS.items():
+        pattern = re.compile(rf"\\{command}\s*\{{([^{{}}]*)\}}")
+        while True:
+            match = pattern.search(text)
+            if not match:
+                break
+            marks.append(mark)
+            text = text[: match.start()] + match.group(1) + text[match.end():]
+    text = re.sub(r"\\left|\\right|\\mathrm|\\text|\\operatorname", "", text)
+    sub = re.search(r"_\{([^{}]*)\}|_([A-Za-z0-9])", text)
+    sup = re.search(r"\^\{([^{}]*)\}|\^([A-Za-z0-9])", text)
+    base = text[: min(x.start() for x in (sub, sup) if x) ] if (sub or sup) else text
+    tokens = [_var_token(base)]
+    if sub:
+        tokens.append("SUB")
+        tokens.append(_var_token(sub.group(1) or sub.group(2)))
+    if sup:
+        tokens.append("SUP")
+        tokens.append(_var_token(sup.group(1) or sup.group(2)))
+    tokens.extend(marks)
+    body = "_".join(token for token in tokens if token)
+    if not body:
+        raise ValueError(f"无法生成变量 ID: {latex!r}")
+    return f"VAR_{body}"
+
+
+def concept_id(name: str) -> str:
+    """概念 → 概念 ID（TDRS §九：``CONCEPT_{名称}``，名称用英文/拉丁文）。
+
+    中文概念名需随附英文名（本体阶段再补；无英文名时抛 ``ValueError``，不生成伪 ID）。
+    """
+    text = str(name).strip()
+    if not text:
+        raise ValueError("概念名不得为空")
+    token = re.sub(r"[^A-Za-z0-9]+", "_", text).strip("_").upper()
+    if not token:
+        raise ValueError(f"概念名需为英文/拉丁文才能生成概念 ID: {name!r}")
+    return f"CONCEPT_{token}"

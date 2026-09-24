@@ -17,14 +17,14 @@ MinerU 抽取稿已经存在（例如仓库根 ``rawFile/<ID>.md``：云端 Mine
       →（源 PDF 存在时）条文脚注回收（CSM-OCR-014）+ 版面印记（示例框样式/图源尺寸/并列版面）
       → parse → 03_ssir/<ID>.ssir.json
       → render（04_render/render.pdf）→ manifest.json
-      →（仅 --verify 时另起进程）tools/verify_conversion.py：回环（04_render/render.md +
-        05_verify/*.json）+ 可选 PDF 对比
+      →（仅 --verify 时另起进程）tools/verify_conversion.py：标准 markdown 投影
+        （04_render/render.md）+ 合规/质量报告（05_verify/*.json）+ 可选 PDF 对比
 
 输入形态（按后缀分派）：``<ID>`` 或 ``*.raw.md``（raw 起点）、``*.json``（MinerU
 middle.json 先翻成同形 raw）、``*.canonical.md`` 或文档根目录（**人工编辑后的权威基线**：
 跳过 normalize，只重跑 parse 之后的阶段，canonical 不被写回）。
 
-验证（回环 + PDF 对比）**不属于构建流程**：默认不跑；需要时单独运行
+验证（投影 + 合规报告 + PDF 对比）**不属于构建流程**：默认不跑；需要时单独运行
 ``tools/verify_conversion.py``，或加 ``--verify`` 让本程序按显式要求把它调起来（另起进程）。
 
 与既有工具的关系：
@@ -47,7 +47,7 @@ middle.json 先翻成同形 raw）、``*.canonical.md`` 或文档根目录（**�
   ``ssir:table`` 指令、资产路径与图题注归一、公式资产绑定、占位替代文本清空，
   GEN-004/032/033/096 + GBT-X06）——merge 阶段对每个分片用的同一套转换；
 - ``leleby_ssir.pipeline._post_parse_verify_render``：render（PDF）→ manifest 公共尾部
-  （render=GEN-070—076）；验证（回环 + PDF 对比）已独立成 ``tools/verify_conversion.py``
+  （render=GEN-070—076）；验证（投影 + 合规报告 + PDF 对比）已独立成 ``tools/verify_conversion.py``
   （verify=GEN-051/090/091），构建流程默认不做验证；
 - ``mineru_full_standard._run_from_existing_canonical``：已存在 curated canonical 时
   改为下游续跑——**绝不重跑 normalize 覆盖人工编辑的 canonical**（AGENTS.md §2）。
@@ -83,7 +83,7 @@ middle.json 先翻成同形 raw）、``*.canonical.md`` 或文档根目录（**�
     # 只看 normalize+parse，不渲染
     .venv/bin/python tools/build_ssir.py rawFile/GB_T_10401-2023.md --no-render
 
-退出码：0 成功；2 失败（normalize/parse/roundtrip/render 任一阶段失败）。
+退出码：0 成功；2 失败（normalize/parse/render 任一阶段失败）。
 """
 
 from __future__ import annotations
@@ -107,7 +107,7 @@ for _path in (str(TOOLS), str(ROOT / "src")):
         sys.path.insert(0, _path)
 
 # 复用全流程工具的阶段路径 / 元数据推导 / normalize+parse / 版面印记 / 尾部
-# roundtrip-render-manifest（同仓库内稳定私有接口，见模块 docstring）。
+# render + render.md 投影 + manifest（同仓库内稳定私有接口，见模块 docstring）。
 from leleby_ssir.mineru_html import convert_mineru_markup
 from leleby_ssir.mineru_middle import (
     MiddleJsonError,
@@ -343,6 +343,19 @@ def _build_front_matter(meta: dict[str, str], source_name: str, source_mode: str
     return "\n".join(lines)
 
 
+def _materialize_raw(front_matter_text: str, body: str) -> str:
+    """raw 文件内容 = front matter（**必须带 `---` 围栏**）+ 正文（GEN-123）。
+
+    `_split_front_matter` 的约定是「FM 正文，不含围栏」，直接拼进 raw 会让下游
+    parse/normalize 以「CSM must start with YAML front matter」拒收；这里统一补围栏，
+    对已带围栏的输入（`_build_front_matter` / merge 写出的 raw）幂等。
+    """
+    front_matter = front_matter_text.strip()
+    if not front_matter.startswith("---"):
+        front_matter = f"---\n{front_matter}\n---"
+    return f"{front_matter.rstrip()}\n\n{body.strip()}\n"
+
+
 def _rewrite_front_matter(front_matter: str, overrides: dict[str, str]) -> str:
     """既有 front matter 上重写/追加**顶层**键（显式值优先；不解析 YAML、不动其它行）。"""
     lines = front_matter.splitlines()
@@ -546,9 +559,8 @@ def _run_canonical_start(args: argparse.Namespace, canonical: Path, root: Path) 
     args.input = source_pdf or canonical
     args.input_kind = "pdf" if source_pdf is not None else ""
     args.figure_size_map = {} if source_pdf is not None else _figure_size_map_from_docroot(docroot, stem)
-    # 验证（回环 + PDF 对比）已从构建流程剥离：默认不跑，交给独立程序 tools/verify_conversion.py
+    # 验证（投影 + 合规报告 + PDF 对比）已从构建流程剥离：默认不跑，交给独立程序 tools/verify_conversion.py
     # （--verify 只是按显式要求把它调起来，另起进程）。
-    args.roundtrip = False
     args.render = not args.no_render
 
     state: dict[str, Any] = mfs._load_json(docroot / "pipeline-state.json", {})
@@ -561,8 +573,17 @@ def _run_canonical_start(args: argparse.Namespace, canonical: Path, root: Path) 
     mfs._write_json(args.state_file, state)
 
     mfs._log(f"Input canonical (human-editable baseline): {canonical.resolve()}")
+    layout_path = mfs.resolve_stage_layout_path(args)
+    if layout_path is not None:
+        mfs._log(f"Layout channel (only source-PDF reads live here): {layout_path}")
+    else:
+        mfs._log(
+            "No layout.json in this document root; layout stamps fall back to "
+            "parts/*_middle.json (side-by-side) / the recorded middle.json size map (figure sizes); "
+            "run `tools/mineru_full_standard.py --stage layout` to produce it."
+        )
     if source_pdf is not None:
-        mfs._log(f"Source PDF for geometry stamps: {source_pdf.resolve()}")
+        mfs._log(f"Source PDF kept for the fallback geometry check only: {source_pdf.resolve()}")
     elif args.figure_size_map:
         mfs._log(f"Figure source sizes available from the recorded middle.json: {len(args.figure_size_map)} image(s)")
     stages = "parse" + ("" if args.no_render else " -> render") + (" -> verify (standalone)" if args.verify else "")
@@ -585,7 +606,7 @@ def _sha256(path: Path) -> str:
 
 
 def _run_verifier(args: argparse.Namespace, docroot: Path, source_pdf: Path | None) -> int:
-    """按显式要求调起**独立验证程序**（另起进程，同一套引擎：回环 + 可选 PDF 对比）。
+    """按显式要求调起**独立验证程序**（另起进程：markdown 投影 + 合规报告 + 可选 PDF 对比）。
 
     返回值 0 等价 / 3 不等价 / 2 出错；不等价不算构建失败（与 verify_conversion.py 的口径一致）。
     """
@@ -607,7 +628,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "以已有的 raw CSM Markdown 为输入跑完后续流水线："
-            "normalize → canonical → SSIR → roundtrip → render（PDF）→ manifest。"
+            "normalize → canonical → SSIR → render（PDF）→ render.md 投影 → manifest。"
         )
     )
     parser.add_argument(
@@ -638,7 +659,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-image-download", action="store_true", help="不下载 raw 里的远程图片链接（保持原链接）")
     parser.add_argument(
         "--verify", action="store_true",
-        help="渲染完成后**另起进程**调起独立验证程序 tools/verify_conversion.py（回环验证 + 可选 PDF 对比）；"
+        help="渲染完成后**另起进程**调起独立验证程序 tools/verify_conversion.py（markdown 投影 + 合规报告 + 可选 PDF 对比）；"
              "默认不做任何验证——验证是独立程序，按需单独运行")
     parser.add_argument("--no-pdf-comparison", action="store_true",
                         help="仅在使用 --verify 时生效：跳过 PDF 版面/文本量对比")
@@ -761,7 +782,7 @@ def main() -> int:
         if downloaded:
             mfs._log(f"Downloaded {downloaded} remote image(s) into {docroot / 'assets' / 'images'}")
 
-    materialized = f"{front_matter_text.rstrip()}\n\n{body_after_images.strip()}\n"
+    materialized = _materialize_raw(front_matter_text, body_after_images)
     if paths["raw"].is_file() and paths["raw"].read_text(encoding="utf-8", errors="replace") == materialized:
         mfs._log(f"Raw Markdown already in place (unchanged): {paths['raw']}")
     else:
@@ -826,9 +847,8 @@ def main() -> int:
     stages = "parse" + ("" if args.no_render else " -> render") + (" -> verify (standalone)" if args.verify else "")
     mfs._log(f"Stages: normalize -> canonical -> {stages} -> manifest")
 
-    # 验证（回环 + PDF 对比）已从构建流程剥离：默认不跑，交给独立程序 tools/verify_conversion.py
+    # 验证（投影 + 合规报告 + PDF 对比）已从构建流程剥离：默认不跑，交给独立程序 tools/verify_conversion.py
     # （--verify 只是按显式要求把它调起来，另起进程）。
-    args.roundtrip = False
     args.render = not args.no_render
 
     # 人工编辑基线保护：已存在 canonical 时默认不重跑 normalize 覆盖它（AGENTS.md §2）。

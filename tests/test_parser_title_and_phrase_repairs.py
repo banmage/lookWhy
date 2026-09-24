@@ -194,17 +194,12 @@ class TitleAndGuidePhraseRepairTests(unittest.TestCase):
                         yield from nodes(v)
             chapter2 = next(n for n in nodes(ssir["structuralRoot"]) if n.get("number") == "2")
             self.assertEqual(content.get("footnoteAnchorRef"), chapter2["id"])
-            # csm 回环：render 输出保留 [^1]: 定义，可再解析为 footnote。
+            # 投影：定义写成 GB/T 1.1 9.12.2 的 `1) 注文` 独立行（回环已下线，投影不写指令）
             rendered = render_csm(ssir)
-            self.assertIn("<!--ssir:foot:1-->GB/T 20000.4—2003已修订，即将被批准为GB/T 20002.4。<!--ssir:/foot-->", rendered)
-            self.assertIn("GB/T 20000.4—2003[foot:1]", rendered)
-            # canonical 写回为“段尾同行”形态：定义紧随其角标段落末尾。
-            self.assertIn("<!--ssir:foot:1-->GB/T 20000.4—2003已修订，即将被批准为GB/T 20002.4。<!--ssir:/foot-->", rendered)
-            q = _P(d) / "f.render.md"
-            q.write_text(rendered, encoding="utf-8")
-            from leleby_ssir.parser import CSMParser
-            doc2 = CSMParser().read(q)
-            self.assertTrue(any(b.kind == "footnote" for b in doc2.blocks))
+            self.assertIn("1) GB/T 20000.4—2003已修订，即将被批准为GB/T 20002.4。", rendered)
+            self.assertIn("GB/T 20000.4—2003", rendered)
+            self.assertNotIn("ssir:", rendered)
+            self.assertNotIn("<!--", rendered)
 
 
     def test_inline_trailing_footnote_defs_split_off(self) -> None:

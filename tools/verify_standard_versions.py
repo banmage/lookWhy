@@ -9,7 +9,6 @@ fully processed documents under the v2.0 stage layout (naming_specification.txt)
   3. Metadata identity    — standardNumber/title per edition, no cross-contamination
   4. Version relationship — newer edition SSIR `replaces` == older edition number,
                             rendered on the PDF cover as "代替： …"
-  5. Roundtrip integrity  — identity/structure/content/semantic layers pass
 
 Usage:
   .venv/bin/python tools/verify_standard_versions.py \\
@@ -100,7 +99,6 @@ def check_document(root: Path, issues: list[str], passed: list[str]) -> dict:
         ("render", "04_render/render.pdf"),
         ("renderMd", "04_render/render.md"),
         ("verify", "05_verify/verify.json"),
-        ("roundtrip", "05_verify/roundtrip.json"),
     ]
     for key, _ in required:
         rel = pipeline.get(key, "")
@@ -145,20 +143,6 @@ def check_document(root: Path, issues: list[str], passed: list[str]) -> dict:
         result["issuer"] = common["issuer"]
     else:
         issues.append(f"{doc_id}: 封面发布机构 issuer 缺失（GBT-C01）")
-
-    # 3. Roundtrip integrity
-    roundtrip_path = root / pipeline.get("roundtrip", "")
-    if roundtrip_path.is_file():
-        rt = load_json(roundtrip_path)
-        layers = rt.get("layerStatus", {})
-        if rt.get("passed") is True:
-            passed.append(f"{doc_id}: roundtrip overall pass")
-        else:
-            issues.append(f"{doc_id}: roundtrip NOT passed ({rt.get('overallStatus')})")
-        for layer, st in layers.items():
-            if st != "pass":
-                issues.append(f"{doc_id}: roundtrip layer {layer}={st}")
-        result["roundtripLayers"] = layers
 
     # 4. Render comparison
     comp_path = root / "04_render" / f"{doc_id}.render-comparison.json"

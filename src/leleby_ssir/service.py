@@ -7,12 +7,10 @@ from pathlib import Path
 from .builder import SSIRBuilder
 from .compliance import compliance_issues, verify_compliance
 from .csm_normalizer import write_canonical
-from .csm_renderer import write_csm
 from .exporters import json_bytes, turtle_text
 from .naming import REP_PARSE_REPORT, report_path
 from .parser import CSMParser
 from .report import ConversionReport
-from .roundtrip import RoundTripReport, compare_ssir
 from .validation import validate_ssir
 
 
@@ -48,31 +46,6 @@ def normalize_csm(
     validate_ssir(ssir)
     write_canonical(document, canonical_output)
     return ssir, ConversionReport.completed(document, ssir["id"])
-
-
-def round_trip_csm(
-    path: str | Path,
-    render_md_output: str | Path,
-    strict: bool = False,
-    verify_output: str | Path | None = None,
-) -> tuple[dict, dict, RoundTripReport]:
-    """Execute CSM(canonical) -> SSIR -> CSM(render.md) -> verify and compare semantic views.
-
-    ``render_md_output`` 是 SSIR 确定性渲染回的 CSM（04_render 中间产物）；
-    ``verify_output`` 可选，用于持久化从 ``render.md`` 再解析得到的 SSIR
-    （05_verify 的 verify.json，原 SSIR2），供回环报告引用。
-    """
-    source = Path(path)
-    target = Path(render_md_output)
-    ssir = parse_csm(source, strict=strict)
-    write_csm(ssir, target)
-    verify = parse_csm(target, strict=strict)
-    if verify_output is not None:
-        verify_target = Path(verify_output)
-        verify_target.parent.mkdir(parents=True, exist_ok=True)
-        verify_target.write_bytes(json_bytes(verify))
-    report = compare_ssir(ssir, verify, str(source), str(target))
-    return ssir, verify, report
 
 
 def write_output(

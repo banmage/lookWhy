@@ -172,8 +172,48 @@ class BuildFrontMatterTests(unittest.TestCase):
             raw = Path(tmp) / "raw.md"
             raw.write_text(f"{text.rstrip()}\n\n{body.strip()}\n", encoding="utf-8")
             ssir, _report = normalize_csm(raw, Path(tmp) / "out.canonical.md")
-        self.assertEqual(ssir["id"], "ssir:GB-T-10401-2023")
+        self.assertEqual(ssir["id"], "GB_T_10401-2023")
         self.assertEqual(ssir["metadata"]["common"]["title"], "永磁式直流力矩电动机通用技术规范")
+        self.assertEqual(ssir["metadata"]["standard"]["standardNumber"], "GB/T 10401-2023")
+
+
+class RawMaterializationTests(unittest.TestCase):
+    """GEN-123：写回 raw 的 front matter 必须带 `---` 围栏（既有 front matter 的 raw 起点）。
+
+    现象：从 `rawFile/<ID>.md` 或 MinerU `middle.json`（两者都自带 front matter）起步时，
+    `_split_front_matter` 按约定返回**不含围栏**的 FM 正文，旧实现直接拼进 raw 文件，
+    下游 normalize/parse 以「CSM must start with YAML front matter」拒收（raw 起点整条断掉）。
+    """
+
+    def _fenced_raw(self) -> str:
+        body = r2s._normalize_cover(BARE_RAW)
+        meta = r2s._final_cover_meta("GB/T 10401-2023", r2s._infer_title(body, "GB/T 10401-2023"), body, {})
+        front_matter = r2s._build_front_matter(meta, "GB_T_10401-2023.md", "raw-markdown", "p.json")
+        return r2s._materialize_raw(front_matter, body)
+
+    def test_split_convention_strips_fences(self) -> None:
+        front_matter, body = r2s._split_front_matter(self._fenced_raw())
+        self.assertIsNotNone(front_matter)
+        self.assertFalse(front_matter.strip().startswith("---"), "约定：split 返回不含围栏的 FM 正文")
+        self.assertIn("中华人民共和国国家标准", body)
+
+    def test_fences_are_restored_for_the_raw_file(self) -> None:
+        front_matter, body = r2s._split_front_matter(self._fenced_raw())
+        text = r2s._materialize_raw(front_matter, body)
+        self.assertTrue(text.startswith("---\n"), "写回 raw 必须以 front matter 围栏开头")
+        self.assertIn("\n---\n", text)
+        self.assertEqual(text, self._fenced_raw(), "已带围栏的输入必须幂等")
+
+    def test_existing_front_matter_raw_is_accepted_by_the_normalizer(self) -> None:
+        """端到端小夹具：既有 front matter 的 raw → split → 写回 → normalize 接受（GEN-123）。"""
+        from leleby_ssir.service import normalize_csm
+
+        front_matter, body = r2s._split_front_matter(self._fenced_raw())
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = Path(tmp) / "GB_T_10401-2023.raw.md"
+            raw.write_text(r2s._materialize_raw(front_matter, body), encoding="utf-8")
+            ssir, _report = normalize_csm(raw, Path(tmp) / "out.canonical.md")
+        self.assertEqual(ssir["id"], "GB_T_10401-2023")
         self.assertEqual(ssir["metadata"]["standard"]["standardNumber"], "GB/T 10401-2023")
 
 

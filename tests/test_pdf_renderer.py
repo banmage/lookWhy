@@ -500,7 +500,7 @@ class VerbatimBlockRenderingTests(unittest.TestCase):
     背景（GB_3100-2026 4.1）：canonical 里「国际单位制」树写成 6 行纯文本，但
     `_markup` 的软换行规则（CSM §3.3，语料 31 个多行段落依赖它）把每行拼成一段，
     渲染稿里树被糊成一行。原样块（`ssir:unknown` + 围栏代码块）必须逐字保留；
-    docx 侧一直按行渲染（`.splitlines()`），PDF 侧此前没有。
+    渲染端此前没有按行切分的处理。
     """
 
     TREE = "国际单位制\n  ├─ SI 单位\n  │    ├─ SI 基本单位（见表 1）\n  └─ SI 单位的倍数单位和分数单位"
@@ -1350,6 +1350,32 @@ class Gb3100SuperscriptTableNoteTests(unittest.TestCase):
         self.assertFalse(_TABLE_NOTE_CELL_RE.match("规格mm"))
         self.assertTrue(_TABLE_NOTE_CELL_RE.match("注1：…"))
         self.assertTrue(_TABLE_NOTE_CELL_RE.match("注：…"))
+
+    def test_lettered_table_footnotes_split_into_per_note_parts(self) -> None:
+        # 2026-09-23（用户裁定「所有表注：每条注的首行都要空两个汉字」）：表脚注用字母
+        # 标记（a)/b）…），彼此之间同样是 <br>。旧实现只认「注N：」边界 → 整格只出一个
+        # 段落 → 只有 a) 的首行带两字缩进，b) 起全部顶格（实测 GB_T_5171.1-2014 表20：
+        # a) x0=100.6 有缩进、e) x0=82.6 顶格）。
+        cell = "a) 第7项试验对交流换向器电动机允许抽查。<br>b) 仅对单相电容电动机才需进行。<br>e) 在实际热态下进行。"
+        parts = _split_table_note_parts(cell)
+        self.assertEqual(len(parts), 3)
+        self.assertEqual(parts[0], "a) 第7项试验对交流换向器电动机允许抽查。")
+        self.assertEqual(parts[2], "e) 在实际热态下进行。")
+
+    def test_lettered_footnote_inner_break_is_kept(self) -> None:
+        # <br> 之后不是注标记 → 是该条注的**注内换行**（续行），保留在条内、不切条。
+        cell = "a) 第一条注文很长，<br>跨行的续句。<br>b) 第二条注文。"
+        parts = _split_table_note_parts(cell)
+        self.assertEqual(len(parts), 2)
+        self.assertIn("\x00BR\x00", parts[0])
+        self.assertEqual(parts[1], "b) 第二条注文。")
+
+    def test_plain_multiline_note_is_not_split_by_br(self) -> None:
+        # 反向守卫：注文内的换行（后面不接注标记）不得被当成两条注。
+        cell = "注1：第一条注的续行<br>仍然属于第一条注。"
+        parts = _split_table_note_parts(cell)
+        self.assertEqual(len(parts), 1)
+        self.assertIn("\x00BR\x00", parts[0])
 
 
 class TableColumnWidthTests(unittest.TestCase):
@@ -2806,19 +2832,26 @@ class SubFigureCaptionTests(unittest.TestCase):
     ROOT = Path(__file__).resolve().parents[1]
 
     def test_caption_text_and_style_shapes(self) -> None:
-        from leleby_ssir.pdf_renderer import _figure_caption_text
+        from leleby_ssir.pdf_renderer import _figure_caption_text, _table_caption_text
 
+        # 编号与题名之间空一个汉字（GB/T 1.1-2020 10.4.2.1）——用固定字隙哨兵（白色
+        # 「中」，推进宽 = 字号），不是 ASCII 空格（旧实现五号黑体下只有 0.30 汉字，
+        # 2026-09-24 用户报告）。
         self.assertEqual(
             _figure_caption_text({"number": "3", "caption": "输入端与波发生器凸轮连接方式"}),
-            "图3 输入端与波发生器凸轮连接方式",
+            "图3\x00GAP\x00输入端与波发生器凸轮连接方式",
         )
         # 分图题注不带「图」字（GB/T 1.1-2020 9.7.6 只给分图编号，源版面即「a） Ⅰ型」）
-        self.assertEqual(_figure_caption_text({"number": "a）", "caption": "Ⅰ型"}), "a） Ⅰ型")
-        self.assertEqual(_figure_caption_text({"number": "b)", "caption": "Ⅱ型"}), "b) Ⅱ型")
-        self.assertEqual(_figure_caption_text({"number": "E.2", "caption": "双数页格式"}), "图E.2 双数页格式")
+        self.assertEqual(_figure_caption_text({"number": "a）", "caption": "Ⅰ型"}), "a）\x00GAP\x00Ⅰ型")
+        self.assertEqual(_figure_caption_text({"number": "b)", "caption": "Ⅱ型"}), "b)\x00GAP\x00Ⅱ型")
+        self.assertEqual(_figure_caption_text({"number": "E.2", "caption": "双数页格式"}), "图E.2\x00GAP\x00双数页格式")
         self.assertEqual(_figure_caption_text({"number": "", "caption": ""}), "")
         # 编号与题名缺一：按 GBT-B08 有编号就出题注行
         self.assertEqual(_figure_caption_text({"number": "7", "caption": ""}), "图7")
+        # 表题注与续表题注共用同一判决（GB/T 1.1-2020 9.8.3）
+        self.assertEqual(_table_caption_text({"number": "11", "caption": "检验项目和顺序"}), "表11\x00GAP\x00检验项目和顺序")
+        self.assertEqual(_table_caption_text({"number": "11", "caption": ""}), "表11")
+        self.assertEqual(_table_caption_text({"number": "", "caption": ""}), "")
 
     def test_sub_captions_render_under_their_images(self) -> None:
         try:
@@ -2885,27 +2918,48 @@ class SubFigureCaptionTests(unittest.TestCase):
         by_text = {}
         for text, name, size, bbox, page_number in spans:
             by_text.setdefault(text, (name, size, bbox, page_number))
-        # ① 四个题注都在（修复前并列组内的图题注一条都不渲染）
-        for text in ("a） Ⅰ型", "b) Ⅱ型"):
-            self.assertIn(text, by_text, by_text)
-            name, size, _, _ = by_text[text]
+
+        def caption_parts(page_number: int, label: str, title: str) -> tuple:
+            """题注按「编号 + 一个字汉字字隙（白色「中」）+ 题名」拆成三个 span。
+
+            GB/T 1.1-2020 10.4.2.1：图编号和表编号之后均应空一个汉字的间隙接排图题和
+            表题——字隙绘成白色「中」（固定字隙哨兵 `\\x00GAP\\x00`），推进宽 = 字号。
+            """
+            page_spans = [item for item in spans if item[4] == page_number]
+            index = next(
+                (i for i, item in enumerate(page_spans) if item[0] == label and item[4] == page_number),
+                None,
+            )
+            self.assertIsNotNone(index, (label, page_number, by_text))
+            gap_span, title_span = page_spans[index + 1], page_spans[index + 2]
+            self.assertEqual(gap_span[0], "中", (label, gap_span))
+            self.assertEqual(title_span[0], title, (label, title_span))
+            # 字隙宽度 = 字号（一个汉字）；编号与题名之间不留 ASCII 空格
+            self.assertAlmostEqual(gap_span[3][2] - gap_span[3][0], gap_span[2], delta=0.15)
+            self.assertAlmostEqual(title_span[3][0] - gap_span[3][2], 0.0, delta=0.15)
+            return gap_span, title_span
+
+        # ① 四个题注都在（修复前并列组内的图题注一条都不渲染），编号与题名之间一个字汉字
+        for label, title, page_number in (("a）", "Ⅰ型", 1), ("b)", "Ⅱ型", 1)):
+            _, title_span = caption_parts(page_number, label, title)
+            name, size = title_span[1], title_span[2]
             # ② 分图编号/分图题小五号黑体（GBT-B06、附录F 序号38/39）
-            self.assertTrue(name.startswith("WenQuanYiZenHei"), (text, name))
-            self.assertEqual(size, 9.0, (text, size))
-        # ③ 不通栏的图题注仍是「图N 题名」、五号黑体
-        self.assertIn("图5 甲型结构", by_text, by_text)
-        normal_name, normal_size, _, _ = by_text["图5 甲型结构"]
-        self.assertTrue(normal_name.startswith("WenQuanYiZenHei"), normal_name)
-        self.assertEqual(normal_size, 10.5, normal_size)
+            self.assertTrue(name.startswith("WenQuanYiZenHei"), (label, name))
+            self.assertEqual(size, 9.0, (label, size))
+        # ③ 不通栏的图题注仍是「图N＋1 汉字＋题名」、五号黑体
+        _, title_span = caption_parts(2, "图5", "甲型结构")
+        self.assertTrue(title_span[1].startswith("WenQuanYiZenHei"), title_span)
+        self.assertEqual(title_span[2], 10.5, title_span)
         # ④ 分图题注在**自己那张**图之下（同页、横向重叠、图上题注下）
-        for text in ("a） Ⅰ型", "b) Ⅱ型"):
-            _, _, caption, page_number = by_text[text]
+        for label, page_number in (("a）", 1), ("b)", 1)):
+            _, title_span = caption_parts(page_number, label, "Ⅰ型" if label == "a）" else "Ⅱ型")
+            caption = title_span[3]
             above = [
                 image for image in images.get(page_number, [])
                 if image[3] <= caption[1]
                 and min(image[2], caption[2]) - max(image[0], caption[0]) > 0
             ]
-            self.assertTrue(above, (text, caption, images.get(page_number)))
+            self.assertTrue(above, (label, caption, images.get(page_number)))
 
 
 

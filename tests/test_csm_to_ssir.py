@@ -8,8 +8,9 @@ import unittest
 
 from leleby_ssir.exporters import json_bytes, turtle_text
 from leleby_ssir.parser import Block, CSMError, CSMParser, _absorb_table_note_spill
-from leleby_ssir.roundtrip import compare_ssir
-from leleby_ssir.service import normalize_csm, parse_csm, parse_csm_with_report, round_trip_csm
+from leleby_ssir.csm_renderer import render_csm
+from tests.ssir_equivalence import assert_ssir_equivalent, semantic_view
+from leleby_ssir.service import normalize_csm, parse_csm, parse_csm_with_report
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -62,7 +63,7 @@ class CSMToSSIRTests(unittest.TestCase):
                 self.assertEqual(report.overall_status, expected["status"])
                 self.assertEqual(ssir["qualityAssessments"][0]["overallStatus"], expected["status"])
 
-    def test_markdown_round_trip_preserves_all_csm_examples(self) -> None:
+    def test_markdown_projection_covers_all_csm_examples(self) -> None:
         paths = [
             *sorted((ROOT / "corpus/golden/csm").glob("*.canonical.md")),
             ROOT / "corpus/golden/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md",
@@ -71,26 +72,15 @@ class CSMToSSIRTests(unittest.TestCase):
             for path in paths:
                 with self.subTest(path=path.name):
                     render_md = Path(directory) / f"{path.stem}.render.md"
-                    ssir, verify, report = round_trip_csm(path, render_md)
-                    self.assertTrue(render_md.exists())
-                    self.assertTrue(report.passed, report.to_dict())
-                    self.assertEqual(ssir["metadata"]["common"], verify["metadata"]["common"])
-
-    def test_comparator_reports_critical_normative_and_table_changes(self) -> None:
-        ssir = parse_csm(ROOT / "corpus/golden/csm/Q_HKT_16016-2026.canonical.md")
-        verify = deepcopy(ssir)
-        verify["tables"][0]["rows"][1]["cells"][0]["text"] = "999"
-        content = next(
-            element
-            for node in self._nodes(verify["structuralRoot"])
-            for element in node.get("contentElements", [])
-            if element.get("textContent") and "应符合" in element["textContent"]
-        )
-        content["textContent"] = content["textContent"].replace("应符合", "宜符合", 1)
-        report = compare_ssir(ssir, verify)
-        self.assertFalse(report.passed)
-        self.assertIn("C1-normativeWording", report.critical_information_loss)
-        self.assertIn("C8-tableCellContent", report.critical_information_loss)
+                    ssir = parse_csm(path)
+                    render_md.write_text(render_csm(ssir), encoding="utf-8")
+                    text = render_md.read_text(encoding="utf-8")
+                    self.assertTrue(text.strip(), "投影为空")
+                    # 投影是标准 markdown 等价物：零 ssir 指令、零 HTML 注释、无 front matter
+                    self.assertNotIn("ssir:", text)
+                    self.assertNotIn("<!--", text)
+                    self.assertFalse(text.startswith("---"))
+                    self.assertIn(str(ssir["metadata"]["common"].get("title") or ""), text)
 
     def test_template_formula_and_turtle_export(self) -> None:
         ssir = parse_csm(ROOT / "corpus/golden/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md")
@@ -100,19 +90,17 @@ class CSMToSSIRTests(unittest.TestCase):
         self.assertEqual(ssir["formulas"][0]["number"], "1")
         turtle = turtle_text(ssir)
         self.assertIn("ssir:jsonSha256", turtle)
-        self.assertIn("https://leleby.io/resource/ssir%3AQ-EXAMPLE-001-2026", turtle)
+        self.assertIn("https://leleby.io/resource/Q_EXAMPLE_001-2026", turtle)
         self.assertIn("a ssir:Table", turtle)
         self.assertIn("a ssir:Figure", turtle)
         self.assertIn("a ssir:Formula", turtle)
 
-    def test_round_trip_preserves_annex_kind_and_identifier(self) -> None:
+    def test_annex_kind_and_identifier_are_structured(self) -> None:
         path = ROOT / "corpus/golden/SSIR_CANONICAL_MARKDOWN_TEMPLATE.md"
-        with tempfile.TemporaryDirectory() as directory:
-            ssir, verify, report = round_trip_csm(path, Path(directory) / "render.md")
-        annex1 = next(node for node in self._nodes(ssir["structuralRoot"]) if node["nodeType"] == "annex")
-        annex2 = next(node for node in self._nodes(verify["structuralRoot"]) if node["nodeType"] == "annex")
-        self.assertTrue(report.passed, report.to_dict())
-        self.assertEqual((annex1["number"], annex1["title"]), (annex2["number"], annex2["title"]))
+        ssir = parse_csm(path)
+        annex = next(node for node in self._nodes(ssir["structuralRoot"]) if node["nodeType"] == "annex")
+        self.assertTrue(str(annex["number"]).strip(), "附录编号缺失")
+        self.assertIn(f"附录 {annex['number']}", render_csm(ssir))
 
     def test_back_matter_after_last_annex_not_marked_example_content(self) -> None:
         # 回归（2026-08-31，GB_T_1.1-2020 渲染 LayoutError）：扁平树（MinerU 全
@@ -589,7 +577,7 @@ source:
         self.assertNotIn(b"\r", rendered)
         self.assertIn(b'csm-version: \'1.0\'', rendered)
         self.assertTrue(any(issue.code == "CSM-ENC-001" for issue in report.issues))
-        self.assertTrue(compare_ssir(ssir0, ssir0_reparsed).passed)
+        assert_ssir_equivalent(self, ssir0, ssir0_reparsed)
 
     def test_escaped_pipe_in_table_cell_survives_normalize_idempotently(self) -> None:
         # MinerU 表格单元格内联公式的绝对值竖线先经 mineru_html 首转义（raw.md 里
@@ -633,7 +621,7 @@ source:
         self.assertIn("\\|", rendered)
         self.assertNotIn("\\\\|", rendered)
         self.assertEqual(canonical_bytes, canonical2_bytes)
-        self.assertTrue(compare_ssir(ssir, ssir2).passed)
+        assert_ssir_equivalent(self, ssir, ssir2)
 
     def test_ocr_collapsed_dash_markers_still_parse_as_lists(self) -> None:
         # OCR 常把 GB/T 1.1 的 "——" 压成单个 "-"/"—" 且丢失后方空格
@@ -671,7 +659,7 @@ source:
         ]
         markers = [item["marker"] for content in lists for item in content["listItems"]]
         self.assertEqual(markers, ["-", "—", "——", "-", "-"])
-        self.assertTrue(compare_ssir(ssir, ssir_reparsed).passed)
+        assert_ssir_equivalent(self, ssir, ssir_reparsed)
 
     def test_figure_unit_line_folds_into_figure(self) -> None:
         # 回归（2026-09-13，GB_T_1.1-2020 附录 E）：源文件里"单位为毫米"是每张图页
@@ -784,43 +772,6 @@ source:
         ]
         self.assertIn("单位为毫米", paragraphs)
 
-    def test_figure_unit_line_survives_round_trip(self) -> None:
-        # roundtrip：render.md 重放单位行（写在图指令之前）→ 再解析仍折进同一图节点。
-        csm = """---
-csm-version: "1.0"
-document-type: standard
-document-identifier: "GB/T 1.1—2020"
-standard-number: "GB/T 1.1—2020"
-title: "标准化工作导则"
-language: zh-CN
-source:
-  mode: mineru
-  original-file-name: "GB_T_1.1-2020.pdf"
----
-
-# 标准化工作导则
-
-## 附录 E（规范性） 文件格式
-
-单位为毫米
-
-![图 E.8 目次格式](assets/images/e8.jpg)
-"""
-        from leleby_ssir.csm_renderer import render_csm
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            path = root / "rt.canonical.md"
-            path.write_text(csm, encoding="utf-8")
-            ssir = parse_csm(path)
-            rendered = render_csm(ssir)
-            rendered_path = root / "render.md"
-            rendered_path.write_text(rendered, encoding="utf-8")
-            reparsed = parse_csm(rendered_path)
-        self.assertEqual(reparsed["figures"][0].get("unit"), "毫米")
-        self.assertTrue(compare_ssir(ssir, reparsed).passed)
-        self.assertIn("单位为毫米", rendered)
-
     def test_ocr_glyph_confused_markers_are_corrected_and_recorded(self) -> None:
         # OCR 把 l）误读为 1）、把 1 误读为 l/I、把 0 误读为 O；多数派上下文
         # 中的可混淆项在解析时纠正（CSM-OCR-001 repaired），canonical 随之更正。
@@ -862,7 +813,7 @@ source:
         repaired = [i for i in report.issues if i.code == "CSM-OCR-001" and i.repaired]
         self.assertEqual(len(repaired), 3)
         # 纠正后 SSIR 与 canonical 回环稳定
-        self.assertTrue(compare_ssir(ssir, ssir_reparsed).passed)
+        assert_ssir_equivalent(self, ssir, ssir_reparsed)
 
     def test_marker_parens_and_clause_spacing_normalised(self) -> None:
         # GBT-C19：列表编号括号统一全角（d) → d））；GBT-B02：正文条号后
@@ -889,8 +840,8 @@ source:
             normalize_csm(raw_path, canonical_path)
             rendered = canonical_path.read_text(encoding="utf-8")
         self.assertIn("4.6.1 电动机表面应无污迹。", rendered)
-        self.assertIn("d） 额定频率(Hz)；", rendered)
-        self.assertIn("e） 额定电压(V)。", rendered)
+        self.assertIn("d） 额定频率（Hz）；", rendered)
+        self.assertIn("e） 额定电压（V）。", rendered)
 
     def test_same_input_produces_deterministic_json(self) -> None:
         path = ROOT / "corpus/golden/csm/Q_TQDZ_004-2026.canonical.md"
@@ -1929,7 +1880,10 @@ class GluedHeadingNumberTests(unittest.TestCase):
         self.assertIn("6.4.3", self._numbers(glued))
         self.assertIn("22.1", self._numbers(glued))
 
-    def test_glued_heading_round_trip_passes(self) -> None:
+    def test_glued_heading_parses_into_the_same_structure(self) -> None:
+        # 粘连写法（`6.4分类、标记和编码`）必须与规范写法解析出**同一结构**，
+        # 且投影里恢复规范形态（编号与标题间一个空格）。
+        views = {}
         with tempfile.TemporaryDirectory() as directory:
             for name, chapter, chapter22 in (
                 ("spaced.canonical.md", "6.4 分类、标记和编码", "22 电磁兼容性"),
@@ -1937,8 +1891,11 @@ class GluedHeadingNumberTests(unittest.TestCase):
             ):
                 with self.subTest(name=name):
                     path = self._write(directory, name, chapter, chapter22)
-                    _, _, report = round_trip_csm(path, Path(directory) / f"{name}.render.md")
-                    self.assertTrue(report.passed, report.to_dict())
+                    ssir = parse_csm(path)
+                    views[name] = semantic_view(ssir)
+                    rendered = render_csm(ssir)
+                    self.assertIn("## 6.4 分类、标记和编码", rendered)
+        self.assertEqual(views["spaced.canonical.md"], views["glued.canonical.md"])
 
 
 if __name__ == "__main__":

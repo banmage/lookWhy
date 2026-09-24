@@ -8,7 +8,7 @@
 
 - parser（CSM-OCR-007）：段落形态（``3.1.1`` + ``标准化文件　standardizing
   document``）并入编号标题，与标题形态同形；术语行中英文间隙归一为 U+3000；
-- 渲染端（pdf_renderer `_term_entry_flowables` / docx_renderer `_term_entry`）：
+- 渲染端（pdf_renderer `_term_entry_flowables`）：
   术语条目按两行版式排版，编号行顶格、术语行空两个汉字。
 
 近负例：GB_3100-2026「5.2 具有专门名称的SI导出单位」这类编号条款标题里也带拉丁，
@@ -206,12 +206,14 @@ class TermEntryPdfLayoutTests(unittest.TestCase):
             self.assertAlmostEqual(x0, 85.4, delta=0.5)
 
 
-class TermEntryTocLabelTests(unittest.TestCase):
-    """目次行必须带出术语（用户可见症状，2026-09-15 GB_3100-2026）。
+class TermEntryTocExclusionTests(unittest.TestCase):
+    """术语条目不入目次（GB/T 1.1-2020 8.2.2：目次中不应列出「术语和定义」中的条目编号和术语）。
 
-    裸术语节（条目编号 2 段，如 3.13）不满足 `_term_entry_text` 的「≥3 段编号」判据，
-    目次标签只能由 builder 写入的 term 元数据合成——term/englishTerm 一丢，目次行就只剩
-    条目编号（3.8/3.13 曾如此）。本用例走完整链路（canonical → SSIR → PDF 目次文本层）。
+    2026-09-15 的 GB_3100-2026 症状是「目次出现只有条目编号、没有术语的行」——根因是
+    2 段编号的术语条目没被识别成术语条目（`_term_entry_text` 当时要求编号 ≥3 段），于是
+    绕过 `_toc_nodes` 的排除判据漏进目次；当时给了一个「标签补术语」的补丁。本轮把判据
+    与 builder 配对的 term/englishTerm 对齐（同一判据也用于渲染端加黑）后，这类条目同样
+    被排除，症状从根上消失。本用例走完整链路（canonical → SSIR → PDF 目次文本层）。
     """
 
     CANON = _HEADER.replace(
@@ -247,6 +249,10 @@ SI词头\u3000SI prefix
 ## 4 国际单位制的构成
 
 4.1 国际单位制由SI基本单位和SI导出单位组成。
+
+### 4.2 单位制的构成
+
+国际单位制由SI基本单位和SI导出单位组成。
 """
 
     @classmethod
@@ -287,73 +293,189 @@ SI词头\u3000SI prefix
         cls.document.close()
         cls.tempdir.cleanup()
 
-    def test_term_rows_carry_the_chinese_term(self) -> None:
-        for label in ("3.8\u3000国际单位制", "3.13\u3000SI词头"):
-            row = next((line for line in self.toc_text.splitlines() if line.startswith(label)), None)
-            self.assertIsNotNone(row, (label, self.toc_text))
-            # 行里必须有页码（点线连接），即不是半截标签。
-            self.assertTrue(row.rsplit(".", 1)[-1].strip().isdigit(), row)
+    def _rows(self) -> list[str]:
+        return [line.strip() for line in self.toc_text.splitlines() if line.strip()]
 
-    def test_no_term_row_is_a_bare_clause_number(self) -> None:
+    def test_standard_toc_still_lists_clauses(self) -> None:
+        # 正向对照：排除只针对术语条目，普通条（4.2）照常入目次。
+        rows = [line for line in self._rows() if line.startswith("4.2")]
+        self.assertTrue(rows, self._rows())
+        self.assertIn("单位制的构成", rows[0])
+
+    def test_term_entries_are_not_listed_in_toc(self) -> None:
+        for number in ("3.8", "3.13"):
+            hits = [line for line in self._rows() if line.startswith(number)]
+            self.assertFalse(hits, (number, self._rows()))
+
+    def test_no_toc_row_is_a_bare_clause_number(self) -> None:
         # 反例守卫：目次里不得出现「3.8」这类只有条目编号、没有术语的行。
-        rows = [line for line in self.toc_text.splitlines() if line.strip()]
-        bare = [line for line in rows if line.strip().rstrip(".·–—- ") in {"3.8", "3.13"}]
-        self.assertFalse(bare, rows)
+        bare = [line for line in self._rows() if line.rstrip(".·–—- ") in {"3.8", "3.13"}]
+        self.assertFalse(bare, self._rows())
+
+class TermEntryMixedFormParserTests(unittest.TestCase):
+    """混合形态（2026-09-23，GB_T_5171.1-2014 用户报告）：编号抽成标题 + 术语行是段落。
+
+    该标准第 3 章的术语条目是「### 3.1」（标题，text 只剩编号）后跟段落形态的术语行
+    ——既不是「标题+标题」也不是「段落+段落」，两条既有判据都不覆盖，术语行于是留在正文里：
+    SSIR 节点 title 为空（term/englishTerm 虽已配对），渲染端认不出术语条目，术语的中英文
+    标题按正文排（不加黑、不单独占行）。归一后与其它形态同形：标题 = 「3.1 术语　english」。
+    判据按编号段数分档：**「术语和定义」要素内不限段数**（该标准按 3.1/3.2 两段编号列术语），
+    要素外维持「≥3 段」。
+    """
+
+    CANON = _HEADER.replace(
+        "title: 标准化工作导则 第1部分：标准化文件的结构和起草规则",
+        "title: 单速三相异步电动机技术条件",
+    ) + """# 单速三相异步电动机技术条件
+
+## 3 术语和定义
+
+下列术语和定义适用于本文件。
+
+### 3.1
+
+无刷直流电动机\u3000brushless direct current motor
+
+没有电刷和机械换向器，用电子换向的电动机。
+
+### 3.2
+
+## 步进电动机 stepper motor
+
+## 4 检验规则
+
+### 4.1
+
+基本要求 basic requirement
+
+本文件规定的检验按本文件执行。
+"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from leleby_ssir.parser import CSMParser
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "t.canonical.md"
+            source.write_text(cls.CANON, encoding="utf-8")
+            cls.document = CSMParser().read(source)
+
+    def _headings(self) -> dict[str, str]:
+        import re
+
+        return {
+            re.match(r"^([\d.]+)", block.text.strip()).group(1): block.text.strip()
+            for block in self.document.blocks
+            if block.kind == "heading" and re.match(r"^[\d.]+ \S", block.text.strip())
+        }
+
+    def test_number_heading_and_term_paragraph_are_merged(self) -> None:
+        headings = self._headings()
+        self.assertEqual(
+            headings.get("3.1"), "3.1 无刷直流电动机\u3000brushless direct current motor"
+        )
+
+    def test_term_line_no_longer_stays_in_the_body(self) -> None:
+        texts = [block.text.strip() for block in self.document.blocks]
+        term_lines = [text for text in texts if "brushless" in text]
+        self.assertEqual(term_lines, ["3.1 无刷直流电动机\u3000brushless direct current motor"])
+        # 定义段照旧留在正文。
+        self.assertIn("没有电刷和机械换向器，用电子换向的电动机。", texts)
+
+    def test_shallow_heading_form_inside_terms_chapter_is_merged(self) -> None:
+        # 标题形态在「术语和定义」内同样不限段数（3.2 两段编号）。
+        self.assertEqual(self._headings().get("3.2"), "3.2 步进电动机\u3000stepper motor")
+
+    def test_shallow_number_outside_terms_chapter_is_left_alone(self) -> None:
+        # 要素外维持 ≥3 段判据：4.1 的「基本要求 basic requirement」不是术语条目。
+        headings = [block.text.strip() for block in self.document.blocks if block.kind == "heading"]
+        self.assertIn("4.1", headings)
+        texts = [block.text.strip() for block in self.document.blocks]
+        self.assertIn("基本要求 basic requirement", texts)
 
 
-class TermEntryDocxLayoutTests(unittest.TestCase):
-    """docx 孪生：编号行/术语行各自成段，术语行左侧空两个汉字（420 twips）。"""
+class TermEntryShallowNumberPdfTests(unittest.TestCase):
+    """渲染端：两段编号的术语条目同样「编号行顶格 + 术语行空两字、同为黑体」（2026-09-23）。
+
+    判据改用 builder 配对的 term/englishTerm（只在「术语和定义」内配对），不再要求编号 ≥3 段
+    —— GB/T 5171.1-2014 按 3.1/3.2 两段编号列术语，渲染端原先认不出，术语标题不加黑。
+    """
+
+    CANON = TermEntryMixedFormParserTests.CANON
 
     @classmethod
     def setUpClass(cls) -> None:
         try:
-            import docx  # noqa: F401
+            import pymupdf  # noqa: F401
         except ImportError:  # pragma: no cover
-            raise unittest.SkipTest("python-docx unavailable")
-        from leleby_ssir.docx_renderer import render_docx_file
+            raise unittest.SkipTest("pymupdf unavailable")
+        font = ROOT / "config" / "rendering" / "fonts" / "NotoSerifCJKsc-Regular.ttf"
+        if not font.is_file():  # pragma: no cover
+            raise unittest.SkipTest("body font asset missing")
+        import pymupdf
+
+        from leleby_ssir.builder import SSIRBuilder
+        from leleby_ssir.parser import CSMParser
+        from leleby_ssir.pdf_renderer import render_pdf_file
 
         cls.tempdir = tempfile.TemporaryDirectory()
         directory = Path(cls.tempdir.name)
-        ssir = _build_ssir(directory)
-        target = directory / "t.docx"
-        render_docx_file(str(ssir), str(target), toc_depth=None)
-        import zipfile
-
-        with zipfile.ZipFile(target) as archive:
-            cls.document_xml = archive.read("word/document.xml").decode("utf-8")
-            cls.styles_xml = archive.read("word/styles.xml").decode("utf-8")
+        source = directory / "t.canonical.md"
+        source.write_text(cls.CANON, encoding="utf-8")
+        ssir = directory / "t.ssir.json"
+        ssir.write_text(
+            json.dumps(SSIRBuilder().build(CSMParser().read(str(source))), ensure_ascii=False),
+            encoding="utf-8",
+        )
+        target = directory / "t.pdf"
+        render_pdf_file(str(ssir), str(target), toc_depth=None)
+        cls.document = pymupdf.open(str(target))
 
     @classmethod
     def tearDownClass(cls) -> None:
+        cls.document.close()
         cls.tempdir.cleanup()
 
-    def test_number_and_term_are_separate_styled_paragraphs(self) -> None:
-        import re
+    def _lines(self) -> list[tuple[str, float, float, list[tuple[str, str]]]]:
+        rows = []
+        for page in self.document:
+            for block in page.get_text("dict")["blocks"]:
+                for line in block.get("lines", []):
+                    text = "".join(span["text"] for span in line["spans"])
+                    rows.append((text, line["bbox"][0], line["bbox"][1],
+                                 [(span["font"], span["text"]) for span in line["spans"]]))
+        return rows
 
-        paragraphs = re.findall(r"<w:p[ >].*?</w:p>", self.document_xml, re.S)
-        texts = [
-            ("".join(re.findall(r"<w:t[^>]*>(.*?)</w:t>", p, re.S)), p)
-            for p in paragraphs
+    def test_shallow_term_entry_renders_number_then_hei_term_line(self) -> None:
+        rows = self._lines()
+        index = next((i for i, row in enumerate(rows) if row[0].strip() == "3.1"), None)
+        self.assertIsNotNone(index, [row[0] for row in rows][:60])
+        number_x, number_y = rows[index][1], rows[index][2]
+        term_text, term_x, term_y, spans = rows[index + 1]
+        self.assertIn("无刷直流电动机", term_text)
+        self.assertIn("brushless", term_text)
+        self.assertAlmostEqual(number_x, 85.4, delta=0.5)  # 编号行顶格
+        self.assertAlmostEqual(term_x, 106.4, delta=0.5)  # 术语行空两个汉字
+        self.assertAlmostEqual(term_y - number_y, 18.0, delta=1.5)
+        fonts = {font for font, span_text in spans if span_text.strip()}
+        self.assertTrue(fonts, spans)
+        for font in fonts:
+            self.assertTrue(font.startswith("WenQuanYiZenHei"), f"{term_text!r} 非黑体: {font}")
+
+    def test_term_line_is_not_duplicated_in_the_body(self) -> None:
+        occurrences = [
+            row for row in self._lines()
+            if "无刷直流电动机" in row[0] or "brushless direct current motor" in row[0]
         ]
-        numbered = [(t, p) for t, p in texts if t.strip() == "3.1.2"]
-        self.assertTrue(numbered, [t for t, _ in texts][:60])
-        self.assertIn("SSIRTermNumber", numbered[0][1])
+        self.assertEqual(len(occurrences), 1, [row[0] for row in occurrences])
 
-        index = texts.index(numbered[0])
-        term_text, term_paragraph = texts[index + 1]
-        self.assertEqual(term_text.strip(), "标准\u3000standard")
-        self.assertIn("SSIRTermTitle", term_paragraph)
-        self.assertIn('w:eastAsia="黑体"', term_paragraph)
-
-    def test_term_title_style_indents_two_han(self) -> None:
-        import re
-
-        style = re.search(r'<w:style [^>]*w:styleId="SSIRTermTitle".*?</w:style>', self.styles_xml, re.S)
-        self.assertIsNotNone(style, self.styles_xml[:2000])
-        indent = re.search(r'<w:ind w:left="(\d+)"', style.group(0))
-        self.assertIsNotNone(indent, style.group(0))
-        # 2 汉字 × 10.5pt = 21pt = 420 twips
-        self.assertEqual(indent.group(1), "420")
+    def test_definition_paragraph_stays_in_body_flow(self) -> None:
+        # 定义段与术语行同缩进（术语条目三段版式：编号顶格、术语行/定义/来源空两字）——
+        # 与既有产物一致（GB/T 1.1-2020 render.pdf 第 11 页：3.1.1 顶格 85.4、
+        # 术语行与定义段均 106.4 起）。
+        rows = [row for row in self._lines() if "没有电刷和机械换向器" in row[0]]
+        self.assertTrue(rows, [row[0] for row in self._lines()][:60])
+        self.assertAlmostEqual(rows[0][1], 106.4, delta=0.5)
 
 
 if __name__ == "__main__":

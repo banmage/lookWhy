@@ -17,9 +17,9 @@ lookWhy 实现 **leleby SSIR**（Structured Standard Information Representation�
 地方标准 DB、团体标准 T/、企业标准 Q/）在
 
 ```
-PDF ──MinerU OCR──▶ raw CSM Markdown ──normalize──▶ canonical CSM
-   ──parse──▶ SSIR JSON ──render──▶ 标准风格 PDF
-   ──roundtrip──▶ render.md CSM ──parse──▶ verify（验证信息等价）
+PDF ──MinerU OCR──▶ raw CSM Markdown / middle.json ──normalize──▶ canonical CSM
+   ──parse──▶ SSIR JSON ──render──▶ 标准风格 PDF + 等价 markdown（render.md 投影）
+   （验证独立：tools/verify_conversion.py 出合规/质量报告，回环验证已下线）
 ```
 
 之间转换，并按 **规则库三层合规验证**（GEN-* → GBT-* → P10-*）审计结果。
@@ -52,7 +52,7 @@ main，Python 3.12，venv 在 `.venv/`。
 - **MinerU 后端**：首次运行会下载模型（数 GB）；通过 `mineru` CLI 或本地
   FastAPI 服务（http://127.0.0.1:54017）工作。
 - **入口命令**：
-  - `ssir`（CLI：csm validate/normalize/parse/roundtrip、pdf render 等）
+  - `ssir`（CLI：csm validate/normalize/parse/project、pdf render 等）
   - `.venv/bin/python tools/mineru_full_standard.py`（PDF 全流程工具，见 §5）
   - `PYTHONPATH=src python3 -m leleby_ssir`（未安装时等价）
 
@@ -61,9 +61,9 @@ main，Python 3.12，venv 在 `.venv/`。
 | 概念 | 说明 |
 |---|---|
 | **CSM** | Canonical SSIR Markdown：YAML front-matter + 结构化 Markdown，`<!-- ssir:... -->` 指令承载表格/图/块 |
-| **Canonical** | normalize 后的权威 CSM（`<ID>.canonical.md`），roundtrip 唯一输入 |
+| **Canonical** | normalize 后的权威 CSM（`<ID>.canonical.md`），**唯一人工可编辑的权威基线** |
 | **SSIR** | 结构化 JSON（`ssir.schema.json` 校验，additionalProperties:false），`metadata.common/standard` + `structuralRoot` 树 + `tables/figures/formulas` 注册表 |
-| **Render.md** | 从 SSIR 确定性渲染回 CSM（`<ID>.render.md`），再 parse 成 verify 对比等价性 |
+| **Render.md** | SSIR 的标准 markdown 投影（`<ID>.render.md`）：零指令、零 HTML 注释，与 PDF 内容等价；不再参与任何往返 |
 | **Verify** | 从 render.md 再解析的 SSIR（`<ID>.verify.json`，原 SSIR2） |
 | **规则三层** | Layer1 GEN-*（通用抽取/渲染工程规则）→ Layer2 GBT-*（GB/T 1.1-2020 要求）→ Layer3 P10-*（GB/T 20001.10-2014 产品标准专项，仅产品标准加载） |
 | **documentBlock** | 无编号的块节点（封面标题、前 言、无编号小节标题等） |
@@ -76,12 +76,11 @@ lookWhy/
 ├── src/leleby_ssir/            # 核心包（pip install -e . 安装）
 │   ├── naming.py               # ★ 命名单一事实源：ID 推导/文件名解析/报告路径
 │   ├── cli.py                  # ssir 命令入口（argparse 子命令）
-│   ├── service.py              # 公共服务层：normalize/parse/roundtrip/validate 编排
+│   ├── service.py              # 公共服务层：normalize/parse/validate 编排
 │   ├── parser.py               # CSM → AST（Block/Directive），宽容导入、可恢复问题
 │   ├── csm_normalizer.py       # AST → canonical CSM（安全纠错、权威基线）
 │   ├── builder.py              # AST → SSIR JSON（章节树、注册表、ID 生成）
-│   ├── csm_renderer.py         # SSIR → render.md CSM（确定性渲染）
-│   ├── roundtrip.py            # SSIR/verify 四层等价比较（身份/结构/内容/语义）
+│   ├── csm_renderer.py         # SSIR → render.md（标准 markdown 投影，确定性）
 │   ├── validation.py           # jsonschema + M1 语义校验（ssir.schema.json）
 │   ├── exporters.py            # JSON 权威输出 + Turtle(RDF) 投影
 │   ├── report.py               # 转换报告（SHA-256、issue 列表、修复动作）
@@ -96,10 +95,9 @@ lookWhy/
 ├── tools/
 │   ├── mineru_full_standard.py # ★ PDF 抽取工具（分块抽取→合并；--stage all 时续 normalize→parse→render）
 │   ├── parse_standard_names.py # 批量解析标准名称 CSV → 类型/主对象/场合 TSV
-│   │   ├── verify_markdown_roundtrip.py  # 批量 roundtrip 回归（corpus/golden/csm）
 │   │   ├── reprocess_canonical.py  # canonical 半程重跑（已被 build_ssir.py 的同款入口覆盖）
 │   │   ├── build_ssir.py          # ★ 构建入口：raw(json/md) 或 canonical → canonical → SSIR → render（验证独立）
-│   │   ├── verify_conversion.py    # ★ 独立验证：canonical ↔ SSIR 往返回环（+ 可选 PDF 对比），只读产物
+│   │   ├── verify_conversion.py    # ★ 独立验证：markdown 投影 + 合规/质量报告（+ 可选 PDF 对比），只读产物
 │   │   └── extract_schema.py       # schema 工具
 ├── config/
 │   ├── rendering/GB_T_1.1-2020.yaml   # 渲染 profile：字体/字号/边距/emblems 徽标映射
@@ -136,12 +134,11 @@ lookWhy/
 ### 5.1 单元级（无 OCR）
 ```bash
 .venv/bin/python -m unittest discover                       # 全部测试
-.venv/bin/python tools/verify_markdown_roundtrip.py \
-  --examples-dir corpus/golden/csm --output-dir out/roundtrip  # 批量 roundtrip
+.venv/bin/python tools/verify_conversion.py GB_T_39567-2020        # 独立验证（投影 + 合规报告 + PDF 对比）
 # 手动单文档：
 .venv/bin/ssir csm normalize --input in.md --canonical-output out/GB_T_15034-2012.canonical.md --report out/r.json
 .venv/bin/ssir csm parse     --input out/GB_T_15034-2012.canonical.md --output out/GB_T_15034-2012.ssir.json --format json --report out/r2.json
-.venv/bin/ssir csm roundtrip --input out/GB_T_15034-2012.canonical.md --render-md-output out/GB_T_15034-2012.render.md --verify-output out/GB_T_15034-2012.verify.json
+.venv/bin/ssir csm project   --input out/GB_T_15034-2012.canonical.md --output out/GB_T_15034-2012.render.md
 .venv/bin/ssir pdf render    --input out/GB_T_15034-2012.ssir.json --output out/GB_T_15034-2012.render.pdf --toc-depth 2
 ```
 
@@ -150,7 +147,7 @@ lookWhy/
 .venv/bin/python tools/mineru_full_standard.py \
   --input 'corpus/golden/Q_003.pdf' \
   --output-dir out/mineru/Q_003 \
-  --chunk-size 18 --stage all --roundtrip --render
+  --chunk-size 18 --stage all --render
 ```
 - **可恢复**：失败页块只重跑自己；`--stage {extract,merge,finalize,all}` 分段；
   状态在 `out/mineru/<std>/pipeline-state.json`。
@@ -162,13 +159,13 @@ lookWhy/
   `.provenance.json`、`02_canonical/<ID>.canonical.md` + `.normalize-report.json`、
   `03_ssir/<ID>.ssir.json` + `.parse-report.json`、`04_render/<ID>.render.pdf` +
   `.render.md` + `.render-report.json` + `.render-comparison.json`、
-  `05_verify/<ID>.verify.json` + `.roundtrip.json`、`assets/images/`（图/公式资产）、
+  `05_verify/<ID>.verify.json`（独立验证程序写，构建流程不写）、`assets/images/`（图/公式资产）、
   `manifest.json`（文档索引）。
 - 后台跑法（长文档）：`terminal(background=true)` + 日志轮询；6 页小 PDF 约 1 分钟。
 - **半程重跑**（手工编辑 canonical 后刷新下游，**不重跑 normalize、不覆盖 canonical**）：
   `.venv/bin/python tools/reprocess_canonical.py GB_T_1.1-2020`——以
-  `02_canonical/GB_T_1.1-2020.canonical.md` 为输入跑 parse → roundtrip → render
-  （仅 PDF）→ compare → manifest；共享 src/leleby_ssir/pipeline.py 的阶段路径/版面印记/对比逻辑。
+  `02_canonical/GB_T_1.1-2020.canonical.md` 为输入跑 parse → render
+  （PDF）+ render.md 投影 → manifest；共享 src/leleby_ssir/pipeline.py 的阶段路径/版面印记逻辑。
 - **自动半程续跑**：`mineru_full_standard.py` 检测到 `02_canonical/<ID>.canonical.md`
   已存在时，同一快捷命令自动跳过 OCR/PDF 抽取、合并与 normalize，直接从 canonical
   续跑（与 reprocess_canonical.py 功能等同，canonical 不被覆盖）；
@@ -177,8 +174,8 @@ lookWhy/
 产物清单与验收清单）见 README §4『全流程详解：raw(JSON) → canonical →（可选人工修改）→ PDF』。
 - **raw 起点（跳过抽取）**：抽取稿已存在时用
   `.venv/bin/python tools/build_ssir.py <raw.md|middle.json 或 裸ID> [--source-pdf <pdf>]`——
-  从 raw 跑 normalize → canonical → SSIR → render（PDF）→ manifest（验证另用 verify_conversion.py）→
-  manifest，产物布局与全流程工具完全一致（复用同一批阶段路径/印记/尾部函数）。
+  从 raw 跑 normalize → canonical → SSIR → render（PDF）+ render.md 投影 → manifest，
+  产物布局与全流程工具完全一致（复用同一批阶段路径/印记/尾部函数）。
   裸 raw（无 YAML front matter，如 <ID>/01_extract 之外的人工稿、云端 MinerU 结果）
   会先做 MinerU 标记适配（`convert_mineru_markup`：HTML 表格 → `ssir:table` 指令、HTML 行内公式
   `<eq>…</eq>` → `$…$`、资产
@@ -199,7 +196,7 @@ lookWhy/
 
 下游构建/验证阶段（`finalize`、`_post_parse_verify_render`、`_run_from_existing_canonical`、版面印记、
 脚注/表注回收、`_stage_paths`/`_write_manifest`）自 2026-09-12 起位于 `src/leleby_ssir/pipeline.py`，
-抽取工具只保留扫描/合并（`extract`/`merge`/hybrid/docx 导入已停用）并 re-export 旧名以免破坏既有 import。
+抽取工具只保留扫描/合并（`extract`/`merge`；hybrid 与 docx 导入已永久移除）并 re-export 旧名以免破坏既有 import。
 表内列出的是抽取侧函数：
 | 函数 | 职责 |
 |---|---|
@@ -231,7 +228,7 @@ lookWhy/
 - **表格**：`_append_table` 处理 rowspan/colspan；OCR 丢失整行注 colspan 时
   单长文本单元格跨整行（GEN-080）；题注"表 N"无题名也合法（GBT-X02）。
 - **内联公式**：`_latex_to_text` 把 `$K_{...}$` 展平成可读文本，CSM/SSIR 保留
-  LaTeX 源（roundtrip 安全）。
+  LaTeX 源（原样保留，不展平存储）。
 - **TOC**：有目次时两遍构建（preflight 记页码 → 最终）。
 
 ## 7. 规则体系（改代码前必读）
@@ -261,10 +258,10 @@ lookWhy/
    auto-OCR；`corpus/golden/` 部分 PDF 文本层乱码属正常。
 5. **附录标题拆分**：MinerU 把附录头拆成 3 段（裸行/标题+裸性质行/heading），
    `_recover_annex_headings` 必须在 title 推导前合并，否则 title 误取"附录B"、
-   roundtrip 挂 C7/C4。
+   附录编号/标题识别错位。
 6. **封面 H1 降级**：`_demote_cover_headings` 只处理 part 0 且第一个 `##` 之前；
    企业/团体标准封面横幅被 MinerU 提升为 H1 时必须降级。
-7. **roundtrip 复用**：`--stage finalize` 复用缓存 parts；改 merge 逻辑后要
+7. **parts 缓存复用**：`--stage finalize` 复用缓存 parts；改 merge 逻辑后要
    重跑 merge 阶段，parts 缓存不受影响。
 8. **徽标/横幅分派互不影响**：每类标准独立映射条目，改一种类型不得影响其他。
 9. **合并单元格表格**（GBT-X02）：MinerU HTML 的 rowspan 会被旧转换器丢弃导致行左移错位。
@@ -278,15 +275,14 @@ lookWhy/
     U+00A0），该行**所有空格一起变宽**（实测数值-单位间隙 0.95–1.60 个汉字宽、
     列项 marker 后 2.69→8.67pt）。GB/T 规定的是固定汉字位/四分之一汉字，一律用
     **固定字隙**：PDF 用白字哨兵（`_markup` 的 `\x00QEM\x00`、`_fixed_gap` 的
-    `\x00WSP<pt>\x00`，按点数绘 1em 宽白字，故点数即宽度），docx 用制表符 +
-    显式制表位（Word 同样拉伸空格）。U+2009/U+202F 等窄空格 Noto Serif CJK SC
+    `\x00WSP<pt>\x00`，按点数绘 1em 宽白字，故点数即宽度）。U+2009/U+202F 等窄空格 Noto Serif CJK SC
     无字形（会成 .notdef 方框），不可用。
 12. **公式编号可能藏在 LaTeX `\tag` 里**：MinerU 把整条公式行（公式 + `…………(1)`）
     识别成一个 equation 块，引导线连编号写进 `\tag{……………………(1}`（常缺右花括号），
     所以 `formulas[].number` 为空**不代表**原文没有编号——按 CSM-OCR-017 从 `\tag`
     提取（不要手改 canonical）；抽取确实没有编号的公式保持无编号（GB/T 1.1-2020
     9.9.2 只在需要引用/提示时要求编号，**不填补、不重排**）。渲染端公式行是
-    `_FormulaLeaderLine`（PDF）/ 制表位实现（docx）：公式居中 + 两个汉字间隔 +
+    `_FormulaLeaderLine`：公式居中 + 两个汉字间隔 +
     省略号（个数按可用宽度实算）+ 编号右端对齐，公式图会先收到留得下引导线的宽度。
     「式中：」变量解释走 CSM-OCR-018 的固定形态「变量——解释；/。」，破折号两侧的
     四分之一汉字字隙由渲染层补（陷阱 11 同技术），canonical 里不写空格。
@@ -294,8 +290,8 @@ lookWhy/
     （角标 + 注解区）或自闭合 `[:sup:a/]`（引用点，空注解区），下角标用 `[:sub:2]`
     （1–4 字的角标字符，如 a、1)、†）。旧写法 `[:^a]`／`[^a]…[^a/]` 由 parser 确定性
     迁移并校验配对（CSM-STRUCT-007；docs/07 §6.7），不要再按角标字符设计新标记对。
-    **多条注在同一单元格里连排、不写 `<br>`**：渲染端（`inline_script_item_breaks`，
-    pdf/docx 同源）自动在相邻两对标记之间换行；旧 canonical 的 `<br>` 仍被接受。
+    **多条注在同一单元格里连排、不写 `<br>`**：渲染端（`inline_script_item_breaks`）
+    自动在相邻两对标记之间换行；旧 canonical 的 `<br>` 仍被接受。
     回收端（CSM-OCR-015）有两个坑：① 视觉行聚类必须按**基线**（`_cluster_visual_lines`）
     ——同一表格行里中文字体字框顶比西文低 ≈4pt，按 bbox 顶聚类会把锚文本与紧随的
     上标拆成两行（表20 电容器端电压d、无线电干扰的测试e 就是这样漏检的）；② 连排
@@ -308,7 +304,7 @@ lookWhy/
     关标记近似指令行时给 CSM-STRUCT-001 提示）。手工加框后确认 SSIR 里真的出现 `"box"`
     字段（`grep '"box"' <stem>.ssir.json`）或渲染图上真有框线，不要只看 canonical。
     **框线默认细实线**（GB/T 1.1 10.4.5；`_EXAMPLE_FRAME_WIDTH = 0.5pt`，与表网格线
-    同宽、docx `w:sz=4` 同值；源 PDF 实测示例框 0.33pt、表外框线 0.76pt）——框线不得
+    同宽；源 PDF 实测示例框 0.33pt、表外框线 0.76pt）——框线不得
     粗于表线。线宽与表线同宽后，几何回归不再能按线宽区分框/表：框 = 页面上最外的一对
     通高竖线（tests/test_pdf_renderer.py 的 RenderPdfExampleBoxGeometryTests 用这个口径）。
 15. **列项两个层次各有自己的汉字位，字隙不能按错基准算**（GB/T 1.1 10.2.2）：第一层次
@@ -317,8 +313,7 @@ lookWhy/
     `leftIndent + firstLineIndent` 起排）——不能拿 `leftIndent + firstLineIndent` 当
     「目标位」：那只在第一层次（4/2 汉字）凑巧相等，第二层次（6/2）会把文字推到第 8
     个汉字位，而白字占位符的**字号就是字隙宽**（26pt 的行框会把该行撑高、与相邻行框
-    重叠）。docx 用 `_list_indent`（缩进随层次变，制表位 = 文字列），级别判定与 PDF
-    共用 `_list_is_sub_level`。
+    重叠）。级别判定由 `_list_is_sub_level` 单一判据给出。
 16. **表格列宽有下界，超宽表横排——列宽分配不能产出「容不下一个字」的列**（GEN-103）：
     `_table_column_widths` 把版心按需求比例分完，超版心时余量按数据需求摊给各列；**没有表头兜底
     的列**（表头 colspan 没盖到，如 GB/T 5171.1-2014 表9 26 列里的第 26 列）会分到 ≈0.6pt，
@@ -424,8 +419,7 @@ lookWhy/
     ——用户看到的「只有第 3 张图显示了图下名称」其实是 MinerU 裁剪图把题注像素一起裁走了。题注形态/样式
     只能有**一个入口**：`_figure_caption_text`（通栏「图N 题名」；分图编号 `a)`/`a）` 输出「{编号} {分图题}」，
     GB/T 1.1-2020 9.7.6 的分图不提升为独立图号）与 `_figure_caption_style`（分图用 `subcaption` 9pt 黑体，
-    其余 `caption` 10.5pt）；通栏 `_append_figure` 与并列 `_append_side_by_side` 两处必须同规，
-    docx 侧尚未同步（Word 暂停支持中）。
+    其余 `caption` 10.5pt）；通栏 `_append_figure` 与并列 `_append_side_by_side` 两处必须同规。
 25. **分图题注的归属与像素都只能靠几何，且资产裁剪必须幂等（GEN-112/GEN-113；docs/12 §3.66）**：
     MinerU 逐行检出的 `image_caption` 块按阅读顺序贪心挂块，一行分图的题注会挂到**别的**图块上、
     整行图的「图N 题名」也会挂到某一张分图上——只取「块内第一条题注」就会把 a 图写成 c 图的名字、
@@ -469,7 +463,7 @@ lookWhy/
 28. **标题编号确认不依赖空格（GEN-117；docs/12 §3.70）**：canonical 里可能是编号紧贴标题文字的写法
     （`### 6.4分类、标记和编码`、`## 22电磁兼容性`），而渲染端统一写 `编号 + 空格 + 标题`。解析端的「已确认编号」
     判据若要求编号后必须是空白，缺空格的标题就不算已确认 → 其下**裸条款段**（≤40 字、无终止标点，如
-    `6.4.3 产品分类的基本要求如下：`）的级联提升失效 → 同一份文件在回环两侧解析出不同条款树
+    `6.4.3 产品分类的基本要求如下：`）的级联提升失效 → 同一份文件在两种写法下解析出不同条款树
     （structure + C7-clauseIdentifiers + C4-numericalValues）。判据必须与 `builder.py` 的标题拆分一致：
     编号后是空白**或**直接跟标题文字（汉字/字母/括号）。canonical 不需要改写——判据对齐后两种写法解析结果完全相同
     （9 份语料 A/B 逐节点相同，渲染产物不变）。改 `parser._bare_heading_candidates` /
@@ -514,6 +508,6 @@ lookWhy/
 - 改完代码跑 `./.venv/bin/python -m unittest discover`（全量单测，当前 552 例）。
 - 全流程验证用金标准 PDF：`corpus/golden/Q_003.pdf`（企业标准 6 页，快）、
   `JB_T_14425-2023.pdf`（OCR 型 21 页）、`GB_T_25141-2022.pdf`（国标 18 页）。
-- 验证清单：roundtrip passed、渲染 warnings 数量合理（企业标准 ICS/CCS 缺失
+- 验证清单：render.pdf + render.md 重生成成功、渲染 warnings 数量合理（企业标准 ICS/CCS 缺失
   占位是预期）、SSIR metadata 关键字段（title/issuer/dates/standardNumber）。
 - git：本地身份已配置 joylix <joylix@126.com>，提交前无需再设。

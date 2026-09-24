@@ -21,7 +21,6 @@ import unittest
 from leleby_ssir.builder import SSIRBuilder
 from leleby_ssir.csm_renderer import render_csm
 from leleby_ssir.parser import CSMParser
-from leleby_ssir.roundtrip import compare_ssir
 
 FRONT = """---
 csm-version: 1.0
@@ -239,8 +238,8 @@ class IndexStoryTests(unittest.TestCase):
         self.assertIn(("章", "7.2"), rows)
 
 
-class RoundTripAnnexTests(unittest.TestCase):
-    def test_nested_tree_survives_roundtrip(self) -> None:
+class AnnexHeadingProjectionTests(unittest.TestCase):
+    def test_annex_heading_levels_in_markdown_projection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "t.canonical.md"
             path.write_text(CANON, encoding="utf-8")
@@ -248,11 +247,9 @@ class RoundTripAnnexTests(unittest.TestCase):
             rendered = render_csm(ssir)
             self.assertIn("### A.1 通则", rendered)
             self.assertIn("#### A.2.1 子项", rendered)
-            render_path = Path(directory) / "render.md"
-            render_path.write_text(rendered, encoding="utf-8")
-            verify = SSIRBuilder().build(CSMParser().read(str(render_path)))
-            report = compare_ssir(ssir, verify, input_file=str(path), render_md_file=str(render_path))
-            self.assertTrue(report.passed, report)
+            # 投影：零 ssir 指令、零 HTML 注释
+            self.assertNotIn("ssir:", rendered)
+            self.assertNotIn("<!--", rendered)
 
 
 if __name__ == "__main__":

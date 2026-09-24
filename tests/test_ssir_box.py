@@ -4,7 +4,6 @@
 - parser：开/关事件块、配对/嵌套/未闭合的 CSM-STRUCT-006 校验；
 - builder：节点级与"同一条款内容中途"的框归属 + style 透传；
 - csm_renderer：标记确定性重放 → roundtrip（box 纳入比较口径）等价；
-- pdf/docx 渲染：显式模式成框不崩溃，几何上 frame=线框、shaded=浅底；
 - 无标记文档零命中（既有启发式路径不受影响）。
 """
 from __future__ import annotations
@@ -15,8 +14,6 @@ import unittest
 
 from leleby_ssir.builder import SSIRBuilder
 from leleby_ssir.parser import CSMParser
-from leleby_ssir.csm_renderer import render_csm
-from leleby_ssir.roundtrip import compare_ssir
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -204,26 +201,6 @@ class BuilderBoxTests(unittest.TestCase):
 
 
 class RoundTripBoxTests(unittest.TestCase):
-    def test_markers_replayed_and_roundtrip_passes(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "t.canonical.md"
-            path.write_text(CANON, encoding="utf-8")
-            doc = CSMParser().read(str(path))
-            ssir = SSIRBuilder().build(doc)
-            render_md = render_csm(ssir)
-            self.assertIn("<!-- ssir:box -->", render_md)
-            self.assertIn('<!-- ssir:box style="shaded" -->', render_md)
-            self.assertIn("<!-- ssir:/box -->", render_md)
-            render_path = Path(directory) / "render.md"
-            render_path.write_text(render_md, encoding="utf-8")
-            verify = SSIRBuilder().build(CSMParser().read(str(render_path)))
-            report = compare_ssir(ssir, verify, input_file=str(path), render_md_file=str(render_path))
-            self.assertTrue(report.passed, report)
-            self.assertEqual(report.critical_information_loss, [])
-            self.assertEqual(_boxed(ssir), _boxed(verify))
-
-
-class LegacyUntouchedTests(unittest.TestCase):
     def test_unmarked_corpus_fixture_has_no_box_and_no_new_issues(self) -> None:
         # 无标记文档：零 box 归属、零 CSM-STRUCT-006，走旧 exampleContent 路径。
         path = ROOT / "corpus/golden/csm/Q_YYJD_001-2024.canonical.md"
@@ -238,11 +215,10 @@ class LegacyUntouchedTests(unittest.TestCase):
 
 
 class RenderBoxSmokeTests(unittest.TestCase):
-    def test_pdf_and_docx_render_marked_document(self) -> None:
+    def test_pdf_render_marked_document(self) -> None:
         import json
         import fitz  # type: ignore
 
-        from leleby_ssir.docx_renderer import render_docx_file
         from leleby_ssir.pdf_renderer import render_pdf_file
 
         with tempfile.TemporaryDirectory() as directory:
@@ -331,10 +307,6 @@ class RenderBoxSmokeTests(unittest.TestCase):
             self.assertGreaterEqual(fill_pages, 1, "shaded 浅底缺失")
             self.assertTrue(inside_found, "框内段甲应位于某框线内")
             self.assertTrue(tail_outside_ok, "框外段尾不得位于任何框线内（不得继承父节点框）")
-            docx_out = Path(directory) / "out.docx"
-            warnings = render_docx_file(str(ssir_path), str(docx_out), toc_depth=None)
-            self.assertTrue(docx_out.is_file())
-            self.assertIsInstance(warnings, list)
 
 
 if __name__ == "__main__":

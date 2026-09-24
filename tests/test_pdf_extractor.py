@@ -12,6 +12,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 from mineru_full_standard import _detect_broken_text_layer, _latin_loss_check, _restore_ellipsis_lines  # noqa: E402
 
+from leleby_ssir import layout as layout_module  # noqa: E402
+from leleby_ssir.layout import build_layout  # noqa: E402
+
 
 class RestoreEllipsisTests(unittest.TestCase):
     """merge 阶段从源 PDF 文本层恢复 OCR 丢弃的纯省略号行（GEN-092 后验补盲）。"""
@@ -43,7 +46,13 @@ class RestoreEllipsisTests(unittest.TestCase):
                 ],
             ])
             raw = "## 5.7 基础苗培养\n\n5.7.1 基础苗培养的操作如下：\n\na）在超净工作台上切段。\n\n## 5.8扩繁\n"
-            out = _restore_ellipsis_lines(raw, pdf)
+            # 版面通道（docs/16 §3）：文本层行由抽取阶段写进 layout.json，消费端只读它。
+            # 文本层字符由 PDF 字体决定（china-s 把 U+2026 映射成 U+22EF），故断言判据成立、
+            # 行落在省略号通道里，而不是写死字符。
+            layout = build_layout(pdf)
+            self.assertTrue(any(layout_module.is_short_ellipsis(line["text"]) for line in layout["textLines"]))
+            self.assertEqual(len(layout["ellipsisLines"]), 1)
+            out = _restore_ellipsis_lines(raw, layout)
             self.assertIn("……", out)
             self.assertLess(out.index("a）在超净工作台上切段。"), out.index("……"))
             self.assertLess(out.index("……"), out.index("## 5.8扩繁"))
@@ -71,7 +80,7 @@ class RestoreEllipsisTests(unittest.TestCase):
                 "| --- | --- | --- |\n"
                 "| 规范性技术要素 | 术语和定义……程序确立……规范性附录 | 条文图表注脚注 |\n"
             )
-            out = _restore_ellipsis_lines(raw, pdf)
+            out = _restore_ellipsis_lines(raw, build_layout(pdf))
             # 单元格文本保持原样（不插入 <br>），正文无省略号插入 → 整体不变
             self.assertIn("术语和定义……程序确立……规范性附录", out)
             self.assertNotIn("<br>", out)
@@ -370,7 +379,12 @@ class FigureSourceSizeStampTests(unittest.TestCase):
                           {"rowIndex": 1, "cells": [{"id": "c3", "rowIndex": 1, "colIndex": 0, "text": "![](assets/images/img_t.png)"}]}]},
             ],
         }, ensure_ascii=False), encoding="utf-8")
-        _stamp_figure_source_sizes(ssir, source)
+        layout = build_layout(source)
+        # 封面徽标（第 1 页、高 < 100pt）不入图候选——该排除已在抽取阶段的读数里
+        # （docs/16 §3：通道只搬运读数，匹配判据留在消费端）。
+        self.assertEqual(len(layout["imageRects"]), 4)
+        self.assertTrue(all(item["page"] == 2 for item in layout["imageRects"]))
+        _stamp_figure_source_sizes(ssir, layout)
 
         data = json.loads(ssir.read_text(encoding="utf-8"))
         by_ref = {fig["assetRef"].split("/")[-1]: fig for fig in data["figures"]}

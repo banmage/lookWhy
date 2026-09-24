@@ -21,6 +21,7 @@ from typing import Any
 
 from .mineru_html import convert_mineru_markup, formula_assets_index
 from .naming import REP_EXTRACT_REPORT, REP_PROVENANCE, report_path, standard_number_from_text
+from .process_env import normalize_proxy_environment
 
 
 @dataclass(slots=True)
@@ -146,6 +147,10 @@ def _mineru_extract(source: Path, target: Path, asset_dir: Path, executable: str
         command = [executable, "-p", str(source), "-o", str(work), "-m", "auto"]
         env = dict(os.environ)
         env["MINERU_TOOLS_CONFIG_JSON"] = str(config_path)
+    # 代理规整（GEN-132）：MinerU 3.x 的 CLI 先起本地 mineru-api 再用 httpx 访问它，
+    # 环境里一个 `socks://` 代理就能让它在启动阶段抛 ValueError（httpx 只认
+    # socks5://）；回环地址一并绕开代理，本地 API 通信不该经过代理。
+    normalize_proxy_environment(env)
     completed = subprocess.run(command, capture_output=True, text=True, check=False, env=env)
     if completed.returncode != 0:
         raise RuntimeError(f"MinerU failed ({completed.returncode}): {completed.stderr[-1000:]}")

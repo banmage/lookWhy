@@ -7,9 +7,9 @@ import json
 from pathlib import Path
 import sys
 
-from .naming import REP_NORMALIZE_REPORT, REP_PARSE_REPORT, REP_RENDER_REPORT, REP_ROUNDTRIP, report_path
+from .naming import REP_NORMALIZE_REPORT, REP_PARSE_REPORT, REP_RENDER_REPORT, report_path
 from .parser import CSMError
-from .service import normalize_csm, round_trip_csm, validate_csm, write_output
+from .service import normalize_csm, validate_csm, write_output
 from .validation import SSIRValidationError
 
 
@@ -44,12 +44,9 @@ def _parser() -> argparse.ArgumentParser:
     parse.add_argument("--format", choices=("json", "ttl"), default="json")
     parse.add_argument("--report", type=Path, help="parse report path; defaults beside --output")
     parse.add_argument("--strict", action="store_true", help="reject recoverable input issues")
-    roundtrip = csm_command.add_parser("roundtrip", help="render SSIR as CSM and verify SSIR semantic equivalence")
-    roundtrip.add_argument("--input", required=True, type=Path)
-    roundtrip.add_argument("--render-md-output", dest="render_md_output", required=True, type=Path, help="rendered CSM (render.md) output path")
-    roundtrip.add_argument("--verify-output", type=Path, help="optional re-parsed SSIR (verify.json) output path")
-    roundtrip.add_argument("--report", type=Path, help="round-trip report path; defaults beside --render-md-output")
-    roundtrip.add_argument("--strict", action="store_true", help="reject recoverable input issues in either CSM document")
+    project = csm_command.add_parser("project", help="project SSIR as the standard Markdown equivalent (no directives, no HTML comments)")
+    project.add_argument("--input", required=True, type=Path, help="canonical CSM Markdown or SSIR JSON input")
+    project.add_argument("--output", required=True, type=Path, help="Markdown projection output path")
     pdf = command.add_parser("pdf", help="extract PDFs or render validated SSIR JSON")
     pdf_command = pdf.add_subparsers(dest="pdf_command", required=True)
     extract = pdf_command.add_parser("extract", help="extract a PDF into CSM Markdown")
@@ -89,12 +86,24 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"warning: {warning}", file=sys.stderr)
             print(json.dumps({"valid": True, "warnings": len(document.warnings), "convertible": True}, ensure_ascii=False))
             return 0
-        if args.csm_command == "roundtrip":
-            _, _, report = round_trip_csm(args.input, args.render_md_output, strict=args.strict, verify_output=args.verify_output)
-            report_path_arg = args.report or report_path(args.render_md_output, REP_ROUNDTRIP)
-            report.write_json(report_path_arg)
-            print(json.dumps({"renderMd": str(args.render_md_output), "report": str(report_path_arg), "passed": report.passed}, ensure_ascii=False))
-            return 0 if report.passed else 3
+        if args.csm_command == "project":
+            from .csm_renderer import render_csm
+            from .html_renderer import render_html
+            from .service import parse_csm
+
+            source = args.input
+            if source.suffix.lower() == ".json":
+                document = json.loads(source.read_text(encoding="utf-8"))
+            else:
+                document = parse_csm(source)
+            # 产物形态按输出后缀判定（GEN-130）：.html → 结构投影（框/分栏/合并），
+            # 其他 → 标准 markdown 投影。同一 SSIR，两条投影互不替代。
+            text = render_html(document) if args.output.suffix.lower() in {".html", ".htm"} else render_csm(document)
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(text, encoding="utf-8", newline="\n")
+            print(json.dumps({"output": str(args.output), "lines": len(text.splitlines()),
+                              "bytes": len(text.encode("utf-8"))}, ensure_ascii=False))
+            return 0
         if args.csm_command == "normalize":
             ssir, report = normalize_csm(args.input, args.canonical_output, strict=args.strict)
             report_path_arg = args.report or report_path(args.canonical_output, REP_NORMALIZE_REPORT)

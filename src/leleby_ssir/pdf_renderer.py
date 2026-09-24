@@ -14,6 +14,13 @@ from typing import Any
 
 import yaml
 
+from .parser import (
+    FOOTNOTE_CITE_RE,
+    FORMULA_VAR_INTRO_RE,
+    TABLE_NOTE_START_RE,
+    footnote_label_marker,
+    footnote_marker_text,
+)
 from .validation import validate_ssir
 
 try:  # reportlab 依赖在 render 函数内延迟导入；占位类需在模块层可继承
@@ -37,7 +44,7 @@ _FRAME_PADDING = 6.0  # reportlab Frame 默认内衬（SimpleDocTemplate 未覆�
 _EXAMPLE_PADDING = 10.0  # 附录示例框单元格左右 padding（与 _example_box 同值）
 # 示例线框线宽（pt）：GB/T 1.1-2020 10.4.5「区分示例的线框应为细实线」；源 PDF
 # 实测示例框 0.33pt（细实线）、表外框线/表头框线 0.76pt（粗实线，10.4.2.2）。
-# 渲染端细线族统一 0.5pt（与表网格线同宽，docx 侧 w:sz=4 即 0.5pt）——框线不得
+# 渲染端细线族统一 0.5pt（与表网格线同宽）——框线不得
 # 粗于表线，否则示例框喧宾夺主（2026-09-11 用户裁定：默认细框线）。
 _EXAMPLE_FRAME_WIDTH = 0.5
 # 表格单元格左右边距（_append_table 的 LEFTPADDING/RIGHTPADDING），列宽下界与窄表
@@ -169,6 +176,33 @@ def _resolve_asset(asset_dir: Path, ref: str) -> Path:
         if (parent / "manifest.json").is_file():
             break
     return primary
+
+
+def _iter_nodes(nodes: list[dict[str, Any]]) -> Any:
+    """深度优先遍历结构节点（含子节点）。"""
+    for node in nodes:
+        yield node
+        yield from _iter_nodes(node.get("children", []) or [])
+
+
+def _table_footnote_lines(registries: dict[str, Any], owner_id: str | None) -> list[str]:
+    """归属本表的表脚注正文行（`notes[]` 里 `ownerRef` 指向该表内容元素、`anchorKind` 为
+    ``tableCell`` 的脚注；`contentRef` → 脚注内容元素的文本）。
+
+    规则依据（GB/T 1.1-2020 10.4.2.2 / 10.4.4.2）：表脚注的框线属表的框线，正文排在表的
+    左框线之内 → 渲染为表末**通栏行**（与表同框），而不是排在表外。
+    """
+    texts = registries.get("noteText") or {}
+    lines: list[str] = []
+    for content_ref, note in (registries.get("note") or {}).items():
+        if str(note.get("ownerRef") or "") != str(owner_id or ""):
+            continue
+        if str(note.get("anchorKind") or "") != "tableCell":
+            continue
+        text = str(texts.get(str(content_ref)) or "").strip()
+        if text:
+            lines.append(text)
+    return lines
 
 
 def render_pdf(
@@ -338,15 +372,32 @@ def render_pdf(
 
     styles = _styles(getSampleStyleSheet(), profile, font_name, body_font_name, TA_CENTER, TA_JUSTIFY, TA_LEFT)
     registries = {kind: {item["id"]: item for item in document.get(kind, [])} for kind in ("tables", "figures", "formulas", "unknownContents")}
+    # 注的**绘制位置**判据（docs/15 §2；GB/T 1.1 9.12.2）：图表脚注（anchorKind =
+    # tableCell / figurePart）**原位**排在表/图之下；条文脚注（page）由页钩子绘到页脚。
+    # 按 contentRef（脚注内容元素标识）索引，渲染端只读结构化字段，不看标号形状。
+    registries["note"] = {
+        str(note.get("contentRef")): note
+        for note in (document.get("notes") or [])
+        if note.get("type") == "footnote" and note.get("contentRef")
+    }
     common = document.get("metadata", {}).get("common", {})
     standard = document.get("metadata", {}).get("standard", {})
     # 规则对应: GBT-C01（封面必备信息）——标准类文档一律渲染封面；ICS/CCS/日期缺失时
     # 由 _cover_story 以 "××" 占位并记录 warning，而不是跳过整个封面。
     has_cover = document.get("documentType") == "standard" or bool(standard.get("standardNumber"))
     root_nodes = sorted(document["structuralRoot"].get("children", []), key=_order)
+    # 表脚注的**正文**（单一来源在内容元素里，notes[] 只存归属元数据）：按脚注内容元素 id
+    # 索引，供 _append_table 把「归属本表的表脚注」绘成**表框内**的表末通栏行
+    # （GB/T 1.1 10.4.2.2「表的外框线、表头的框线以及表中的注、表脚注所在的框线均应为
+    # 粗实线」+ 10.4.4.2「表脚注…置于表的左框线第四个汉字的位置」）。
+    registries["noteText"] = {
+        str(element.get("id")): str(element.get("textContent") or "")
+        for node in _iter_nodes(root_nodes)
+        for element in (node.get("contentElements") or [])
+        if element.get("presentationType") == "footnote"
+    }
     has_toc = any(_is_toc_node(node) for node in root_nodes)
-    # 目次里的图/表行（8.2.2 i)/j)）：标签与取页对象 id 在这里算一次，供目次渲染
-    # 与 docx 孪生共用。
+    # 目次里的图/表行（8.2.2 i)/j)）：标签与取页对象 id 在这里算一次，供目次渲染复用。
     toc_caption_rows = _toc_caption_rows(root_nodes, registries)
 
     class _TOCMarker(Flowable):
@@ -790,7 +841,8 @@ def render_pdf(
         match = re.match(r"^\s*(\d+|[A-Za-z])[)）]?\s*(.*)$", text, re.S)
         marker = match.group(1) if match else ""
         body = match.group(2) if match else text
-        markup = (f"<super>{marker})</super> " if marker else "") + body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        # 标记字面按 9.12.1/9.12.2 分族（数字 → `1)`，字母 → 裸 `a`）——判据单源在 parser。
+        markup = (f"<super>{footnote_label_marker(marker)}</super> " if marker else "") + body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         paragraph = _PageNoteParagraph(markup, _note_style)
         paragraph.wrap(note_width, 600)
         if page not in _page_note_y:
@@ -1144,10 +1196,13 @@ def _append_content_sequence(story: list[Any], contents: list[dict[str, Any]], r
     contents = sorted(contents, key=_order)
     index = 0
     prev_figure_note = False
+    # 式中解释行（GEN-126/129）：条目挂在公式上，版面上排在紧随其后的「式中：」引入行**之后**。
+    pending: list[str] = []
     while index < len(contents):
         content = contents[index]
         group = content.get("sideBySideGroup")
         if group:
+            _flush_explanation_lines(pending, story, styles, Paragraph)
             members: list[dict[str, Any]] = []
             while index < len(contents) and contents[index].get("sideBySideGroup") == group:
                 members.append(contents[index])
@@ -1155,12 +1210,18 @@ def _append_content_sequence(story: list[Any], contents: list[dict[str, Any]], r
             _append_side_by_side(story, members, registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, content_width=content_width)
             prev_figure_note = True  # 并列组整体是"图的说明"
             continue
+        intro = _is_explanation_intro(content)
+        if not intro:
+            _flush_explanation_lines(pending, story, styles, Paragraph)
         # 图注行（图题/图）后紧跟表头名称 → 空一行/更大间距（通用要求）。
         if prev_figure_note and _is_table_caption_shape(content):
             story.append(Spacer(1, 10))
-        _append_content(story, content, registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, content_width=content_width, enclosing=enclosing)
+        _append_content(story, content, registries, styles, font, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, content_width=content_width, enclosing=enclosing, explanation_sink=pending)
+        if intro:
+            _flush_explanation_lines(pending, story, styles, Paragraph)
         prev_figure_note = _is_figure_note_shape(content)
         index += 1
+    _flush_explanation_lines(pending, story, styles, Paragraph)
 
 
 def _tree_has_boxes(nodes: list[dict[str, Any]]) -> bool:
@@ -1234,7 +1295,7 @@ def _append_marked_content(sink: _BoxSink, content: dict[str, Any],
                            report: PDFRenderReport, asset_dir: Path, colors: Any, Table: Any,
                            TableStyle: Any, Paragraph: Any, Spacer: Any, Image: Any,
                            content_width: float, inner_width: float,
-                           enclosing: str | None = None) -> None:
+                           enclosing: str | None = None, explanation_sink: list[str] | None = None) -> None:
     """把单个内容元素作为单元送入 sink（ssir:box 显式模式；2026-09-08）。
 
     框归属只看内容元素自身的 box 字段，**不回退继承父节点**：逐块扫描时每个
@@ -1243,13 +1304,23 @@ def _append_marked_content(sink: _BoxSink, content: dict[str, Any],
     """
     box = content.get("box")
     if content.get("presentationType") == "footnote" and box is not None:
-        report.warnings.append(
-            "ssir:box 框内条文脚注占位无法在页脚绘制（框为表格单元格，afterFlowable 不触发）；请把脚注定义移出框或不要框住脚注。"
-        )
+        # 框内脚注：页脚钩子（afterFlowable）在框表内不触发，页脚绘制的条文脚注会**丢内容**。
+        # 2026-09-23 GEN-125：改成就地绘制（与图表脚注同一小五号原位样式），并如实记警告；
+        # 仅改本页渲染时的绘制位置，SSIR 的 notes[] 不动。
+        note_key = str(content.get("id") or "")
+        note_meta = (registries.get("note") or {}).get(note_key)
+        if note_meta is not None and note_meta.get("anchorKind") not in {"tableCell", "figurePart"}:
+            in_place = dict(note_meta)
+            in_place["anchorKind"] = "figurePart"
+            registries.setdefault("note", {})[note_key] = in_place
+            report.warnings.append(
+                "ssir:box 框内条文脚注改按原位小五号绘制（页脚钩子在框表内不触发，就地绘制以免丢内容；GEN-125）。"
+            )
     scratch: list[Any] = []
     width = inner_width if box is not None else content_width
     _append_content(scratch, content, registries, styles, font, report, asset_dir, colors,
-                    Table, TableStyle, Paragraph, Spacer, Image, content_width=width, enclosing=enclosing)
+                    Table, TableStyle, Paragraph, Spacer, Image, content_width=width, enclosing=enclosing,
+                    explanation_sink=explanation_sink)
     sink.add(scratch, box, content.get("boxStyle"))
 
 
@@ -1264,10 +1335,17 @@ def _append_marked_content_sequence(sink: _BoxSink, contents: list[dict[str, Any
     contents = sorted(contents, key=_order)
     index = 0
     prev_figure_note = False
+    # 式中解释行（GEN-126/129）：与 _append_content_sequence 同规则，但条目的归属框取
+    # 「上一单元」（公式）的框——引入行缺失时条目仍留在公式所在的框里。
+    pending: list[str] = []
+    prev_box: int | None = None
+    prev_box_style: str | None = None
     while index < len(contents):
         content = contents[index]
         group = content.get("sideBySideGroup")
         if group:
+            if pending:
+                sink.add(_explanation_flowables(pending, styles, Paragraph), prev_box, prev_box_style)
             members: list[dict[str, Any]] = []
             while index < len(contents) and contents[index].get("sideBySideGroup") == group:
                 members.append(contents[index])
@@ -1278,17 +1356,27 @@ def _append_marked_content_sequence(sink: _BoxSink, contents: list[dict[str, Any
                                  colors, Table, TableStyle, Paragraph, Spacer, Image,
                                  content_width=inner_width if box is not None else content_width)
             sink.add(scratch, box, members[0].get("boxStyle"))
+            prev_box, prev_box_style = box, members[0].get("boxStyle")
             prev_figure_note = True
             continue
         box = content.get("box")
+        intro = _is_explanation_intro(content)
+        if pending and not intro:
+            sink.add(_explanation_flowables(pending, styles, Paragraph), prev_box, prev_box_style)
         if prev_figure_note and _is_table_caption_shape(content):
             # 图注后紧跟表题 → 空行间距（与 _append_content_sequence 同规则）。
             sink.add([Spacer(1, 10)], box, content.get("boxStyle"))
         _append_marked_content(sink, content, registries, styles, font, report,
                                asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image,
-                               content_width, inner_width, enclosing=enclosing)
+                               content_width, inner_width, enclosing=enclosing,
+                               explanation_sink=pending)
+        if intro and pending:
+            sink.add(_explanation_flowables(pending, styles, Paragraph), box, content.get("boxStyle"))
+        prev_box, prev_box_style = box, content.get("boxStyle")
         prev_figure_note = _is_figure_note_shape(content)
         index += 1
+    if pending:
+        sink.add(_explanation_flowables(pending, styles, Paragraph), prev_box, prev_box_style)
 
 
 def _append_marked_node(sink: _BoxSink, node: dict[str, Any], registries: dict[str, Any],
@@ -1480,25 +1568,23 @@ class _FootnoteAnchor(_FlowableBase):
 
 
 def _is_figure_note_shape(content: dict[str, Any]) -> bool:
-    kind = content.get("presentationType")
-    if kind == "figure":
-        return True
-    if kind in {"paragraph", "note", "list"}:
-        text = str(content.get("textContent") or "")
-        if kind == "list":
-            items = content.get("listItems") or []
-            text = " ".join(str(item.get("text") or "") for item in items)
-        return bool(re.match(r"^图\s*\d+\.?\d*", text.strip()))
-    return False
+    """「图注形状」——**只看结构化判据**（P0-E 零推断，2026-09-22）。
+
+    历史：本函数原有一段**文本猜测分支**（段落/注/列表的文本以 `图N` 开头即判为图注），
+    用于「图注后紧跟表题 → 空一行」的间距决策。按零推断口径删除该分支：题注归属由
+    `Figure.caption`/`notes`/`noteRefs` 等字段表达，不再从正文文本形状反推。
+    删除依据（全语料度量 + 渲染 A/B）：判为图注形状 47 处中仅 3 处来自文本猜测。
+    """
+    return content.get("presentationType") == "figure"
 
 
 def _is_table_caption_shape(content: dict[str, Any]) -> bool:
-    kind = content.get("presentationType")
-    if kind == "table":
-        return True
-    if kind in {"paragraph", "note"}:
-        return bool(re.match(r"^表\s*\d+\.?\d*", str(content.get("textContent") or "").strip()))
-    return False
+    """「表题形状」——**只看结构化判据**（P0-E 零推断，2026-09-22）。
+
+    历史同上：原文本猜测分支（段落/注文本以 `表N` 开头）已删除；删前度量表明
+    判为表题形状 99 处中仅 4 处来自文本猜测。
+    """
+    return content.get("presentationType") == "table"
 
 
 def _flowable_natural_width(flowable: Any) -> float:
@@ -1568,21 +1654,144 @@ def _side_by_side_widths(needs: list[float], avail: float) -> list[float]:
 _SUB_FIGURE_NUMBER_RE = re.compile(r"^[A-Za-z][)）]$")
 
 
-def _figure_caption_text(figure: dict[str, Any]) -> str:
-    """图题注文本（GBT-B06、GB/T 1.1-2020 9.7.2/9.7.6、10.4.2）。
+# 图编号/表编号与题名之间的**一个汉字**字隙（GB/T 1.1-2020 10.4.2.1「图编号和表编号
+# 之后均应空一个汉字的间隙接排图题和表题」；附录 F 表 F.1 序号 36—40 给的是字号与
+# 位置口径，字隙见 10.4.2.1）。旧实现用普通空格——五号黑体下只有 3.15pt = 0.30 汉字
+# （2026-09-24 用户报告「所有表、图的标识部分与文字部分的间隔应为 1 个汉字，而目前只有
+# 半个汉字」）。
+#
+# **不能用 U+3000 表意空格**：题注走 `Paragraph`，reportlab 的段落解析把 U+3000 归一成
+# ASCII 空格（实测 10.5pt 字号下只剩 2.69pt），必须用本渲染器既有的「固定字隙哨兵」
+# ——`\x00GAP\x00` 在 escape 后转成 `<font color="white">中</font>`，白色字形推进宽恒等于
+# 当前字号 = 一个汉字，且不是空格字符、不会被两端对齐按字间距 Tw 拉伸（与条首编号后的
+# 一汉字字隙 `_clause_head_gap`、列项 marker 字隙 `_list_marker_gap` 同一机制）。
+_CAPTION_LABEL_GAP = "\x00GAP\x00"
 
-    - 通栏图：``图{编号} {图题}``（如「图3 输入端与波发生器凸轮连接方式」）；
+
+def _join_caption_label(label: str, title: str) -> str:
+    """把「标识部分」（图/表编号）与「文字部分」（题名）拼成一个汉字字隙的题注行。
+
+    GB/T 1.1-2020 10.4.2.1：图编号和表编号之后均应空一个汉字的间隙接排图题和表题。
+    只有编号（题名缺）时不留尾巴——题注行按有的那部分绘（GBT-B08）
+    """
+    return f"{label}{_CAPTION_LABEL_GAP}{title}" if title else label
+
+
+def _figure_caption_text(figure: dict[str, Any]) -> str:
+    """图题注文本（GBT-B06、GB/T 1.1-2020 9.7.2/9.7.6、10.4.2.1）。
+
+    - 通栏图：``图{编号}＋1 汉字＋{图题}``（如「图3〔字隙〕输入端与波发生器凸轮连接方式」）；
     - 分图：分图题注**不带「图」字**——源版面即「a） Ⅰ型」，GB/T 1.1-2020 9.7.6 给分图
-      编号而未把分图提升为独立图号，故输出 ``{分图编号} {分图题}``；
+      编号而未把分图提升为独立图号，故输出 ``{分图编号}＋1 汉字＋{分图题}``；
     - 编号与题名都缺时返回空串，渲染端据此不输出题注行（GBT-B08）。
+    - 编号与题名之间空**一个汉字**（10.4.2.1），见 ``_CAPTION_LABEL_GAP``。
     """
     number = str(figure.get("number") or "").strip()
     caption = str(figure.get("caption") or "").strip()
     if not number and not caption:
         return ""
     if number and _SUB_FIGURE_NUMBER_RE.match(number):
-        return f"{number} {caption}".strip()
-    return f"图{number} {caption}".strip()
+        return _join_caption_label(number, caption)
+    return _join_caption_label(f"图{number}", caption)
+
+
+def _table_caption_text(table: dict[str, Any]) -> str:
+    """表题注文本（GBT-B07、GB/T 1.1-2020 9.8.2.1、10.4.2.1）：``表{编号}＋1 汉字＋{表题}``。
+
+    编号与题名之间空**一个汉字**（10.4.2.1）；编号/题名缺一即按有的那部分绘（编号缺失
+    时合规检查由 GBT-X02 报出），都缺时返回空串——调用方据此不输出题注行（否则表框上
+    会孤零零出现一个「表」字，GEN-033）。正表题与转页续表题注（后接「（续）」）共用本判决。
+    """
+    number = str(table.get("number") or "").strip()
+    caption = str(table.get("caption") or "").strip()
+    if not number and not caption:
+        return ""
+    return _join_caption_label(f"表{number}", caption)
+
+
+def _formula_explanation_lines(formula: dict[str, Any]) -> list[str]:
+    """式中解释组（docs/15 §3.8）：逐行 ``symbol——definition + 终结符``。
+
+    渲染端**零推断**：只绘字段里有的内容；`symbol`/`definition` 缺一即按有的那部分绘。
+    单位不在此处拼接——`definition` 文本本身已含「单位为…」的表述（parser 侧原样保留）。
+    **终结符（`；`/`。`，GB/T 1.1-2020 9.9.3.1 实测每项以分号收、末项以句号收）随字段绘出**：
+    原实现丢弃该字段，PDF 与 render.md 两侧的解释项句尾标点整批消失（2026-09-23 用户报告）。
+    """
+    lines: list[str] = []
+    group = formula.get("explanationGroup") or {}
+    for item in group.get("items") or []:
+        symbol = str(item.get("symbol") or "").strip()
+        definition = str(item.get("definition") or "").strip()
+        terminator = str(item.get("terminator") or "").strip()
+        if symbol and definition:
+            lines.append(f"{symbol}——{definition}{terminator}")
+        elif symbol or definition:
+            lines.append(f"{(symbol or definition)}{terminator}")
+    return lines
+
+
+def _is_explanation_intro(content: dict[str, Any]) -> bool:
+    """「式中：」引入段（与解析端同判据 `parser.FORMULA_VAR_INTRO_RE`）。
+
+    GEN-126/129：式中解释条目挂在公式上，版面上排在紧随其后的引入行**之后**——发射顺序
+    由本判据决定（引入行在前、条目在后），不是「谁挂谁先画」。
+    """
+    if content.get("presentationType") != "paragraph":
+        return False
+    return bool(FORMULA_VAR_INTRO_RE.match(str(content.get("textContent") or "").strip()))
+
+
+def _explanation_flowables(pending: list[str], styles: dict[str, Any], Paragraph: Any) -> list[Any]:
+    """把暂存的式中解释行转成注样式段落（**清空暂存**；终结符已含在行文本里）。"""
+    flowables: list[Any] = []
+    for line in pending:
+        flowables.append(Paragraph(_markup(line), _formula_explanation_style(styles)))
+    pending.clear()
+    return flowables
+
+
+def _flush_explanation_lines(pending: list[str], target: list[Any], styles: dict[str, Any],
+                            Paragraph: Any) -> None:
+    """把暂存的式中解释行追加到 ``target``（幂等：无暂存不写）。"""
+    target.extend(_explanation_flowables(pending, styles, Paragraph))
+
+
+def _formula_explanation_style(styles: dict[str, Any]) -> Any:
+    """式中解释行的样式：沿用注样式（小号、左缩进 2 字）。
+
+    说明：GB/T 1.1 版式表未单列「式中」行的字号/缩进，暂与注行同规格；若后续版式
+    复核要求单独样式，改此处一处即可（渲染端唯一入口）。
+    """
+    return styles["note"]
+
+
+def _figure_ancillary_lines(figure: dict[str, Any]) -> list[str]:
+    """图例与分图题注（docs/15 §3.7/§3.8）：图题注下方逐行绘制。
+
+    - 图例（`Figure.legend`）：``index——text``（index 缺省则只绘 text）；
+    - 分图题注（`Figure.subCaptions`）：``label）text``（label 缺省则只绘 text）。
+
+    渲染端**零推断**：只绘制字段里有的内容，字段缺失即不输出（不回落到正文正则）。
+    """
+    lines: list[str] = []
+    for item in figure.get("legend") or []:
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        index = str(item.get("index") or "").strip()
+        lines.append(f"{index}——{text}" if index else text)
+    for sub in figure.get("subCaptions") or []:
+        text = str(sub.get("text") or "").strip()
+        if not text:
+            continue
+        label = str(sub.get("label") or "").strip()
+        lines.append(f"{label}）{text}" if label else text)
+    return lines
+
+
+def _figure_ancillary_style(figure: dict[str, Any], styles: dict[str, Any]) -> Any:
+    """图例/分图题注行样式：沿用分图题注样式（小五号、居中，GB/T 1.1 9.7.6 分图题口径）。"""
+    return styles["subcaption"]
 
 
 def _figure_caption_style(figure: dict[str, Any], styles: dict[str, Any]) -> Any:
@@ -1626,8 +1835,13 @@ def _append_side_by_side(story: list[Any], members: list[dict[str, Any]], regist
     formula_images: list[tuple[Any, int]] = []
     for col in col_keys:
         cell: list[Any] = []
+        # 式中解释行（GEN-126/129）：列内同规——条目排在列内紧随公式的「式中：」引入行之后。
+        pending: list[str] = []
         for content in sorted(columns[col], key=_order):
             kind = content.get("presentationType")
+            intro = _is_explanation_intro(content)
+            if not intro:
+                cell.extend(_explanation_flowables(pending, styles, Paragraph))
             if kind == "figure":
                 figure = registries["figures"][content["figureRef"]]
                 asset = figure.get("assetRef")
@@ -1654,6 +1868,9 @@ def _append_side_by_side(story: list[Any], members: list[dict[str, Any]], regist
                     caption = _figure_caption_text(figure)
                     if caption:
                         cell.append(Paragraph(_markup(caption), _figure_caption_style(figure, styles)))
+                    # 图例/分图题注同样绘制（与主路径同源，零推断）。
+                    for line in _figure_ancillary_lines(figure):
+                        cell.append(Paragraph(_markup(line), _figure_ancillary_style(figure, styles)))
                 else:
                     report.warnings.append(f"Missing figure asset in side-by-side group: {figure.get('id')}")
             elif kind == "formula":
@@ -1691,6 +1908,11 @@ def _append_side_by_side(story: list[Any], members: list[dict[str, Any]], regist
                         fallback = _inline_math_markup(raw_formula)
                         if fallback.strip():
                             cell.append(Paragraph(_markup(fallback), styles["side-cell"]))
+                    # 式中解释组（GEN-126/129）：条目**排在列内「式中：」引入行之后**（见下），
+                    # 此处只暂存。列内公式的 explanationGroup 此前整组丢失（GB_T_1.1-2020
+                    # 实测「统计量」等释义不出现在渲染文本层），后改为紧随公式绘制、顺序错位，
+                    # 现按引入行定位。
+                    pending.extend(_formula_explanation_lines(formula))
             elif kind in {"paragraph", "note", "quote", "example", "warning"}:
                 text = str(content.get("textContent") or "")
                 if text.strip():
@@ -1700,6 +1922,9 @@ def _append_side_by_side(story: list[Any], members: list[dict[str, Any]], regist
                 for item in sorted(content.get("listItems", []), key=_order):
                     marker = _list_marker(str(item.get("marker", "-")))
                     cell.append(Paragraph(_markup(f"{marker} {item.get('text', '')}".strip()), styles["side-cell"]))
+            if intro:
+                cell.extend(_explanation_flowables(pending, styles, Paragraph))
+        cell.extend(_explanation_flowables(pending, styles, Paragraph))
         col_flowables.append(cell)
         # 列需求（GEN-111）：该列所有内容的一行自然宽（图/公式绘制宽、文字实测行宽），
         # 不是「最宽图」——GEN-106 拍平成文字的含汉字公式与「正确：」这类标签同样计入。
@@ -2032,6 +2257,16 @@ def _ocr_l_one(markers: list[str]) -> bool:
 # 表注行（GB_3100-2026 表1/表4 型）：MinerU 把表注整进表内最后一行合并
 # 单元格，以「注N：」开头；渲染按表内注版式拆行居左（2026-09-02）。
 _TABLE_NOTE_CELL_RE = re.compile(r"^注\s*\d*\s*[:：]")
+# 单元格内换行哨兵（`<br>` → 三字符哨兵，2026-09-02）：表注切条与渲染共用同一常量。
+_BR_SENTINEL = "\x00BR\x00"
+# 表注/表脚注**每条注的起始标记**（判据单源在 `parser.TABLE_NOTE_START_RE`：表内注「注N：」、
+# 表脚注字母标记——2026-09-24 起图表脚注标记是**上标裸小写字母**，字母族允许无右括号）。
+
+
+def _strip_break_sentinels(text: str) -> str:
+    """判据用：去掉片段里的换行哨兵与两端空白，只看有效文本（判「下一条注是否起头」）。"""
+    return text.replace(_BR_SENTINEL, "").strip()
+
 # 表注显式标记（GBT-X04 执行侧；2026-09-07 语法定案，docs/07 §6.7）：
 # - [:^a] 引用点（插入被注释内容之后）→ 上标裸小写字母 a；
 # - [^a]  注文段开始 → 上标裸小写字母 a（即原“a 说明”行首字母的版式）；
@@ -2055,6 +2290,17 @@ _TABLE_NOTE_CELL_RE = re.compile(r"^注\s*\d*\s*[:：]")
 # 注文由表后的 `a）…` 行/表注行承担，关联逻辑不变。
 
 
+def _is_break_only(text: str) -> bool:
+    """片段是否**只由换行标记与空白**组成（`<br>`/`<br/>`/换行哨兵）。
+
+    通用规则（2026-09-22）：换行标记是**版式分隔**，只含分隔的片段不产生任何段落——
+    否则该片段会被当正文绘出（实测：含 `[foot:]` 定义指令对的单元格里，两条定义之间的
+    `<br>` 被单独绘成字面 `<br>`）。判据单点，单元格各条路径共用。
+    """
+    stripped = re.sub(r"<br\s*/?>|\x00BR\x00", "", str(text))
+    return not stripped.strip()
+
+
 def _split_table_note_parts(cell_text: str) -> list[str]:
     """把表注行单元格拆成每条注独立文本（2026-09-02，GB_3100-2026 表1/表4）。
 
@@ -2063,27 +2309,75 @@ def _split_table_note_parts(cell_text: str) -> list[str]:
     \\x00BR\\x00 哨兵保留，尾部哨兵（下一条注前的换行）整段剥掉——只
     strip NUL 会留下 "BR" 字面文本（哨兵是 \\x00BR\\x00 三字符，2026-09-02
     表4 注7~注10 实测泄漏成 Ⓡ-like 字符）。
+
+    2026-09-23（用户裁定「所有表注：每条注的首行都要空两个汉字」）：**表脚注**用字母
+    标记（彼此之间同样是 <br>）——旧实现只认「注N：」边界，这种单元格
+    整块只出一个段落，于是只有第一条注的首行带两字缩进，b) 起都顶格（实测
+    GB_T_5171.1-2014 表20：a) x0=100.6 有缩进、e) x0=82.6 顶格）。故：<br> 之后
+    紧跟注标记（`注N：` 或字母标记）处即切条，其余 <br> 是**注内换行**（注文续行）
+    保留在条内。
+
+    2026-09-24：字母标记的形态按 GB/T 1.1-2020 9.12.2 更正为**上标裸小写字母**
+    （`a`，不带半圆括号），判据随之放宽到「字母 + 空白」（`parser.TABLE_NOTE_START_RE`
+    单源）——否则切条全部失效、上一条规则当场回归。
     """
+    marked = cell_text.replace("<br>", _BR_SENTINEL)
+    pieces = re.split(f"({re.escape(_BR_SENTINEL)})", marked)
+    chunks: list[str] = [pieces[0]]
+    for separator, following in zip(pieces[1::2], pieces[2::2]):
+        if TABLE_NOTE_START_RE.match(_strip_break_sentinels(following).strip()):
+            chunks.append(following)
+        else:
+            chunks[-1] += separator + following
     parts: list[str] = []
-    for part in re.split(r"(?=注\s*\d*\s*[:：])", cell_text.replace("<br>", "\x00BR\x00")):
-        part = re.sub(r"(?:\x00BR\x00)+$", "", part).strip("\x00").strip()
-        if part:
-            parts.append(part)
+    for chunk in chunks:
+        for part in re.split(r"(?=注\s*\d*\s*[:：])", chunk):
+            part = re.sub(f"(?:{re.escape(_BR_SENTINEL)})+$", "", part).strip("\x00").strip()
+            if part and not _is_break_only(part):
+                parts.append(part)
     return parts
 
 
-def _footnote_superscripts(text: str) -> str:
-    # 条文脚注引用 [foot:N]（docs/07 §6.7；GEN-118 / CSM-OCR-014 回收产物）→ 上角标 “N)”。
-    text = re.sub(r"\[foot:([0-9A-Za-z_-]+)\]", lambda m: "\x00SUP\x00" + m.group(1) + ")\x00/SUP\x00", text)
-    """脚注标记渲染为上角标——正文/图脚注安全版（GBT-X04 执行侧）。
+def _footnote_cite_supers(text: str) -> str:
+    """`[foot:…]` 引用点 → **上角标哨兵串**（标记字面判据单源：`parser.footnote_marker_text`）。
 
-    GB/T 1.1-2020 9.12.2：图表脚注用小写拉丁字母 a)、b) 上标，脚注由标记与
-    解释成对组成。处理：
-    - 解释行行首标记："a 填写行业标准代号。" / "a国家标准…" → ᵃ；
-    - 汉字后全角小写字母（OCR 还原的标记）→ 上角标。
-    正文版刻意**不**做"汉字后半角小写单字母"（避免误伤变量/列项引用如
-    "转速n，"、"a)中所述"）；公式变量行（"n —转速" 字母后是破折号）不触发。
+    图表脚注（字母编号，GB/T 1.1-2020 9.12.2）= 上标裸小写字母，多角标按源分隔符连排
+    （`[foot:b、d]` → 上标 `b、d`；源版面实测「、」本身也是 4.66pt 上标 span）；
+    条文脚注（数字编号，9.12.1）= 上标「N)」。渲染端**不得**给图表脚注补右括号。
     """
+    return FOOTNOTE_CITE_RE.sub(
+        lambda match: "\x00SUP\x00" + footnote_marker_text(match.group(1)) + "\x00/SUP\x00",
+        str(text),
+    )
+
+
+def _note_line_marker_supers(text: str) -> str:
+    """注文行行首标记 → 上角标哨兵（GB/T 1.1-2020 9.12.1/9.12.2）。
+
+    图表脚注注文行的标记是**上标形式的裸小写字母**（源版面实测 4.66pt vs 注文 8.25pt、
+    标记与注文之间一个空格，GB_T_10401-2023 表11 表尾 a~d 行）；条文脚注是「数字+半圆
+    括号」上标（9.12.1）。只认「单个字母/数字括号 + 空白」的形态——`GB/T …` 这类注文
+    正文（字母后不是空白）不动。
+    """
+    return re.sub(
+        r"^(\s*)([A-Za-z]|\d+[)）])(?=\s)",
+        lambda match: f"{match.group(1)}\x00SUP\x00{match.group(2)}\x00/SUP\x00",
+        str(text),
+        count=1,
+    )
+
+
+def _footnote_superscripts(text: str) -> str:
+    """脚注标记渲染为上角标（GBT-X04 执行侧；正文/图脚注安全版）。
+
+    ① 引用点 `[foot:L]` → 上角标，标记字面**判据单源** `parser.footnote_marker_text`
+    （GB/T 1.1-2020 9.12.1 数字族 `1)` / 9.12.2 字母族裸小写字母 `a`，见 GEN-137）；
+    ② 解释行行首标记（"a 填写行业标准代号。" / "a国家标准…"）→ 上角标：这是**文本形状
+    猜测**通道，用于脚注定义以普通段落形态到达的路径（结构化定义见
+    `_note_line_marker_supers`）；docs/15 §6「渲染端零推断」已将其列为待删除项，
+    本次只做标记字面更正、不动猜测范围（避免越界改动）。
+    """
+    text = _footnote_cite_supers(text)
     # 行首脚注解释标记 + 空格 + 汉字；排除公式变量行（字母后是 — 破折号）。
     text = re.sub(r"^([ａ-ｚa-z])(?:[ \u3000]+)([\u4e00-\u9fff])", "\x00SUP\x00\\1\x00/SUP\x00 \\2", text)
     # 行首脚注解释标记后紧跟汉字（OCR 丢了分隔空格）。
@@ -2116,7 +2410,7 @@ def _table_cell_superscripts(text: str) -> str:
     变量等）一律按普通文本渲染，不做任何字形猜测。
     """
     # 猜测（正文解释行的行首字母规则见 _footnote_superscripts，仅用于表外段落）。
-    text = re.sub(r"\[foot:([0-9A-Za-z_-]+)\]", lambda m: f"\x00SUP\x00{m.group(1)})\x00/SUP\x00", text)
+    text = _footnote_cite_supers(text)
     # 上角标还原（2026-09-02，GB_3100-2026 表2/表3/附录B 等）：MinerU 文本抽取
     # 把上标拍平成普通字符——s−1→s⁻¹、N/m2→N/m²、10-2→10⁻²、10²4→10²⁴。
     # 只作用于表格单元格（上下文受限，单元格几乎必是单位/量值），正文不做
@@ -2259,7 +2553,7 @@ def _unit_line_style(styles: dict[str, Any]) -> Any:
     )
 
 
-def _append_content(story: list[Any], content: dict[str, Any], registries: dict[str, dict[str, dict[str, Any]]], styles: dict[str, Any], font: str, report: PDFRenderReport, asset_dir: Path, colors: Any, Table: Any, TableStyle: Any, Paragraph: Any, Spacer: Any, Image: Any, content_width: float = _BODY_MEASURE, enclosing: str | None = None) -> None:
+def _append_content(story: list[Any], content: dict[str, Any], registries: dict[str, dict[str, dict[str, Any]]], styles: dict[str, Any], font: str, report: PDFRenderReport, asset_dir: Path, colors: Any, Table: Any, TableStyle: Any, Paragraph: Any, Spacer: Any, Image: Any, content_width: float = _BODY_MEASURE, enclosing: str | None = None, explanation_sink: list[str] | None = None) -> None:
     # 规则对应: GEN-032（表格题注拆分：居中题注 + 右对齐单位行）、GBT-B04（列项缩进）、
     # GBT-B10（注标记小五号黑体、注内容小五号宋体）、GBT-B11（示例标记小五号黑体、
     # 示例内容小五号宋体）、GBT-X06（公式另行居中、编号右对齐）、GBT-X01/B06（图与图题）。
@@ -2293,8 +2587,24 @@ def _append_content(story: list[Any], content: dict[str, Any], registries: dict[
             # number) render flush left per GBT-B02; ordinary body text keeps
             # the two-Han-character first-line indent.
             if kind == "footnote":
-                # 脚注定义：占位（0 高），文本由页钩子绘到本页页脚（不占正文流位置）。
-                story.append(_FootnoteAnchor(content.get("textContent", "")))
+                # 脚注定义的绘制位置由 notes[].anchorKind 决定（结构化，零推断）：
+                # 表脚注（tableCell）= 由所属表格绘成**表框内**的表末通栏行（10.4.2.2、
+                # 10.4.4.2，见 _append_table 的 trailing_notes）——此处跳过，不重复绘；
+                # 图脚注（figurePart）= 原位小五号左对齐（GB/T 1.1 9.12.2，排在图之下）；
+                # 条文脚注（page）= 0 高占位，文本由页钩子绘到本页页脚。
+                note_meta = (registries.get("note") or {}).get(str(content.get("id") or "")) or {}
+                if note_meta.get("anchorKind") == "tableCell":
+                    pass
+                elif note_meta.get("anchorKind") == "figurePart":
+                    # 图脚注注文（GB/T 1.1-2020 9.12.2）：行首标记是上标裸小写字母。
+                    story.append(
+                        Paragraph(
+                            _markup(_note_line_marker_supers(text.strip())),
+                            _table_note_style(styles),
+                        )
+                    )
+                else:
+                    story.append(_FootnoteAnchor(content.get("textContent", "")))
             else:
                 # 编号后接拉丁字母的裸条（"4.2 SI 是采用…"）需要所在节点的条号确认，
                 # 故把节点的条号（enclosing）传进判定；无上下文时退回正文段。
@@ -2342,8 +2652,7 @@ def _append_content(story: list[Any], content: dict[str, Any], registries: dict[
             if ocr_l_one and marker in ("1)", "1）"):
                 marker = "l）"
             is_bullet = marker in ("●", "○", "•")
-            # 数字编号与间隔号属第二层次（list-sub），其余属第一层次（list）；
-            # 判定与 docx 侧共用（docx_renderer 导入本函数）。
+            # 数字编号与间隔号属第二层次（list-sub），其余属第一层次（list）。
             list_style = styles["list-sub"] if _list_is_sub_level(marker, uniform_bullets) else styles["list"]
             label = marker
             marker_size = list_style.fontSize
@@ -2362,7 +2671,7 @@ def _append_content(story: list[Any], content: dict[str, Any], registries: dict[
                 )
             story.append(Paragraph(text_out, list_style))
     elif kind == "table":
-        _append_table(story, registries["tables"][content["tableRef"]], styles, colors, Table, TableStyle, Paragraph, asset_dir=asset_dir, Image=Image, content_width=content_width, label_font=font)
+        _append_table(story, registries["tables"][content["tableRef"]], styles, colors, Table, TableStyle, Paragraph, asset_dir=asset_dir, Image=Image, content_width=content_width, label_font=font, trailing_notes=_table_footnote_lines(registries, content.get("id")))
     elif kind == "formula":
         formula = registries["formulas"][content["formulaRef"]]
         number = _formula_number_text(formula.get("number"))
@@ -2409,6 +2718,16 @@ def _append_content(story: list[Any], content: dict[str, Any], registries: dict[
             )
         else:
             story.append(formula_flowable)
+        # 式中解释组（docs/15 §3.8，GEN-126/129）：零推断——只有声明字段才绘制，逐行
+        # `symbol——definition；`。**发射顺序由调用方按「式中：」引入行决定**（引入行在前、
+        # 条目在后）：给了 sink 就先暂存，否则就地绘制（直接调用本函数的旧路径不改行为）。
+        lines = _formula_explanation_lines(formula)
+        if explanation_sink is None:
+            for line in lines:
+                story.append(Paragraph(_markup(line), _formula_explanation_style(styles)))
+        else:
+            explanation_sink.extend(lines)
+
     elif kind == "figure":
         figure = registries["figures"][content["figureRef"]]
         asset = figure.get("assetRef")
@@ -2449,6 +2768,9 @@ def _append_content(story: list[Any], content: dict[str, Any], registries: dict[
         caption = _figure_caption_text(figure)
         if caption:
             figure_flowables.append(Paragraph(_markup(caption), _figure_caption_style(figure, styles)))
+        # 图例与分图题注（docs/15 §3.7/§3.8）：零推断——只有声明字段才绘制。
+        for line in _figure_ancillary_lines(figure):
+            figure_flowables.append(Paragraph(_markup(line), _figure_ancillary_style(figure, styles)))
         story.append(KeepTogether(figure_flowables))
     elif kind == "other":
         unknown = registries["unknownContents"].get(content.get("unknownRef"), {})
@@ -2501,6 +2823,7 @@ def _table_cell_flowables(
     cell_width: float,
     is_header: bool,
     *,
+    note_row: bool = False,
     styles: dict[str, Any],
     cell_image_sizes: dict[str, list[float]],
     cell_image_re: re.Pattern[str],
@@ -2528,14 +2851,19 @@ def _table_cell_flowables(
     cell_style = styles["table"] if is_header else styles["table-body"]
     flowables: list[Any] = []
     stripped_note = cell_image_re.sub("", cell_text).strip()
-    if _TABLE_NOTE_CELL_RE.match(stripped_note):
+    # 表脚注行（`note_row`，由 _append_table 的表末通栏行带标记传入）与表内注行同版式：
+    # 居左、首行空两格、小五号（GB/T 1.1 10.4.4.1/10.4.4.2、表 F.1 序号 45/46）。
+    if note_row or _TABLE_NOTE_CELL_RE.match(stripped_note):
         base = _table_note_style(styles)
         for note_part in _split_table_note_parts(cell_text):
             note_style = _table_note_hang_style(styles, note_part, base)
+            # 表脚注注文行（note_row）：行首标记上标化（裸小写字母，GB/T 1.1-2020 9.12.2）；
+            # 表内注行（注1：…）不改——其标记由 _note_example_label 走黑体标记通道。
+            marked_part = _note_line_marker_supers(note_part) if note_row else note_part
             flowables.append(
                 Paragraph(
                     # 表内注标记黑体、注内容小五号宋体（GBT-B10；附录F 序号44/45）。
-                    _label_markup(_table_cell_superscripts(note_part), label_font, em_size=note_style.fontSize).replace("\x00BR\x00", "<br/>"),
+                    _label_markup(_table_cell_superscripts(marked_part), label_font, em_size=note_style.fontSize).replace("\x00BR\x00", "<br/>"),
                     note_style,
                 )
             )
@@ -2543,7 +2871,7 @@ def _table_cell_flowables(
     position = 0
     for match in cell_image_re.finditer(cell_text):
         text_part = cell_text[position:match.start()]
-        if text_part.strip():
+        if text_part.strip() and not _is_break_only(text_part):
             marked = text_part.replace("<br>", "\x00BR\x00")
             flowables.append(Paragraph(_label_markup(_table_cell_superscripts(marked), label_font, em_size=cell_style.fontSize).replace("\x00BR\x00", "<br/>"), cell_style))
         if Image is not None and asset_dir is not None:
@@ -2567,7 +2895,10 @@ def _table_cell_flowables(
                 flowables.append(image)
         position = match.end()
     tail = cell_text[position:]
-    if tail.strip() or not flowables:
+    if _is_break_only(tail):
+        if not flowables:                      # 整格只有换行标记：绘空段，不绘字面标记
+            flowables.append(Paragraph("", cell_style))
+    elif tail.strip() or not flowables:
         marked = tail.replace("<br>", "\x00BR\x00")
         flowables.append(Paragraph(_label_markup(_table_cell_superscripts(marked), label_font, em_size=cell_style.fontSize).replace("\x00BR\x00", "<br/>"), cell_style))
     return flowables
@@ -2605,7 +2936,7 @@ def _table_caption_keep_height(
     return required
 
 
-def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any], colors: Any, Table: Any, TableStyle: Any, Paragraph: Any, *, asset_dir: Path | None = None, Image: Any = None, content_width: float = _BODY_MEASURE, label_font: str = "") -> None:
+def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any], colors: Any, Table: Any, TableStyle: Any, Paragraph: Any, *, asset_dir: Path | None = None, Image: Any = None, content_width: float = _BODY_MEASURE, label_font: str = "", trailing_notes: list[str] | None = None) -> None:
     # 规则对应: GBT-B07（表编号表题居中置于表上、表头框线、数字小五号宋体）、
     # GBT-B13/GEN-115（转页接排：完整表头重复 + 续表题注「（续）」 + 单位陈述 + 题注不孤行）、
     # GEN-114（表头行数 header-rows → 底纹与 repeatRows 覆盖全部表头行）、
@@ -2621,7 +2952,7 @@ def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any
     # 题注/单位行先攒着：竖排放进正文流；横排（GEN-103）随表一起旋转、落在订口一侧。
     caption_flowables: list[Any] = []
     if number or caption:
-        caption_flowables.append(Paragraph(_markup(f"表{number} {caption}".strip()), styles["caption"]))
+        caption_flowables.append(Paragraph(_markup(_table_caption_text(table)), styles["caption"]))
     # GB/T 1.1 表题注块：单位行（"单位为毫米"）小号右对齐，紧贴表格上方
     # （GEN-032；table-unit 样式 alignment=2 右对齐、spaceAfter=0 贴表框）。
     if unit:
@@ -2631,6 +2962,21 @@ def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any
         )
         caption_flowables.append(Paragraph(_markup(f"单位为{unit}"), unit_style))
     rows = sorted(table.get("rows", []), key=lambda row: row["rowIndex"])
+    # 表脚注并表（GB/T 1.1-2020 10.4.2.2 / 10.4.4.2）：归属本表的表脚注正文作为**表末通栏行**
+    # 并入表体，与表同框同框线（`noteRow` 标记 → 该行按表注样式绘、跨全部列）。canonical 里
+    # 表脚注写在表格块内（`ssir:foot:` 定义紧随表末行），渲染端据此把它们绘在**表框内**。
+    if trailing_notes:
+        note_index = max((int(row["rowIndex"]) for row in rows), default=-1) + 1
+        rows = rows + [{
+            "id": f"{table.get('id')}#FootRow",
+            "rowIndex": note_index,
+            "isHeader": False,
+            "noteRow": True,
+            "cells": [{
+                "colIndex": 0, "rowIndex": note_index, "colspan": 1, "rowspan": 1,
+                "isHeader": False, "text": "<br>".join(trailing_notes),
+            }],
+        }]
     # 表头行数（GEN-114）：parser 按 header-rows 打标，此处只数前导表头行——底纹与
     # 转页重复都以它为界（reportlab 的 repeatRows 见 _grid）。
     header_row_count = 0
@@ -2648,7 +2994,7 @@ def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any
         serif_font = str(styles["body"].fontName)
         continuation_flowables.append(
             Paragraph(
-                _markup(f"表{number} {caption}".strip()) + f'<font name="{serif_font}">（续）</font>',
+                _markup(_table_caption_text(table)) + f'<font name="{serif_font}">（续）</font>',
                 styles["caption"],
             )
         )
@@ -2665,11 +3011,11 @@ def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any
     # 单元格宽、不放大）显示，使表中图与原图尺寸相当（GEN-098 / GBT-X02）。
     cell_image_sizes = table.get("cellImageSizes") or {}
 
-    def _render_cell(cell_text: str, cell_width: float, is_header: bool = False) -> list[Any]:
+    def _render_cell(cell_text: str, cell_width: float, is_header: bool = False, note_row: bool = False) -> list[Any]:
         # 单元格渲染实现已提为模块级 _table_cell_flowables（列宽分配的折行测量与
         # 渲染共用同一份代码，GEN-110）。
         return _table_cell_flowables(
-            cell_text, cell_width, is_header,
+            cell_text, cell_width, is_header, note_row=note_row,
             styles=styles, cell_image_sizes=cell_image_sizes, cell_image_re=cell_image_re,
             label_font=label_font, asset_dir=asset_dir, Image=Image,
         )
@@ -2677,6 +3023,13 @@ def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any
     if not rows or not rows[0].get("cells"):
         return
     col_count = max(len(sorted(row.get("cells", []), key=lambda cell: cell["colIndex"])) for row in rows)
+    # 表脚注行跨**全部列**（通栏）：此时列数已知，把合成行的 colspan 补足，SPAN 由下面的
+    # 通用合并循环统一登记（与 canonical 里通栏注行同一形态）。
+    for row in rows:
+        if row.get("noteRow"):
+            for cell in row["cells"]:
+                cell["colspan"] = col_count
+                cell["rowspan"] = 1
     # 列宽按内容分配（2026-09-03，通用规则：尽量利用版面宽度）：每列需求 =
     # 该列最宽单元格的自然宽度（CJK≈1em、拉丁≈0.55em；colspan 摊分；通栏
     # 注行/单长格不参与），按需求比例把“当前容器可用内容宽”（正文 455pt /
@@ -2712,7 +3065,7 @@ def _append_table(story: list[Any], table: dict[str, Any], styles: dict[str, Any
             start = cell["colIndex"]
             return sum(widths[start:start + colspan])
 
-        data = [[_render_cell(cell.get("text", ""), _cell_render_width(cell), is_header=bool(row.get("isHeader"))) for cell in sorted(row.get("cells", []), key=lambda cell: cell["colIndex"])] for row in rows]
+        data = [[_render_cell(cell.get("text", ""), _cell_render_width(cell), is_header=bool(row.get("isHeader")), note_row=bool(row.get("noteRow"))) for cell in sorted(row.get("cells", []), key=lambda cell: cell["colIndex"])] for row in rows]
         built = _toc_tracked_table_class(Table)(data, colWidths=widths, repeatRows=sum(1 for row in rows if row.get("isHeader")))
         # 目次「表N」行的页码来源：预检通道按 ssir_id 记录本表所在页（render_pdf 的
         # _record_pages）。表在框内/单元格内时 afterFlowable 不触发，其行页码留 0。
@@ -3491,7 +3844,7 @@ def _latex_to_text(latex: str) -> str:
 
     规则对应: GBT-X06（数学公式另行居中编排；无法排版时以可读文本呈现）、
     GBT-B12/GEN-116（量符号斜体、上划线——行内通道由 `_inline_math_markup` 在拍平当步补齐；
-    本函数只做「可读文本」这一层，保持与 docx 侧共用的纯文本语义）。
+    本函数只做「可读文本」这一层，纯文本语义）。
     """
     text = latex.strip()
     # 0) 嵌套花括号命令组展开（2026-09-03，GB_T_1.1-2020 9.4.4.4/9.4.5.2 型：
@@ -3720,9 +4073,8 @@ _LIT_STAR_RE = re.compile(r"(?<![A-Za-z0-9])\*+(?![A-Za-z0-9])")
 def _protect_literal_stars(text: str) -> str:
     r"""把字面星号（转义 \* 与两侧非词字符簇）编码为 AST 哨兵。
 
-    仅 docx 渲染端（`docx_renderer._add_markup`）仍走本判据；PDF 侧已改用
-    `_resolve_emphasis` 的**定界符簇配对**判据（汉字内容的强调不再被误判为字面
-    星号），见其上方注释。docx 侧同步改造按文档暂停指令记为未做项。
+    历史判据（保留以供对照）：现役渲染走 `_resolve_emphasis` 的**定界符簇配对**
+    判据（汉字内容的强调不再被误判为字面星号），见其上方注释。
     """
     text = text.replace("\\*", "\x00AST1\x00")
     return _LIT_STAR_RE.sub(lambda m: f"\x00AST{len(m.group())}\x00", text)
@@ -3762,7 +4114,7 @@ def _fixed_gap(width: float) -> str:
 
 
 def _list_is_sub_level(marker: str, uniform_bullets: bool) -> bool:
-    """列项层次归属（GB/T 1.1-2020 10.2.2；pdf/docx 两侧共用判定）。
+    """列项层次归属（GB/T 1.1-2020 10.2.2；渲染端单一判据）。
 
     第二层次 = 数字编号（1)、2)）与间隔号（·）；圆点（●○•）在整组清一色圆点时
     属第一层次（纯圆点列项），与 a)/1)/—— 等标记混排时属第二层次。
@@ -3841,6 +4193,11 @@ def _wrap_greek_letters(escaped: str) -> str:
 
 def _markup(text: str, em_size: float | None = None) -> str:
     text = str(text)
+    # 脚注引用点 `[foot:L]`（一格多角标 `[foot:a、c]`）→ 角标哨兵；标记字面按
+    # GB/T 1.1-2020 9.12.1/9.12.2 分族（判据单源在 parser.footnote_marker_text）。
+    # 放在文本流水线**最前**：图题、单元格、示例框、注等所有文本路径同规处理
+    # （实测漏点：图题路径未做替换，`[foot:c]` 字面泄漏进产物）。判据单源在 parser。
+    text = _footnote_cite_supers(text)
     # 公式变量解释项（「式中：」下方逐项，GB/T 1.1-2020 9.9.3/10.4.3；CSM-OCR-018）：
     # 变量与破折号之间、破折号与解释之间各空四分之一汉字。字隙用**固定字隙哨兵**
     # （同 GBT-B12 数值-单位间隙），不用空格——两端对齐会把空格字节一起拉伸。
@@ -4523,13 +4880,19 @@ _TERM_ENTRY_TITLE_RE = re.compile(
 def _term_entry_text(node: dict[str, Any], number: str, title: str) -> str | None:
     """术语条目的术语行「术语　英文对应词」，不是术语条目时返回 None。
 
-    判据：点分条目编号（≥3 段，如 3.1.2；与 parser 的术语条目合并判据同源）+
-    标题为「汉字串 + 纯拉丁英文对应词」。附录/示例内容块不参与（示例文档自带
-    编号与名称是文档名，不是本标准术语条目）。
+    判据：**优先用 builder 已配对的 ``term``/``englishTerm``**——它们只在「术语和定义」
+    要素内（编号形如 3.x/3.x.y）配对，故编号段数不限：GB/T 5171.1-2014 一类按 3.1/3.2
+    两段编号列术语的标准同样命中（2026-09-23 用户报告：其术语的中英文标题未加黑）。
+    没有配对字段时退回原判据：点分编号 ≥3 段（如 3.1.2）+ 标题为「汉字串 + 纯拉丁英文
+    对应词」——附录/示例内容块不参与（示例文档自带编号与名称是文档名，不是本标准术语条目）。
     """
-    if not number or number.count(".") < 2:
-        return None
     if node.get("nodeType") == "annex" or node.get("exampleContent"):
+        return None
+    term = str(node.get("term") or "").strip()
+    english = str(node.get("englishTerm") or "").strip()
+    if term and english:
+        return f"{term}\u3000{english}"
+    if not number or number.count(".") < 2:
         return None
     match = _TERM_ENTRY_TITLE_RE.match(str(title).strip())
     if not match:
@@ -4649,7 +5012,7 @@ def _term_title_from_sibling(node: dict[str, Any], next_node: dict[str, Any] | N
 
     GB/T 20001 术语条目「中文English」常被解析为裸节（number=3.1, title=""）
     加紧随的 documentBlock 标题（扁平树为兄弟节点，嵌套树为单个子节点）。
-    目次需要 "3.1 中文 English" 形式的完整标签；正文顺序与 roundtrip 不受影响。
+    目次需要 "3.1 中文 English" 形式的完整标签；正文顺序不受影响。
     """
     children = node.get("children", [])
     candidates: list[dict[str, Any]] = []

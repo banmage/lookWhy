@@ -107,8 +107,63 @@ _REFERENCE_GUIDE_OCR_RE = re.compile(r"^卜列文件对于本文件")
 # `<!--ssir:foot:N-->注释文字<!--ssir:/foot-->`（写在引用段落之后；渲染端仍绘到
 # 引用所在页页脚——「其他逻辑不变」）。旧 GFM 写法 `[^N]` / `[^N]:` 已废弃：
 # 解析时按 CSM-STRUCT-008 报 issue 并提示迁移，迁移工具 tools/replay_footnote_markers.py。
-FOOTNOTE_CITE_RE = re.compile(r"\[foot:([0-9A-Za-z_-]+)\]")
+FOOTNOTE_CITE_RE = re.compile(r"\[foot:([0-9A-Za-z_-]+(?:[、,，][0-9A-Za-z_-]+)*)\]")
+FOOTNOTE_LABEL_SEP_RE = re.compile(r"[、,，]")
+# 载荷里的编号 token（字母/数字/下划线）——`footnote_marker_text` 只对**数字**编号补半圆括号
+# （条文脚注 9.12.1）；字母等图表脚注编号（9.12.2）原样保留，分隔符原样保留。
+FOOTNOTE_PAYLOAD_TOKEN_RE = re.compile(r"[0-9A-Za-z_]+")
 FOOTNOTE_MARKER_PREFIX = "foot:"
+
+
+def split_footnote_labels(raw: str) -> list[str]:
+    """`[foot:a、c]` 的标签串 → 标签列表（GB/T 1.1 表脚注一格可含多个角标）。"""
+    return [part.strip() for part in FOOTNOTE_LABEL_SEP_RE.split(str(raw)) if part.strip()]
+
+
+def footnote_marker_text(payload: str) -> str:
+    """`[foot:…]` 载荷 → **标记字面**（GB/T 1.1-2020 9.12.1 / 9.12.2）。
+
+    两族的编号方案不同，判据就是编号字符本身（不做上下文推断）：
+    - **条文脚注**（9.12.1）：编号 = 从 1 开始的阿拉伯数字，形式为「后带半圆括号」
+      → `1)`、`2)`；
+    - **图表脚注**（9.12.2）：编号 = **上标形式的小写拉丁字母**（原文举例即 `a`、`b`、
+      `c` 等，**没有半圆括号**）→ 原样，多角标按源分隔符连排 `b、d`。
+
+    语料源版面实测（标记 span 4.66pt / 正文 8.25pt，均无括号）：GB_T_10401-2023 表11
+    「振动^{b、d}」、GB_T_1.1-2020 表3「规范性引用文件^a」/附录F 表F.1、GB_T_5171.1-2014
+    表19/20、GB_T_20001.10-2014 表1；条文脚注则相反（GB_T_1.1-2020 封面条款实测
+    `文件编号^{1)}`）。历史缺陷：渲染端对两族一律补 `)`，图表脚注被写成本不存在的
+    `b)d)`（2026-09-24 用户报告）。
+    """
+    return FOOTNOTE_PAYLOAD_TOKEN_RE.sub(
+        lambda match: f"{match.group(0)})" if match.group(0).isdigit() else match.group(0),
+        str(payload),
+    )
+
+
+def footnote_label_marker(label: str) -> str:
+    """单个脚注标签 → 标记字面（注文行首、页脚注编号同用；判据同 :func:`footnote_marker_text`）。"""
+    return footnote_marker_text(str(label))
+
+
+# **表注/注文行的起始标记**（判据单源，renderer 与 build 端同用）：表内注「注N：」或**图表
+# 脚注**的字母标记（GB/T 1.1-2020 9.12.2：从 a 开始的上标形式小写拉丁字母，**不带半圆
+# 括号**）。字母族按「字母 + 空白」判定（源版面实测「标记与注文之间一个空格」），并宽容旧
+# 形态 `a)`；条文脚注（9.12.1，数字族 `1)`）的注文行落在**页脚**、不参与表注切条，故不在此
+# 判据内。已知同形边界：注文正文以「b 型…」这类「字母 + 空格」开头时会与标记同形——语料
+# 实测 0 例（9 份 canonical 的脚注定义体与表注行均无此形态），故按可判形态处理、不做上下文
+# 推断（docs/12 §3.84）。
+TABLE_NOTE_START_RE = re.compile(r"^(?:注\s*\d*\s*[:：]|[a-z]\s*(?:[)）]|\s))")
+
+
+def footnote_citations(text: str) -> list[str]:
+    """文本里的全部脚注引用标签（按出现顺序，展开一格多角标）。单一判据源。"""
+    labels: list[str] = []
+    for match in FOOTNOTE_CITE_RE.finditer(str(text or "")):
+        labels.extend(split_footnote_labels(match.group(1)))
+    return labels
+
+
 _FOOTNOTE_DEF_RE = re.compile(
     r"<!--\s*ssir:foot:([0-9A-Za-z_-]+)\s*-->(.*?)<!--\s*ssir:/foot\s*-->", re.S
 )
@@ -259,6 +314,31 @@ TABLE_BARE_CAPTION_RE = re.compile(r"^\*\*表([^\s]+)\*\*$")
 # 允许 "表" 与编号之间有空格（OCR 排法 "表 3 轴伸径向圆跳动"，2026-08-31）。
 TABLE_HEADING_CAPTION_RE = re.compile(r"^表\s*([^\s]+)\s+(.+)$")
 
+
+# 图题注判据的**单源**（2026-09-24 从 builder 移入，避免 parser/builder 各写一份，
+# 与 `parser.term_entry_pair` 同例）：canonical 里图节点用 `![图 1 电气原理图](assets/…)`
+# 的 alt 文本承载可见题注。返回 (编号, 题名)；不匹配「图N 题名」形态时编号为 None、
+# 题名为原文（宁保留不丢）。
+def _strip_outer_brackets(text: str) -> str:
+    """去掉**一层配对**的外方括号（`[图1 电路图[foot:c]]` → `图1 电路图[foot:c]`）。
+
+    历史缺陷（2026-09-22）：此处原用 `str.strip("[]")`，会把**内层** `[foot:c]` 的右括号
+    一起吃掉（图题变 `图1 电路图[foot:c`，角标字面泄漏进产物）。去掉一层配对括号是
+    通用规则，与括号内是什么无关。
+    """
+    stripped = text.strip()
+    if len(stripped) >= 2 and stripped.startswith("[") and stripped.endswith("]"):
+        return stripped[1:-1].strip()
+    return stripped
+
+
+def figure_caption_parts(text: str) -> tuple[str | None, str | None]:
+    clean = _strip_outer_brackets(text)
+    match = re.match(r"^图\s*([^\s]+)\s+(.+?)(?:（图片占位）)?$", clean)
+    if match:
+        return match.group(1), match.group(2)
+    return None, clean or None
+
 # 裸条号标题（MinerU 偶尔把章条标题抽成普通段落，无 ## 前缀——如
 # QB_T_2946-2020 第 3 章 "3 产品分类和型号命名" / "3.1 电动机分类和型号命名" /
 # "3.1.1 电动机分类"，只有 3.1.2 保留 ##，导致 GBT-H03 报"章编号不连续：缺失 3"
@@ -323,6 +403,37 @@ def _is_bare_enumeration(enum_lines: list[str]) -> bool:
     sentence_ends = sum(1 for ln in enum_lines if ln.endswith(("。", "；", "：", ";", ".")))
     semi_ends = sum(1 for ln in enum_lines if ln.endswith(("；", ";")))
     return sentence_ends >= 2 and sentence_ends * 3 >= len(enum_lines) * 2 and semi_ends >= 1
+
+
+# 列表项终结符候选（docs/15 §3.x ListGroup.terminator）：全体项一致才采用，否则留空。
+_LIST_TERMINATORS = ("；", "。", "，", ";", ".", ",")
+
+
+def _annotate_list_groups(blocks: list[Block]) -> None:
+    """列表组标注（docs/15 §3.x）：引语与终结符，全部为**通用判据**，不逐份特判。
+
+    - 引语：紧邻的前一块是段落/引语/注且以冒号结尾（中英文冒号）→ ``data["intro"]=True``；
+      由 Builder 解析为同节点前一个内容元素的标识（`ListGroup.introRef`）。
+    - 终结符：所有列表项尾字符同为 ``；;。.，,`` 之一 → ``data["terminator"]``；
+      项间不一致时留空（不猜、不改写正文标点）。
+    - 嵌套层级：parser 目前不跟踪列表缩进层级，故不产出 ``level``（如实留空）。
+    """
+    for index, block in enumerate(blocks):
+        if block.kind != "list":
+            continue
+        data = block.data if isinstance(block.data, dict) else {}
+        block.data = data
+        data.pop("intro", None)
+        data.pop("terminator", None)
+        previous = blocks[index - 1] if index else None
+        if previous is not None and previous.kind in {"paragraph", "quote", "note"}:
+            if (previous.text or "").rstrip().endswith(("：", ":")):
+                data["intro"] = True
+        tails = {str(item.get("text") or "").rstrip()[-1:] for item in data.get("items") or []}
+        if len(tails) == 1:
+            tail = tails.pop()
+            if tail and tail in _LIST_TERMINATORS:
+                data["terminator"] = tail
 
 
 def _absorb_table_note_spill(blocks: list[Block], warnings: list[str]) -> list[Block]:
@@ -457,6 +568,41 @@ def _promoted_bare_headings(confirmed: set[str], candidates: dict[int, str]) -> 
     return promoted
 
 
+def _is_toc_entry_line(line: str) -> bool:
+    """目次条目行判据（区段用）：前缀像条目 + 不含句末标点 + 不是块起始行。"""
+    text = line.strip()
+    if not text or text.startswith(("<!--", "#", "```", "|", ">", "![", "$$")):
+        return False
+    if any(ch in text for ch in TOC_ENTRY_STOP_PUNCT):
+        return False
+    return bool(TOC_ENTRY_PREFIX_RE.match(text))
+
+
+def _toc_region_lines(lines: list[str], start: int) -> tuple[list[str], int]:
+    """收目次区段的条目行（`start` = 目次标题的**下一行**）。
+
+    区段到第一个不像条目的行（块起始行/句末标点/非条目前缀）或文件尾为止；条目之间的
+    空行可跳过（MinerU 有时按块分段）。返回 (条目行, 下一未消费行号)。
+    """
+    entries: list[str] = []
+    index = start
+    while index < len(lines):
+        text = lines[index].strip()
+        if not text:
+            lookahead = index + 1
+            while lookahead < len(lines) and not lines[lookahead].strip():
+                lookahead += 1
+            if lookahead < len(lines) and _is_toc_entry_line(lines[lookahead]):
+                index = lookahead
+                continue
+            break
+        if not _is_toc_entry_line(text):
+            break
+        entries.append(text)
+        index += 1
+    return entries, index
+
+
 # 单位为毫米 等单位行：位于表题注与表格之间，题注折叠时的 lookahead 可跳过，
 # 且折进 table directive 的 unit 属性（渲染为右对齐"单位为毫米"紧贴表格）。
 TABLE_UNIT_LINE_RE = re.compile(r"^单位\s*[为:：]\s*(\S{1,8})$")
@@ -515,10 +661,59 @@ SUPPORTED_DIRECTIVES = {
     "table",
     "table-merge",
     "figure",
+    "figure-legend",
+    "figure-sub",
     "formula",
+    "formula-vars",
     "list",
+    "note",
+    "toc",
     "unknown",
 }
+
+# 「声明 + 后续条目行」型指令（docs/15 §2.2/§3.7/§3.8）：声明体由**条目判据**界定——
+# 连续条目行（可被空行分隔，如 docs/15 §3.8 示例）直到出现不符合条目判据的块为止。
+DECLARATION_DIRECTIVES = {"figure-legend", "figure-sub", "formula-vars", "toc"}
+# 目次条目判据：`3.1 文件…………1`、`前言 …… V`、`引…………`（页码可缺）。
+# 点导引至少 3 个、其余导引符（…／·／．）至少 2 个，避免把正文里的省略号误判为条目。
+TOC_ENTRY_RE = re.compile(
+    r"^(?P<title>.+?)\s*(?:[.．]{3,}|[.．·…⋯]{2,})\s*(?P<page>\S+)?$"
+)
+# 目次条目的编号前缀（`3.1 文件` → number=3.1），无编号前置/文后要素留空。
+TOC_NUMBER_RE = re.compile(r"^(?P<number>[0-9]+(?:\.[0-9]+)*)\s*(?P<rest>.*)$")
+# 目次标题（`目次` / `目 次` / `目录` / `目 录`，容忍空白）：目次区段判据的入口。
+TOC_HEADING_TEXT_RE = re.compile(r"^(?:目\s*次|目\s*录)$")
+# 目次条目行的**前缀**判据：编号行（`1`/`3.1`/`A.1`）、附录行、文档级要素行
+# （前言/引言/参考文献/索引/封面）。导引符（`....`/`……`）**不作**判据——OCR 常把点线
+# 整段丢掉（JB_T_14425-2023 的 `5 型式与基本参数2` 只剩页码粘连、`6 技术要求…` 只剩
+# 一个省略号），按导引符判会把条目漏在区段外，而漏出去的行紧接着被裸条号提升成标题。
+TOC_ENTRY_PREFIX_RE = re.compile(
+    r"^(?:\d+(?:\.\d+)*|[A-Z](?:\.\d+)+|附\s*录|前\s*言|引\s*言|参\s*考\s*文\s*献|索\s*引|封\s*面)"
+)
+# 目次条目不含句末标点（8 份 curated canonical 的 458 条条目实测零命中）：目次区段内
+# 一旦出现句末标点即判为正文，终止区段——防止把紧邻的正文段吞进目次。
+TOC_ENTRY_STOP_PUNCT = "。！？；"
+# 声明体的配对结束指令（`<!-- ssir:/toc -->` 等）：声明体到此处结束，且该行不再进主循环。
+CLOSING_DIRECTIVE_RE = re.compile(r"^<!--\s*ssir:/\s*[A-Za-z][\w-]*\s*-->\s*$")
+# 条目行判据（判据单源：builder 从本模块导入，不再各写一份）。命名组即目标字段：
+# 图例 index/text、分图题注 label/text、式中解释 symbol/definition/terminator。
+LEGEND_ITEM_RE = re.compile(r"^(?P<index>[0-9]+|[A-Za-z])\s*[—–-]{1,2}\s*(?P<text>.+?)[；;。]?$")
+SUB_CAPTION_ITEM_RE = re.compile(r"^(?P<label>[A-Za-z0-9])\s*[)）]\s*(?P<text>.+)$")
+EXPLANATION_ITEM_RE = re.compile(
+    # 符号位：`$…$` 数学式，或 ≤8 字符且**不以标记字符开头**的符号
+    # （`(?![<!#|>`\[\-])` 挡住 `<!-- ssir:/box -->` 这类指令/标记行被当成条目——
+    #   否则声明体会把紧随其后的指令行吞进组内）。
+    r"^(?P<symbol>\$[^$]+\$|(?![<!#|>`\[\-])[^—–-]{1,8}?)"
+    r"\s*[—–-]{1,3}\s*(?P<definition>.+?)(?P<terminator>[；;。]?)$"
+)
+DECLARATION_ITEM_RES = {
+    "figure-legend": LEGEND_ITEM_RE,
+    "figure-sub": SUB_CAPTION_ITEM_RE,
+    "formula-vars": EXPLANATION_ITEM_RE,
+    "toc": TOC_ENTRY_RE,
+}
+# 声明条目行遇以下起始字符即终止（标题/围栏/表格行/引语/图片行）
+DECLARATION_STOP_PREFIXES = ("#", "```", "|", ">", "![")
 
 # These markers are emitted by the MinerU adapter solely to retain page-range
 # provenance while its chunks are merged.  They are not SSIR content and must
@@ -547,7 +742,7 @@ def escape_table_cell(text: str) -> str:
     会把 ``\\|`` 二次转义成 ``\\\\|``，再次 parse 时反斜杠转义追踪失效、公式里
     的 | 被误判为列分隔符（GB_T_755-2025 表12/13/15 报 "table row has 6 cells;
     expected 4"，normalize→parse 中断、无渲染产物）。
-    规则对应: normalize/roundtrip 幂等（写侧转义须与读侧语义一致）。
+    规则对应: normalize 幂等（写侧转义须与读侧语义一致）。
     """
     out: list[str] = []
     backslashes = 0
@@ -589,6 +784,133 @@ def _split_table_row(line: str) -> list[str]:
             current.append(char)
     cells.append("".join(current).strip())
     return cells
+
+
+# ---------------------------------------------------------------------------
+# 正文半角标点 → 全角（GEN-138，2026-09-24 用户裁定；docs/12 §3.87）
+#
+# 中文语境的标点按 GB/T 15834 惯例应为**全角形态**；源文档与 MinerU 常留半角
+# （`变频电源供电,并可通过…`、`第1部分:通用技术条件`、`(SAC/TC2)归口`、
+# 句末 `…归口.`），半角标点与汉字的视觉间隔明显偏小、成品形态与标准原文不一致。
+# 只在**汉字/中文标点语境**下转换，且必须成对（括号）或语义唯一（其余标点）：
+#   - 公式：`$$` 块（kind=formula）与行内 `$…$` 一律不动；
+#   - front matter（YAML 语法）与 `<!-- ssir:…-->` 指令（CSM 控制字符）不走本规则
+#     ——它们是语法而非文字，全角化会让文件失效（docs/12 §3.86 事故）；
+#   - 未知/代码块（kind=unknown、` ```text `）保留原文（GEN-052）；
+#   - 数字/字母/单位/`-`/`/`/`%`/空格不转换（`GB/T 1.1-2020`、`1.5`、`m/s` 不动）。
+# 与 GBT-C19（编号括号统一全角）同规：排版归一**不落 warning**，命中数由
+# `tools/replay_body_punctuation.py` 干跑统计，避免淹没真实告警。
+BODY_PUNCT_FULLWIDTH = str.maketrans({",": "，", ";": "；", ":": "：", "?": "？", "!": "！"})
+_BODY_PUNCT_SINGLE = ",;:?!"
+_CJK_LIKE_RE = re.compile(r"[\u3000-\u303f\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff01-\uff60\uffe0-\uffe6]")
+_BODY_MASK_PATTERNS = (
+    re.compile(r"\$\$[^$]*\$\$"),
+    re.compile(r"\$[^$\n]*\$"),
+    re.compile(r"<!--.*?-->"),
+)
+
+
+def _body_masked_positions(text: str) -> set[int]:
+    """行内公式 `$…$` / `$$…$$` 与 HTML 注释（指令）的字符下标。"""
+    masked: set[int] = set()
+    for pattern in _BODY_MASK_PATTERNS:
+        for match in pattern.finditer(text):
+            masked.update(range(match.start(), match.end()))
+    return masked
+
+
+def _cjk_like(char: str) -> bool:
+    """汉字或中文/全角标点（作为语境判据的「中文侧」）。"""
+    return bool(char) and bool(_CJK_LIKE_RE.match(char))
+
+
+def _ascii_word_char(char: str) -> bool:
+    return bool(char) and char.isascii() and char.isalnum()
+
+
+def _fullwidth_period_ok(text: str, index: int) -> bool:
+    """句末半角句号 → `。` 的守卫。
+
+    只在**行尾**（其后至行末仅剩空白）且左邻为汉字/中文标点时成立：行中的 `….`
+    可能是引用文件/参考文献条目的分隔点号（GB/T 7714 惯例，实测 GB_3100-2026
+    `国际计量局.国际单位制（SI）…`），局部判据无法与句号区分，故宁漏不误改；
+    目次点线 `….`、小数 `1.5`、拉丁缩写 `Hz.` 一律不动。
+    """
+    left = text[index - 1] if index else ""
+    if not _cjk_like(left):
+        return False
+    line_tail = text[index + 1 :].split("\n", 1)[0]
+    return line_tail.strip() == ""
+
+
+def normalise_body_punctuation(text: str) -> tuple[str, int]:
+    """把中文语境里的半角标点写成全角形态（GEN-138）。返回 (结果, 替换数)。
+
+    链式语境（`(见8.4);` → 括号先换 → `）` 成为 `;` 的中文邻居）最多迭代 3 轮
+    到不动点；每轮只把半角写成全角，收敛且幂等。
+    """
+    current = text
+    total = 0
+    for _ in range(3):
+        current, changed = _punctuation_pass(current)
+        total += changed
+        if not changed:
+            break
+    return current, total
+
+
+def _punctuation_pass(text: str) -> tuple[str, int]:
+    masked = _body_masked_positions(text)
+    chars = list(text)
+    changed = 0
+
+    # 1) 括号：成对处理（栈），避免只换一半产生「(…）」混配。
+    stack: list[tuple[int, str]] = []
+    for index, char in enumerate(text):
+        if index in masked:
+            continue
+        if char in "(（":
+            stack.append((index, char))
+            continue
+        if char not in ")）" or not stack:
+            continue
+        open_index, open_char = stack.pop()
+        if open_char == "（" and char == "）":
+            continue
+        if (open_char == "(" and char == "）") or (open_char == "（" and char == ")"):
+            # 混配（半角开+全角闭 或 全角开+半角闭）→ 统一成全角（GBT-C19 同源判据）。
+            chars[open_index if open_char == "(" else index] = "（" if open_char == "(" else "）"
+            changed += 1
+            continue
+        content = text[open_index + 1 : index]
+        left = text[open_index - 1] if open_index else ""
+        right = text[index + 1] if index + 1 < len(text) else ""
+        context = _cjk_like(left) or _cjk_like(right) or bool(_CJK_LIKE_RE.search(content))
+        if context and not (_ascii_word_char(left) and _ascii_word_char(right)):
+            chars[open_index] = "（"
+            chars[index] = "）"
+            changed += 2
+    return _finish_body_punctuation(text, chars, masked, changed)
+
+
+def _finish_body_punctuation(text: str, chars: list[str], masked: set[int], changed: int) -> tuple[str, int]:
+    """其余标点（含句末句号）的转换，与括号转换共用一次扫描返回。"""
+    for index, char in enumerate(text):
+        if index in masked or chars[index] != char:
+            continue
+        if char == ".":
+            if _fullwidth_period_ok(text, index):
+                chars[index] = "。"
+                changed += 1
+            continue
+        if char not in _BODY_PUNCT_SINGLE:
+            continue
+        left = text[index - 1] if index else ""
+        right = text[index + 1] if index + 1 < len(text) else ""
+        if _cjk_like(left) or _cjk_like(right):
+            chars[index] = char.translate(BODY_PUNCT_FULLWIDTH)
+            changed += 1
+    return "".join(chars), changed
 
 
 class CSMParser:
@@ -646,7 +968,7 @@ class CSMParser:
 
         body_offset = marker + len("\n---\n")
         body_start_line = text[:body_offset].count("\n") + 1
-        blocks, parse_errors, parse_warnings = self._parse_body(text[body_offset:], body_start_line)
+        blocks, parse_errors, parse_warnings = self._parse_body(text[body_offset:], body_start_line, issues)
         for warning in parse_warnings:
             issues.append(CSMIssue("CSM-STRUCT-001", "warning", warning))
         fatal_errors.extend(self._repair_tables(blocks, issues))
@@ -669,6 +991,7 @@ class CSMParser:
         self._flag_retired_script_markers(blocks, issues)
         self._demote_sentence_headed_clauses(blocks, issues)
         self._demote_index_letter_headings(blocks, issues)
+        self._normalise_body_punctuation_width(blocks)
         fatal_errors.extend(self._classify_body_errors(parse_errors, issues))
         self._normalise_metadata(metadata, blocks, source, issues)
         document_errors: list[str] = []
@@ -676,6 +999,7 @@ class CSMParser:
         fatal_errors.extend(self._classify_document_errors(document_errors, issues))
         self._assess_standard_profile(metadata, blocks, issues)
         self._append_declared_quality_notices(metadata, issues)
+        _annotate_list_groups(blocks)
         if self.strict:
             fatal_errors.extend(issue.display() for issue in issues if issue.severity in {"warning", "error"})
         if fatal_errors:
@@ -694,6 +1018,70 @@ class CSMParser:
     @staticmethod
     def _issue(issues: list[CSMIssue], code: str, message: str, *, line: int | None = None, repaired: bool = False, repair_action: str | None = None) -> None:
         issues.append(CSMIssue(code, "warning", message, line, repaired, repair_action))
+
+    # GEN-139 / CSM-TABLE-005（docs/12 §3.88，2026-09-24 用户裁定）：题注与单位陈述的
+    # **可见文字**（canonical 里的 `**表N 题名**` 题注行、"单位为毫米" 单位行、图题注
+    # alt 文本）是"所见即所得"的真值；指令属性（`caption-number`/`caption`/`unit`）是
+    # 它的投影。两者不一致时**以可见文字为准**（SSIR 里即落可见值），并把差异记成
+    # 结构化 issue——不再静默覆写，也不在渲染期回写（渲染端零推断、纯投影）。
+    @staticmethod
+    def _note_caption_attr_conflict(
+        issues: list[CSMIssue],
+        *,
+        target: str,
+        line: int,
+        ident: str | None,
+        attr: str,
+        attr_value: str,
+        visible_value: str,
+    ) -> None:
+        where = f"（{ident}）" if ident else ""
+        CSMParser._issue(
+            issues,
+            "CSM-TABLE-005",
+            f"{target}的 {attr} 与可见文字不一致{where}：属性 {attr_value!r} → 按可见文字取 {visible_value!r}。",
+            line=line,
+            repaired=True,
+            repair_action=(
+                f"Replaced attribute {attr}={attr_value!r} with the visible-text value "
+                f"{visible_value!r} (visible text wins, per GEN-139)."
+            ),
+        )
+
+    @staticmethod
+    def _align_figure_attrs_to_visible_text(
+        directive: "Directive",
+        alt_text: str,
+        unit_line: str | None,
+        line: int,
+        issues: list[CSMIssue],
+    ) -> None:
+        """图节点的题注/单位：**可见文字优先**（GEN-139，2026-09-24 用户裁定）。
+
+        图节点的题注进 SSIR 时一律取自 alt 文本（builder 用 `figure_caption_parts(block.text)`），
+        指令上的 `caption`/`caption-number`/`unit` 只是冗余投影；出现不一致时告警并把属性
+        对齐到可见值——不静默留两套写法（也不在渲染期回写）。
+        """
+        number, caption = figure_caption_parts(alt_text)
+        for attr_name, visible, target in (
+            ("caption-number", number, "图题注编号"),
+            ("caption", caption, "图题注"),
+            ("unit", unit_line, "图单位"),
+        ):
+            if not visible:
+                continue
+            prior = directive.attrs.get(attr_name)
+            if prior and prior != visible:
+                CSMParser._note_caption_attr_conflict(
+                    issues,
+                    target=target,
+                    line=line,
+                    ident=directive.attrs.get("id"),
+                    attr=attr_name,
+                    attr_value=prior,
+                    visible_value=visible,
+                )
+                directive.attrs[attr_name] = visible
 
     def _normalise_metadata(self, metadata: dict[str, Any], blocks: list[Block], source: Path, issues: list[CSMIssue]) -> None:
         """Fill only machine metadata defaults; never alter a standard's body text.
@@ -736,7 +1124,7 @@ class CSMParser:
             metadata["extensions"] = {}
             self._issue(issues, "CSM-META-010", "Missing or invalid extensions object; supplied an empty object.", repaired=True, repair_action="Set in-memory extensions to an empty object.")
 
-    def _parse_body(self, body: str, start_line: int) -> tuple[list[Block], list[str], list[str]]:
+    def _parse_body(self, body: str, start_line: int, issues: list[CSMIssue]) -> tuple[list[Block], list[str], list[str]]:
         # 规则对应: GEN-031/GBT-H02-H03（章条编号与层级）、GBT-X02（表格）、GBT-X06（公式）、
         # GEN-052（ssir 指令/引用注册表化，未知指令保留原文）。
         lines = body.splitlines()
@@ -748,6 +1136,9 @@ class CSMParser:
         errors: list[str] = []
         warnings: list[str] = []
         pending: dict[str, Directive] = {}
+        # `ssir:note`（docs/15 §3.6）：单行声明，绑定**下一个**注块（`> 注：…`）的归属；
+        # 未被任何注块消费则丢弃并告警（不静默）。
+        pending_note: Directive | None = None
         pending_table_caption: tuple[str, str] | None = None
         pending_table_unit: str | None = None
         # 图/表单位陈述行的挂起态（GEN-032）：单位行折进紧随的图/表节点，见 docs/12 §3.54。
@@ -961,19 +1352,131 @@ class CSMParser:
                     if name in {"table", "figure", "formula", "unknown", "block"} and "id" not in attrs:
                         errors.append(f"line {line_no(i)}: ssir:{name} requires id")
                     directive = Directive(name=name, attrs=attrs, line=line_no(i))
+                    if name == "note":
+                        pending_note = directive
+                        i += 1
+                        continue
+                    if name in DECLARATION_DIRECTIVES:
+                        # 声明体两种界定方式（docs/15 §2.2）：
+                        # ① **括起式**（存在配对 `<!-- ssir:/x -->`）→ 以结束指令界定，体内
+                        #    非条目行整行保留为条目（`{"text": …}`），**不截断、不丢行**；
+                        # ② 无配对 → 以条目判据界定：连续条目行（可被空行分隔，见 §3.8 示例），
+                        #    终止于首个不匹配条目判据的块。
+                        item_re = DECLARATION_ITEM_RES[name]
+                        start_line = line_no(i)
+                        closer_index = None
+                        probe = i + 1
+                        while probe < len(lines):
+                            stripped = lines[probe].strip()
+                            if CLOSING_DIRECTIVE_RE.match(stripped):
+                                closer_index = probe
+                                break
+                            if stripped.startswith(("#", "```")) or DIRECTIVE_RE.match(stripped):
+                                break
+                            probe += 1
+                        cursor = i + 1
+                        items: list[str] = []
+                        end_line = start_line
+                        if closer_index is not None:
+                            while cursor < closer_index:
+                                candidate = lines[cursor].strip()
+                                if candidate:
+                                    items.append(candidate)
+                                    end_line = line_no(cursor)
+                                cursor += 1
+                            end_line = line_no(closer_index)
+                            cursor = closer_index + 1
+                        else:
+                            while cursor < len(lines):
+                                candidate = lines[cursor].strip()
+                                if not candidate:
+                                    lookahead = cursor + 1
+                                    while lookahead < len(lines) and not lines[lookahead].strip():
+                                        lookahead += 1
+                                    following = lines[lookahead].strip() if lookahead < len(lines) else ""
+                                    if (
+                                        following
+                                        and item_re.match(following)
+                                        and not following.startswith(DECLARATION_STOP_PREFIXES)
+                                        and not CLOSING_DIRECTIVE_RE.match(following)
+                                    ):
+                                        cursor = lookahead
+                                        continue
+                                    break
+                                if DIRECTIVE_RE.match(candidate) or CLOSING_DIRECTIVE_RE.match(candidate):
+                                    break
+                                if candidate.startswith(DECLARATION_STOP_PREFIXES):
+                                    break
+                                if not item_re.match(candidate):
+                                    break
+                                items.append(candidate)
+                                end_line = line_no(cursor)
+                                cursor += 1
+                        blocks.append(
+                            Block(
+                                kind=name,
+                                start_line=start_line,
+                                end_line=end_line,
+                                text="\n".join(items),
+                                directive=directive,
+                            )
+                        )
+                        if not items:
+                            warnings.append(
+                                f"line {start_line}: ssir:{name} declaration has no entries"
+                            )
+                        i = max(cursor, i + 1)
+                        continue
                     if name == "table":
                         # 表题注被提升为标题/普通段落（heading-/paragraph-shaped
-                        # caption）已暂存，在此合并进 table attrs；已有显式
-                        # caption 时以显式为准，且编号不一致的暂存题注不合并
-                        # （防把正文"表5 …"误并进表4 的 directive）。
+                        # caption）已暂存，在此合并进 table attrs。判据（GEN-139，
+                        # 2026-09-24 用户裁定）：**可见文字优先**——暂存题注就是 canonical
+                        # 里那一行可见文字，属性只是它的投影，故同一编号时以暂存题注
+                        # 覆盖属性并告警（此前是 setdefault，属性静默胜出）；编号不一致
+                        # 时保守不并（防把正文"见 表5 …"误并进表4），但**不再静默**。
                         if pending_table_caption is not None:
-                            if "caption-number" not in attrs or attrs["caption-number"] == pending_table_caption[0]:
-                                attrs.setdefault("caption-number", pending_table_caption[0])
-                                attrs.setdefault("caption", pending_table_caption[1])
+                            number, title = pending_table_caption
+                            explicit_number = attrs.get("caption-number")
+                            if explicit_number is not None and explicit_number != number:
+                                self._issue(
+                                    issues,
+                                    "CSM-TABLE-005",
+                                    f"暂存题注（表{number} {title!r}）未并入表格题注："
+                                    f"与指令 caption-number={explicit_number!r} 不一致（保守不并，防误并正文）。",
+                                    line=line_no(i),
+                                )
+                            else:
+                                for attr_name, visible in (("caption-number", number), ("caption", title)):
+                                    if not visible:  # 裸编号形态（`**表4**`）无题名可对齐
+                                        continue
+                                    prior = attrs.get(attr_name)
+                                    if prior and prior != visible:
+                                        self._note_caption_attr_conflict(
+                                            issues,
+                                            target="表格题注",
+                                            line=line_no(i),
+                                            ident=attrs.get("id"),
+                                            attr=attr_name,
+                                            attr_value=prior,
+                                            visible_value=visible,
+                                        )
+                                    attrs[attr_name] = visible
                             pending_table_caption = None
-                        # "单位为毫米" 等单位行折进 unit 属性（渲染右对齐紧贴表格）。
+                        # "单位为毫米" 等单位行折进 unit 属性（渲染右对齐紧贴表格）；
+                        # 同上判据：单位陈述行是可见文字，优先于指令 unit 属性。
                         if pending_table_unit is not None:
-                            attrs.setdefault("unit", pending_table_unit)
+                            prior_unit = attrs.get("unit")
+                            if prior_unit and prior_unit != pending_table_unit:
+                                self._note_caption_attr_conflict(
+                                    issues,
+                                    target="表格单位",
+                                    line=line_no(i),
+                                    ident=attrs.get("id"),
+                                    attr="unit",
+                                    attr_value=prior_unit,
+                                    visible_value=pending_table_unit,
+                                )
+                            attrs["unit"] = pending_table_unit
                             pending_table_unit = None
                     if name == "table-merge":
                         if last_table is None:
@@ -1047,6 +1550,22 @@ class CSMParser:
                     )
                 )
                 i += 1
+                # 目次区段（GEN-133，2026-09-23 + 2026-09-23 用户裁定）：MinerU 常把目次抽成
+                # 裸段落行（点线残缺或全丢，如 `1 范围.... 1`、`5 型式与基本参数2`），而裸条号
+                # 提升会把它们当成章标题——章树里于是出现两套 1..8（GBT-H03 报章编号不连续）。
+                # 用户裁定（2026-09-23）：「目次都是根据正文内容生成，而不是根据原来的目次
+                # 显示（应丢弃）」——故区段条目行只**消费**、不落块、不进正文：剥掉原目次的
+                # 显示，`目次` 标题本身保留，作为渲染端插入**生成目次**（`_toc_nodes` 按章树
+                # 出行）的位置；条目文本不带入 SSIR（不补点线、不猜页码——原样保留策略作废，
+                # 改为按用户裁定丢弃，丢弃条数记进报告）。区段行被消费后不再参与裸条号提升。
+                if TOC_HEADING_TEXT_RE.match(re.sub(r"\s+", "", heading_text)):
+                    toc_entries, next_index = _toc_region_lines(lines, i)
+                    if toc_entries:
+                        warnings.append(
+                            f"line {line_no(i)}: {len(toc_entries)} TOC entry lines dropped "
+                            "(the contents list is generated from the body structure)."
+                        )
+                        i = next_index
                 continue
 
             if line.startswith("$$"):
@@ -1114,6 +1633,10 @@ class CSMParser:
                     i += 1
                 quote_text = "\n".join(quote_lines)
                 figure_directive = pending.pop("figure", None)
+                if figure_directive is not None and figure_directive.attrs:
+                    self._align_figure_attrs_to_visible_text(
+                        figure_directive, quote_text, None, line_no(start), issues
+                    )
                 if figure_directive or quote_text.startswith("[图"):
                     blocks.append(
                         Block(
@@ -1132,18 +1655,33 @@ class CSMParser:
                         kind = "warning"
                     elif not quote_text.startswith("注"):
                         kind = "quote"
-                    blocks.append(Block(kind=kind, start_line=line_no(start), end_line=line_no(i - 1), text=quote_text))
+                    blocks.append(
+                        Block(
+                            kind=kind,
+                            start_line=line_no(start),
+                            end_line=line_no(i - 1),
+                            text=quote_text,
+                            directive=pending_note if kind in {"note", "example", "warning"} else None,
+                        )
+                    )
+                    if kind in {"note", "example", "warning"}:
+                        pending_note = None
                 continue
 
             image = IMAGE_RE.match(line)
             if image:
+                figure_directive = pending.pop("figure", None)
+                if figure_directive is not None and figure_directive.attrs:
+                    self._align_figure_attrs_to_visible_text(
+                        figure_directive, image.group(1), pending_figure_unit, line_no(i), issues
+                    )
                 blocks.append(
                     Block(
                         kind="figure",
                         start_line=line_no(i),
                         end_line=line_no(i),
                         text=image.group(1),
-                        directive=pending.pop("figure", None),
+                        directive=figure_directive,
                         data={"asset_ref": image.group(2), "unit": pending_figure_unit},
                     )
                 )
@@ -1239,8 +1777,26 @@ class CSMParser:
                 while next_index < len(lines) and not lines[next_index].strip():
                     next_index += 1
                 if next_index < len(lines) and lines[next_index].startswith("|"):
-                    pending["table"].attrs["caption-number"] = table_caption.group(1)
-                    pending["table"].attrs["caption"] = table_caption.group(2)
+                    # 可见题注行紧贴表行：**行优先**（GEN-139）。行为与之前一致
+                    # （原本即覆写），新增的是不一致时的结构化告警——属性不再被静默改写。
+                    caption_attrs = pending["table"].attrs
+                    for attr_name, visible in (
+                        ("caption-number", table_caption.group(1)),
+                        ("caption", table_caption.group(2)),
+                    ):
+                        prior = caption_attrs.get(attr_name)
+                        if prior and prior != visible:
+                            self._note_caption_attr_conflict(
+                                issues,
+                                target="表格题注",
+                                line=line_no(i),
+                                ident=caption_attrs.get("id"),
+                                attr=attr_name,
+                                attr_value=prior,
+                                visible_value=visible,
+                            )
+                    caption_attrs["caption-number"] = table_caption.group(1)
+                    caption_attrs["caption"] = table_caption.group(2)
                     i += 1
                     continue
 
@@ -1252,7 +1808,20 @@ class CSMParser:
                 if next_index < len(lines) and lines[next_index].startswith("|"):
                     # Bare "表 N" caption (number only, no title) — keep the
                     # number so GBT-X02 passes; no caption attribute.
-                    pending["table"].attrs["caption-number"] = bare_caption.group(1)
+                    # 编号同样行优先（GEN-139），不一致时告警。
+                    bare_attrs = pending["table"].attrs
+                    prior_number = bare_attrs.get("caption-number")
+                    if prior_number and prior_number != bare_caption.group(1):
+                        self._note_caption_attr_conflict(
+                            issues,
+                            target="表格题注编号",
+                            line=line_no(i),
+                            ident=bare_attrs.get("id"),
+                            attr="caption-number",
+                            attr_value=prior_number,
+                            visible_value=bare_caption.group(1),
+                        )
+                    bare_attrs["caption-number"] = bare_caption.group(1)
                     i += 1
                     continue
 
@@ -1261,8 +1830,18 @@ class CSMParser:
             # 与 heading-shaped 题注一样折进 pending_table_caption，避免渲染出
             # 「表4 安装配合面的同轴度」+「表4」双题注。判定收窄防误伤正文：
             # 单行、无句末标点、长度 ≤ 40、后随（跳过空行/单位行）表格。
-            paragraph_caption = TABLE_HEADING_CAPTION_RE.match(line.strip())
-            if paragraph_caption and not any(mark in line for mark in "。；，："):
+            # 加粗形态（`**表4 题名**` / `**表4**`）自 GEN-139（2026-09-24 用户裁定
+            # "可见文字优先"）起同样受理：手工 curation 常把题注写成加粗行放在指令
+            # **上方**，此前不折＝同一题注印两次（属性一次、段落一次）。
+            stripped_caption = line.strip()
+            caption_candidate: tuple[str, str] | None = None
+            for caption_pattern in (TABLE_HEADING_CAPTION_RE, TABLE_CAPTION_RE, TABLE_BARE_CAPTION_RE):
+                candidate = caption_pattern.match(stripped_caption)
+                if candidate is not None:
+                    groups = candidate.groups()
+                    caption_candidate = (groups[0], groups[1] if len(groups) > 1 else "")
+                    break
+            if caption_candidate and not any(mark in line for mark in "。；，："):
                 lookahead = i + 1
                 while lookahead < len(lines):
                     stripped = lines[lookahead].strip()
@@ -1277,11 +1856,11 @@ class CSMParser:
                 next_table = next_line.startswith("<!-- ssir:table ")
                 if not next_table and next_line.startswith("|") and lookahead + 1 < len(lines):
                     next_table = bool(TABLE_SEPARATOR_RE.match(lines[lookahead + 1].strip()))
-                if next_table and len(line.strip()) <= 40:
-                    pending_table_caption = (paragraph_caption.group(1), paragraph_caption.group(2))
+                if next_table and len(stripped_caption) <= 40:
+                    pending_table_caption = caption_candidate
                     warnings.append(
                         f"line {line_no(i)}: paragraph-shaped table caption was folded into the table caption "
-                        f"({paragraph_caption.group(1)} {paragraph_caption.group(2)!r})."
+                        f"({caption_candidate[0]} {caption_candidate[1]!r})."
                     )
                     i += 1
                     continue
@@ -1580,7 +2159,7 @@ class CSMParser:
         归位目标：前表最后一行第一个不含图、且非首格（行标题列）的单元格；
         无法唯一确定（如多个候选列）时不猜。修复同时删除游离 figure 块，
         canonical/SSIR/render 三侧一致（_render_block 按 rows 输出表格、
-        按 asset_ref 输出图，roundtrip 等价保持）。
+        按 asset_ref 输出图）。
         """
         cell_image_re = re.compile(r"!\[(?:[^\]]*)\]\(([^)]+)\)")
         for index, block in enumerate(blocks):
@@ -1939,15 +2518,20 @@ class CSMParser:
             if in_terms:
                 in_terms_indexes.add(index)
 
-        merges: list[tuple[int, str, bool]] = []  # (编号块下标, 合并文本, 是否需提升为标题)
+        merges: list[tuple[int, str, bool, str]] = []  # (编号块下标, 合并文本, 是否需提升为标题, 形态)
         i = 0
         while i < len(blocks) - 1:
             first = blocks[i]
             second = blocks[i + 1]
             number_match = None
             promote = False
+            form = "heading-heading"
             if first.kind == "heading" and second.kind == "heading":
-                number_match = pure_number.match(first.text.strip())
+                # 标题形态：两条同级标题（编号 + 术语行）。术语和定义要素内不设编号段数门槛
+                # （GB/T 5171.1-2014 等按 3.1/3.2 两段编号列术语）；要素外维持原有 ≥3 段判据。
+                number_match = (
+                    bare_number if i in in_terms_indexes else pure_number
+                ).match(first.text.strip())
             elif (
                 first.kind == "paragraph"
                 and second.kind == "paragraph"
@@ -1955,41 +2539,61 @@ class CSMParser:
             ):
                 number_match = bare_number.match(first.text.strip())
                 promote = number_match is not None
+                form = "paragraph-paragraph"
+            elif (
+                first.kind == "heading"
+                and second.kind == "paragraph"
+                and i in in_terms_indexes
+            ):
+                # 混合形态（2026-09-23，GB_T_5171.1-2014 第 3 章）：编号被抽成标题
+                # （`## 3.1`，标题为空）、术语行是正文段落——两条判据都没覆盖，术语行
+                # 于是留在正文里：SSIR 的节点 title 为空（term/englishTerm 虽已配对），
+                # 渲染端认不出术语条目 → 术语的中英文标题按正文排（不加黑、不单独占行）。
+                number_match = bare_number.match(first.text.strip())
+                form = "heading-paragraph"
             if number_match:
                 second_text = second.text.strip()
                 pair = term_entry_pair(second_text) if not pure_number.match(second_text) else None
                 if pair:
                     merged = f"{number_match.group(1)} {pair[0]}{term_gap}{pair[1]}"
-                    merges.append((i, merged, promote))
+                    merges.append((i, merged, promote, form))
                     i += 2
                     continue
             i += 1
-        for index, merged_text, promote in merges:
+        for index, merged_text, promote, _form in merges:
             blocks[index].text = merged_text
             if promote:
                 # 段落形态：先变成标题块（层级交给 _repair_heading_levels 按编号
                 # 段数提升到 ####），使条目成为结构节点。
                 blocks[index].kind = "heading"
                 blocks[index].level = 2
-        for index, _merged_text, promote in reversed(merges):
+        for index, _merged_text, promote, form in reversed(merges):
             second = blocks[index + 1]
+            if form == "paragraph-paragraph":
+                message = (
+                    f"Term entry split across paragraph and term line merged into one heading: "
+                    f"{blocks[index].text!r} (removed term line {second.text!r} at line {second.start_line})."
+                )
+                repair_action = "Promoted the term-entry number paragraph to a title and merged the term line into it."
+            elif form == "heading-paragraph":
+                message = (
+                    f"Term-entry heading and its term line merged into one heading: {blocks[index].text!r} "
+                    f"(removed term line {second.text!r} at line {second.start_line})."
+                )
+                repair_action = "Merged the following term line into the numbered term-entry heading."
+            else:
+                message = (
+                    f"Flattened term-entry headings merged into one heading: {blocks[index].text!r} "
+                    f"(removed duplicate heading {second.text!r} at line {second.start_line})."
+                )
+                repair_action = "Merged the term-title heading into the numbered heading so the term nests under its numbered group."
             CSMParser._issue(
                 issues,
                 "CSM-OCR-007",
-                (
-                    f"Term entry split across paragraph and term line merged into one heading: "
-                    f"{blocks[index].text!r} (removed term line {second.text!r} at line {second.start_line})."
-                    if promote
-                    else f"Flattened term-entry headings merged into one heading: {blocks[index].text!r} "
-                    f"(removed duplicate heading {second.text!r} at line {second.start_line})."
-                ),
+                message,
                 line=blocks[index].start_line,
                 repaired=True,
-                repair_action=(
-                    "Promoted the term-entry number paragraph to a title and merged the term line into it."
-                    if promote
-                    else "Merged the term-title heading into the numbered heading so the term nests under its numbered group."
-                ),
+                repair_action=repair_action,
             )
             del blocks[index + 1]
 
@@ -2144,7 +2748,7 @@ class CSMParser:
             candidates = [
                 i for i, block in enumerate(blocks)
                 if i != f_index and block.kind != "footnote"
-                and any(m.group(1) == label for m in FOOTNOTE_CITE_RE.finditer(block.text))
+                and any(label in split_footnote_labels(m.group(1)) for m in FOOTNOTE_CITE_RE.finditer(block.text))
             ]
             if len(candidates) != 1:
                 continue  # 无锚点 / 正文多处引用该标记 → 保守不动
@@ -2299,7 +2903,7 @@ class CSMParser:
         子条 3 段 → level 4（####）…… 本修复只提升（当前层级低于编号深度），
         不降低——避免把用户手写的高层标题（如 #### 下的 ###）误压扁，也避免
         与 _repair_clause_numbers 的连续性修复冲突。标题文本本身不变，
-        canonical/SSIR/render 三侧一致，roundtrip 等价性保持。
+        canonical/SSIR/render 三侧一致。
 
         附录条（`B.1`/`B.6.1` 型，GB/T 1.1-2020 9.6.2/10.4.1）同规：以附录大写
         字母 + 点分数字编号，段数 = 点分链段数，层级 = 段数 + 1（附录本身 1 段 →
@@ -3005,6 +3609,26 @@ class CSMParser:
                 repaired=True,
                 repair_action="Inserted the missing inter-word / standard-number space in memory.",
             )
+
+    @staticmethod
+    def _normalise_body_punctuation_width(blocks: list[Block]) -> None:
+        """正文半角标点 → 全角（GEN-138；判据见 `normalise_body_punctuation`）。
+
+        载体：块文本（段落/标题/图题/注/示例/声明型指令条目）、列项条目文本、
+        表格单元格文本——与 CSM-OCR-004 同载体集。**不含**公式块、` ```text `
+        未知块与列表标记（`a)` 由 GBT-C19 单独判据）。幂等（全角不再变）。
+        """
+        for block in blocks:
+            if block.kind in {"formula", "unknown"} or block.data.get("format") == "raw" or block.data.get("code_fence"):
+                continue
+            if block.text:
+                block.text, _ = normalise_body_punctuation(block.text)
+            for item in block.data.get("items", []):
+                if "text" in item:
+                    item["text"], _ = normalise_body_punctuation(str(item["text"]))
+            for row in block.data.get("rows", []):
+                for cell_index, cell in enumerate(row):
+                    row[cell_index], _ = normalise_body_punctuation(str(cell))
 
     @staticmethod
     def _demote_sentence_headed_clauses(blocks: list[Block], issues: list[CSMIssue]) -> None:

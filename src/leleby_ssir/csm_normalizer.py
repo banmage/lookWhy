@@ -7,7 +7,7 @@ import re
 
 import yaml
 
-from .parser import Block, CSMDocument, Directive, escape_table_cell
+from .parser import Block, CSMDocument, DECLARATION_DIRECTIVES, Directive, escape_table_cell
 
 
 def render_canonical(document: CSMDocument) -> str:
@@ -66,7 +66,7 @@ def _render_block(lines: list[str], block: Block) -> None:
             if caption_number and caption:
                 lines.append(f"**表{caption_number} {caption}**")
             elif caption_number:
-                # Bare numbered caption ("表 N") roundtrips as "**表N**".
+                # 仅编号的题注（"表 N"）投影为 "**表N**"。
                 lines.append(f"**表{caption_number}**")
         for row_index, row in enumerate(block.data["rows"]):
             lines.append("| " + " | ".join(escape_table_cell(cell) for cell in row) + " |")
@@ -96,3 +96,12 @@ def _render_block(lines: list[str], block: Block) -> None:
             lines.extend(["```text", block.text, "```", ""])
         else:
             lines.extend([block.text, ""])
+    elif block.kind in DECLARATION_DIRECTIVES:
+        # 规则对应: GEN-134（声明型指令块的条目体在重渲染时必须保留）。
+        # 声明型指令（`toc`/`figure-legend`/`figure-sub`/`formula-vars`，docs/15 §2.2）
+        # 的**条目体不是结构行**，此前 render_canonical 只写出开指令、条目整块被丢
+        # （对 curated canonical 跑 `ssir csm normalize` 会把目次条目吃光、只剩一个
+        # 悬空 `<!-- ssir:toc -->`）。此处按括起式回写：开指令（上面统一写）+ 条目行
+        # 原样 + 配对结束指令，保证重渲染幂等、零内容丢失。
+        entries = [entry for entry in block.text.splitlines() if entry.strip()]
+        lines.extend([*entries, f"<!-- ssir:/{block.kind} -->", ""])

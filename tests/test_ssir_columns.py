@@ -4,7 +4,7 @@
 - parser：columns/column//columns 事件块、widths 属性、配对/嵌套/错位校验；
 - builder：内容元素写入 sideBySideGroup/Column/Widths（手工声明）；
 - csm_renderer：标记确定性重放（列优先）→ roundtrip 并列视图等价；
-- pdf/docx 渲染：同一行的并列列几何（正确/不正确 同基线、x 分离）；
+- PDF 渲染：同一行的并列列几何（正确/不正确 同基线、x 分离）；
 - 几何自动识别（_stamp_side_by_side_layout）：跨栏交错的文本+公式块成组、
   单栏不误判、多分片 page_idx 各自从 0 起不串页；
 - 无标记文档零命中（既有路径不受影响）。
@@ -18,9 +18,7 @@ import tempfile
 import unittest
 
 from leleby_ssir.builder import SSIRBuilder
-from leleby_ssir.csm_renderer import render_csm
 from leleby_ssir.parser import CSMParser
-from leleby_ssir.roundtrip import compare_ssir
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -189,43 +187,6 @@ class BuilderColumnsTests(unittest.TestCase):
         self.assertNotIn("sideBySideGroup", plain[0])
 
 
-class RoundTripColumnsTests(unittest.TestCase):
-    def test_markers_replayed_and_roundtrip_passes(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "t.canonical.md"
-            path.write_text(CANON, encoding="utf-8")
-            ssir = SSIRBuilder().build(CSMParser().read(str(path)))
-            rendered = render_csm(ssir)
-            self.assertIn("<!-- ssir:columns -->", rendered)
-            self.assertIn("<!-- ssir:column -->", rendered)
-            self.assertIn("<!-- ssir:/columns -->", rendered)
-            self.assertIn('<!-- ssir:columns widths="3,2" -->', rendered)
-            render_path = Path(directory) / "render.md"
-            render_path.write_text(rendered, encoding="utf-8")
-            verify = SSIRBuilder().build(CSMParser().read(str(render_path)))
-            report = compare_ssir(ssir, verify, input_file=str(path), render_md_file=str(render_path))
-            self.assertTrue(report.passed, report)
-
-    def test_roundtrip_view_is_column_aware(self) -> None:
-        # 抽取顺序按行跨栏交错（如 MinerU 输出）与 canonical 列优先顺序语义等价：
-        # 只要列归属与列内顺序一致，roundtrip 视图不得因跨列交错而判异。
-        ssir = SSIRBuilder().build(_parse(CANON))
-        node = next(n for n in _walk_nodes(ssir["structuralRoot"])
-                    if any(c.get("sideBySideGroup") == "columns-2" for c in n.get("contentElements", []) or []))
-        by_column: dict[int, list[dict]] = {}
-        for content in node["contentElements"]:
-            by_column.setdefault(int(content.get("sideBySideColumn", 0)), []).append(content)
-        interleaved: list[dict] = []
-        for index in range(max(len(items) for items in by_column.values())):
-            for column in sorted(by_column):
-                if index < len(by_column[column]):
-                    interleaved.append(by_column[column][index])
-        from leleby_ssir.roundtrip import _content_sequence_view
-        original = _content_sequence_view(node["contentElements"], _registries(ssir))
-        shuffled = _content_sequence_view(interleaved, _registries(ssir))
-        self.assertEqual(original, shuffled)
-
-
 def _walk_nodes(root: dict):
     for child in root.get("children", []) or []:
         yield child
@@ -270,32 +231,6 @@ class RenderColumnsTests(unittest.TestCase):
                         rows += 1
             # 示例3、示例4 两个"正确/不正确"对照行
             self.assertGreaterEqual(rows, 2)
-
-    def test_docx_renders_one_borderless_table_per_group(self) -> None:
-        from docx import Document
-
-        from leleby_ssir.docx_renderer import render_docx_file
-
-        def walk_tables(tables):
-            for table in tables:
-                yield table
-                for row in table.rows:
-                    for cell in row.cells:
-                        yield from walk_tables(cell.tables)
-
-        with tempfile.TemporaryDirectory() as directory:
-            directory = Path(directory)
-            _, ssir_path = self._ssir_files(directory)
-            docx_out = directory / "out.docx"
-            render_docx_file(str(ssir_path), str(docx_out), toc_depth=None)
-            document = Document(str(docx_out))
-            # 并列组可能嵌在 ssir:box 外框单元格内，需递归查找。
-            tables = [t for t in walk_tables(document.tables)
-                      if len(t.rows) == 1 and len(t.columns) == 2 and "正确：" in t.cell(0, 0).text]
-            self.assertEqual(len(tables), 2)
-            for table in tables:
-                self.assertIn("不正确：", table.cell(0, 1).text)
-
 
 def _write_middle(path: Path, pages: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -553,6 +488,82 @@ class GeometryStampTests(unittest.TestCase):
             stamped = json.loads(ssir_path.read_text(encoding="utf-8"))
         contents = stamped["structuralRoot"]["children"][0]["contentElements"]
         self.assertFalse(any(c.get("sideBySideGroup") for c in contents))
+
+    # ---- layout.json 的 columns 通道（docs/16 §3，C1-4）：构建端几何来源 ----
+
+    def _layout_channel(self, middle: Path) -> dict:
+        """``middle.json`` → ``layout.json`` 的 ``columns`` 通道（抽取阶段的读数）。"""
+        from leleby_ssir.layout import parse_middle_geometry
+
+        return {
+            "columns": [
+                {"page": page, "blocks": blocks}
+                for page, blocks in sorted(parse_middle_geometry([middle]).items())
+            ]
+        }
+
+    def test_columns_channel_is_used_without_parts_directory(self) -> None:
+        """文档根没有 ``parts/``，只有通道 → 并列仍能识别（构建端只读 canonical + layout.json）。"""
+        pages = [{
+            "page_idx": 36,  # 0 基绝对页号：第 37 页
+            "preproc_blocks": [
+                _text_block("正确：", [78, 457, 105, 469]),
+                _equation_block("left.jpg", [159, 473, 192, 493]),
+                _text_block("不正确：", [308, 457, 344, 469]),
+                _equation_block("right.jpg", [380, 471, 434, 495]),
+            ],
+        }]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            middle = root / "std_middle.json"
+            _write_middle(middle, pages)
+            ssir_path = root / "t.ssir.json"
+            ssir_path.write_text(json.dumps(_columns_ssir(), ensure_ascii=False), encoding="utf-8")
+            mfs._stamp_side_by_side_layout(
+                ssir_path, root / "parts", layout=self._layout_channel(middle)
+            )
+            stamped = json.loads(ssir_path.read_text(encoding="utf-8"))
+        contents = stamped["structuralRoot"]["children"][0]["contentElements"]
+        self.assertEqual({c.get("sideBySideGroup") for c in contents}, {"p037-c00"})
+
+    def test_columns_channel_wins_over_the_middle_json_fallback(self) -> None:
+        """通道与 parts/ 同时在场时以**通道**为准：parts 放单列几何、通道放两列。
+
+        实现若偷偷回退到 parts/*_middle.json（迁移前的旧路径），本用例会退化成单列 →
+        不分组而失败——这是「通道优先」的可判别断言。
+        """
+        two_columns = [{
+            "page_idx": 36,
+            "preproc_blocks": [
+                _text_block("正确：", [78, 457, 105, 469]),
+                _equation_block("left.jpg", [159, 473, 192, 493]),
+                _text_block("不正确：", [308, 457, 344, 469]),
+                _equation_block("right.jpg", [380, 471, 434, 495]),
+            ],
+        }]
+        single_column = [{
+            "page_idx": 0,
+            "preproc_blocks": [
+                _text_block("正确：", [78, 457, 105, 469]),
+                _equation_block("left.jpg", [80, 473, 120, 493]),
+                _text_block("不正确：", [78, 517, 105, 529]),
+                _equation_block("right.jpg", [80, 533, 120, 553]),
+            ],
+        }]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            channel_middle = root / "channel_middle.json"
+            _write_middle(channel_middle, two_columns)
+            parts = root / "parts"
+            _write_middle(parts / "pages-001-018" / "std" / "auto" / "std_middle.json", single_column)
+            ssir_path = root / "t.ssir.json"
+            ssir_path.write_text(json.dumps(_columns_ssir(), ensure_ascii=False), encoding="utf-8")
+            mfs._stamp_side_by_side_layout(
+                ssir_path, parts, layout=self._layout_channel(channel_middle)
+            )
+            stamped = json.loads(ssir_path.read_text(encoding="utf-8"))
+        contents = stamped["structuralRoot"]["children"][0]["contentElements"]
+        self.assertEqual({c.get("sideBySideGroup") for c in contents}, {"p037-c00"})
 
     def test_latex_only_geometry_matches_latex_only_formulas(self) -> None:
         """云端路线：几何与 SSIR 公式都只有 LaTeX（没有裁剪图资产）时仍能成组。"""

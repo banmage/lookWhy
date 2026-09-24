@@ -1,8 +1,9 @@
 # leleby SSIR M1
 
 把中文国家标准（PDF 或已有抽取稿）转成**可校验的结构化表示（SSIR）**，并渲染回传统标准版式的
-PDF 草稿。核心链路是 CSM Markdown（Canonical）→ SSIR JSON → Render.md → Verify JSON 的四层
-等价验证；抽取侧用 MinerU 识别 PDF，渲染侧用 reportlab 生成可复制文本的 A4 PDF。
+PDF 草稿与等价的 markdown。核心链路是 MinerU raw（json/md）→ CSM Markdown（Canonical）→
+SSIR JSON → render.pdf + render.md（SSIR 的标准 markdown 投影）；抽取侧用 MinerU 识别 PDF，
+渲染侧用 reportlab 生成可复制文本的 A4 PDF。**回环验证与 docx 渲染已于 2026-09-22 永久下线**。
 
 **M1 范围**：Markdown → SSIR 核心链路、PDF → CSM 抽取、SSIR → PDF 渲染、知识图谱单文档查看器。
 扫描件质量、表格/图像精确识别与人工复核流程属后续增强。
@@ -24,8 +25,10 @@ rawFile/<ID>.md（云端 MinerU / 人工整理）───────┘
                              parse（SSIR 构建） ▼
                     03_ssir/<ID>.ssir.json       ──▶ render.pdf / render-report.json
                                                 │
-              验证（独立程序）：canonical ↔ SSIR 往返回环 + 可选 PDF 对比
-                    04_render/<ID>.render.md、05_verify/<ID>.{verify,roundtrip}.json
+                    04_render/<ID>.render.pdf + <ID>.render.md（markdown 投影）
+                                                │
+              验证（独立程序，可选）：SSIR markdown 投影 + 合规/质量报告 + PDF 对比
+                    05_verify/<ID>.verify.json、04_render/<ID>.render-comparison.json
 ```
 
 ### 1.2 能力
@@ -35,7 +38,7 @@ rawFile/<ID>.md（云端 MinerU / 人工整理）───────┘
 - **PDF 抽取**：MinerU 为首选后端（含文本层质量预检、可选 hybrid 表格通道），无 MinerU 时回退 PyMuPDF 文本层。
 - **版式还原渲染**：GB/T 1.1 封面/前置要素/章条/表格/图/公式/附录/页眉页脚；封面必备信息缺失时以 `××` 占位并记录规则 ID（GBT-C01），不伪造数据。
 - **三层规则合规**：`GEN-*` → `GBT-*` → `P10-*` 逐条验证，must 违规记 error、should 记 warning，写入解析报告。
-- **四层等价验证**：身份 / 结构 / 内容 / 语义 + 关键信息（规范性用语、数值、单位、公式、引用、范围）损失检查。
+- **独立验证**：`tools/verify_conversion.py` 生成 SSIR markdown 投影与合规/质量报告，并可选与源 PDF 做版面/文本量对比（回环四层比较已下线）。
 - **知识图谱**：SSIR → `kg.json` 图切片 + 可重建 sqlite 索引 + Web 查看器（结构树浏览与本体图）。
 - **溯源**：SSIR 保留章条层级、Markdown 行号锚点与处理记录。
 
@@ -46,9 +49,9 @@ rawFile/<ID>.md（云端 MinerU / 人工整理）───────┘
 | 层 | 程序 | 输入 → 输出 | 不负责 |
 |---|---|---|---|
 | 抽取 | `tools/mineru_full_standard.py` | PDF → `01_extract/<ID>.raw.md`（+ `parts/`、`00_source/`） | 不做 normalize / SSIR / 渲染（`--stage all` 例外，见 §4.3） |
-| 构建 | `tools/build_ssir.py` | raw（`.md`/`.json`）或 canonical → `02_canonical/` → `03_ssir/` → `render.pdf` → `manifest.json` | 不做 OCR 抽取；**不做验证** |
-| 验证 | `tools/verify_conversion.py` | canonical ↔ SSIR 往返回环（+ 可选 PDF 对比），只读产物 | 不生成 canonical、不改任何输入 |
-| CLI | `ssir`（`src/leleby_ssir/cli.py`） | 单阶段命令：`csm validate/normalize/parse/roundtrip`、`pdf extract/render` | 不编排全流程 |
+| 构建 | `tools/build_ssir.py` | raw（`.md`/`.json`）或 canonical → `02_canonical/` → `03_ssir/` → `render.pdf` + `render.md` → `manifest.json` | 不做 OCR 抽取；**不做验证** |
+| 验证 | `tools/verify_conversion.py` | SSIR markdown 投影 + 合规/质量报告（+ 可选 PDF 对比），只读产物 | 不生成 canonical、不改任何输入 |
+| CLI | `ssir`（`src/leleby_ssir/cli.py`） | 单阶段命令：`csm validate/normalize/parse/project`、`pdf extract/render` | 不编排全流程 |
 
 **两个可人工修改的起点**（都能独立重跑下游）：`rawFile`（或 `01_extract/*.raw.md`）与
 `02_canonical/<ID>.canonical.md`。canonical 是权威基线，重跑下游时**永不被写回**。
@@ -60,7 +63,7 @@ rawFile/<ID>.md（云端 MinerU / 人工整理）───────┘
 ### 2.1 环境要求
 
 - Python **3.12+**（推荐 3.12.x，本项目在 3.12.14 实测通过）
-- 依赖：`PyYAML`、`jsonschema`、`reportlab`、`python-docx`、`PyMuPDF`、`flask`（见 `pyproject.toml`）
+- 依赖：`PyYAML`、`jsonschema`、`reportlab`、`PyMuPDF`、`flask`（见 `pyproject.toml`）
 - 可选：`mineru` + `torch`（PDF 抽取用；完整约 2 GB）
 - 字体：渲染用 TrueType 中文字体，仓库已带 `config/rendering/fonts/`
 
@@ -147,7 +150,7 @@ render，最后打印 `{"output": ".../04_render/<ID>.render.pdf", "pageCount": 
 | `04_render/<ID>.render.pdf`（+ `render-report.json`） | 最终 PDF 与页数/警告报告 |
 | `manifest.json` | 各阶段产物索引 |
 
-需要回环验证时单独跑（验证不从属于构建流程）：
+需要验证时单独跑（验证不从属于构建流程）：
 
 ```bash
 .venv/bin/python tools/verify_conversion.py GB_T_20001.6-2017 --source-pdf corpus/golden/GB_T_20001.6-2017.pdf
@@ -241,7 +244,7 @@ PY
 ```
 
 只读既有产物，写出的报告：`04_render/<ID>.render.md`（SSIR 回写）、
-`05_verify/<ID>.verify.json`（合规/质量）、`05_verify/<ID>.roundtrip.json`（四层等价结论，
+`05_verify/<ID>.verify.json`（合规/质量报告）、
 字段 `passed` / `overallStatus` / `layerStatus` / `differences` / `criticalInformationLoss`）、
 `04_render/<ID>.render-comparison.json`（与源 PDF 的页数/字节/文本量对比）。
 
@@ -260,7 +263,7 @@ PY
 | `--method {auto,ocr,txt}` | MinerU 抽取方法（默认 `auto`；文本层丢拉丁/数字串时用 `ocr`） |
 | `--hybrid-tables` | 含表页额外跑 hybrid-engine（GEN-094）；默认关闭（VLM 通道慢） |
 | `--chunk-size N` | 每个 MinerU 分片的页数（默认 18，便于断点续跑） |
-| `--roundtrip` / `--render` | 解析后做回环验证 / 渲染 PDF（默认都不做；快捷模式自动带 `--render`） |
+| `--render` | 渲染 PDF（默认不做；快捷模式自动带 `--render`） |
 | `--toc-depth N\|all` | 渲染目次最大层数 |
 | `--standard-number` / `--title` / `--front-matter-json` | 同 §4.1 |
 
@@ -271,7 +274,6 @@ PY
 | 工具 | 用途 | 用法 |
 |---|---|---|
 | `tools/reprocess_canonical.py` | 半程重跑（`build_ssir.py` 的 canonical 起点已覆盖同等能力） | `reprocess_canonical.py <ID\|canonical.md\|目录>` |
-| `tools/verify_markdown_roundtrip.py` | 批量回环验证（golden 夹具集） | `--examples-dir corpus/golden/csm --output-dir out/roundtrip` |
 | `tools/kg_tool.py` | 知识图谱 CLI：`build` / `import` / `list` / `serve` | 见 §7 |
 | `tools/validate_profile_layering.py` | 渲染 profile 分层校验（需先备好其 registry 输入） | `--help` |
 | `tools/prepare_serif_font.py`、`prepare_label_font.py`、`prepare_oblique_font.py` | 生成渲染用 TrueType 字体（正文宋体 / 注示例黑体粗 / 强调用机斜，均由已入库字体转换或按 15.8° 机斜） | `--help` |
@@ -290,7 +292,7 @@ PYTHONPATH=src .venv/bin/python -m leleby_ssir <命令>      # 或安装后的 .
 | `csm validate` | 校验 CSM（默认宽容模式显示可恢复问题） | `--input`、`--strict` |
 | `csm normalize` | raw Markdown → canonical CSM | `--input`、`--canonical-output`、`--report`、`--strict` |
 | `csm parse` | canonical CSM → SSIR JSON / TTL | `--input`、`--output`、`--format {json,ttl}`、`--report`、`--strict` |
-| `csm roundtrip` | SSIR → Render.md → Verify，四层等价比较 | `--input`、`--render-md-output`、`--verify-output`、`--report`、`--strict` |
+| `csm project` | SSIR/canonical → 标准 markdown 投影（render.md） | `--input`、`--output` |
 | `pdf extract` | PDF → CSM Markdown | `--input`、`--output`、`--backend {auto,mineru,pymupdf}`、`--report`、`--sidecar` |
 | `pdf render` | SSIR → PDF | `--input`、`--output`、`--profile`、`--report`、`--toc-depth LEVEL\|all` |
 
@@ -322,7 +324,7 @@ PYTHONPATH=src .venv/bin/python -m leleby_ssir pdf render \
 | `02_canonical/` | `<ID>.canonical.md`（**权威基线**）、`.normalize-report.json` |
 | `03_ssir/` | `<ID>.ssir.json`（渲染唯一输入）、`.parse-report.json` |
 | `04_render/` | `.render.pdf`、`.render.md`、`.render-report.json`、`.render-comparison.json`（验证产出） |
-| `05_verify/` | `.verify.json`（合规/质量）、`.roundtrip.json`（回环结论；跑过验证才有） |
+| `05_verify/` | `.verify.json`（合规/质量报告；由独立验证程序写） |
 | `manifest.json` | 各阶段产物索引与状态（未提供源 PDF 时 `source`/`checksum` 为 `null`） |
 | `assets/images/` | 图/公式资产（渲染按 `assetsRef` 相对路径解析） |
 
@@ -333,7 +335,6 @@ PYTHONPATH=src .venv/bin/python -m leleby_ssir pdf render \
 | `.normalize-report.json` | 导入诊断与安全修复（issue 码 + 行号 + 修复动作） |
 | `.parse-report.json` | parser 修复记录 + 三层合规发现；`status: partial` 表示「有记录项」，不影响渲染 |
 | `.render-report.json` | 页数与 warning 列表（**页数异常先看这里**） |
-| `.roundtrip.json` | `passed`、`overallStatus`、`layerStatus`（identity/structure/content/semantic/criticalInformation）、`differences` |
 
 CSM 的完整语法（YAML front matter、表格/图/公式/列表写法）见
 [CSM 格式规范](docs/07_leleby%20Canonical%20SSIR%20Markdown%20Format%20Specification%20v0.1.md)；
@@ -343,11 +344,11 @@ CSM 的完整语法（YAML front matter、表格/图/公式/列表写法）见
 
 | 路径 | 作用 |
 |---|---|
-| `src/leleby_ssir/` | 引擎实现（解析/规范化/SSIR 构建/合规/渲染/回环/命名）；阶段编排见 `pipeline.py` |
-| `tests/` | 单元与集成测试（容错导入、表/图/公式、回环、关键损失变异、模块完整性守护） |
+| `src/leleby_ssir/` | 引擎实现（解析/规范化/SSIR 构建/合规/渲染/命名）；阶段编排见 `pipeline.py` |
+| `tests/` | 单元与集成测试（容错导入、表/图/公式、脚注锚点、markdown 投影、模块完整性守护） |
 | `config/` | 配置：`rendering/` 渲染 profile 与字体，`pipeline/` 审核组合 |
 | `rules/` | 规则库：`base/<标准号>/`（requirements / extraction-rules / audit）与 `schemas/` |
-| `corpus/golden/` | 金标准语料：`csm/*.canonical.md`（回环夹具）、`SSIR_CANONICAL_MARKDOWN_TEMPLATE.md`、`<ID>.pdf`（抽取输入） |
+| `corpus/golden/` | 金标准语料：`csm/*.canonical.md`（解析夹具）、`SSIR_CANONICAL_MARKDOWN_TEMPLATE.md`、`<ID>.pdf`（抽取输入） |
 | `corpus/reference-standards/` | 参考标准文本（GB/T 1.1、GB/T 20001.10 等），用于设计与人工核对 |
 | `rawFile/` | 云端 MinerU 产物（`<ID>.md` / `<ID>.json`）等 raw 输入 |
 | `tools/` | 薄壳入口（抽取 / 构建 / 验证 / 知识图谱 / 字体与维护脚本） |
@@ -360,11 +361,8 @@ CSM 的完整语法（YAML front matter、表格/图/公式/列表写法）见
 
 ```bash
 .venv/bin/python -m unittest discover                                          # 全量单测
-PYTHONPATH=src .venv/bin/python tools/verify_markdown_roundtrip.py \
-  --examples-dir corpus/golden/csm --output-dir out/roundtrip                  # golden 夹具批量回环
+.venv/bin/python tools/verify_conversion.py GB_T_39567-2020                     # 独立验证（投影 + 合规报告 + PDF 对比）
 ```
-
-批量回环为每份 canonical 写出 `render.md` 与逐份报告，并汇总 `roundtrip-summary.json`；任一文件失败返回 `3`。
 
 开发约定（改规则/改代码前必读）：[AGENTS.md](AGENTS.md) 是工作规则权威源，
 [PROJECT.md](PROJECT.md) 是环境/目录/流程与陷阱，`docs/12` 记录「问题 → 根因 → 规则 → 验证」。
@@ -406,10 +404,10 @@ HTTP API（`/api/docs`、`/api/structure/<id>`、`/api/node/<id>/<node>`、`/api
 
 | 现象 | 说明 / 处置 |
 |---|---|
-| Word（`.docx`/`.doc`）输入报错、产物里没有 `render.docx` | **Word 输入与 .docx 渲染产物已于 2026-09-12 暂时停用**（模块保留未接线）。恢复步骤见 `docs/12` §3.47 |
+| Word（`.docx`/`.doc`）输入报错、产物里没有 `render.docx` | **Word 输入与 .docx 渲染已永久放弃**（2026-09-22 裁定；导入/渲染模块与产物已删除）。抽取统一走 MinerU（只支持 PDF） |
 | 封面出现 `ICS ××`、`×× 发布` 且渲染报告有 GBT-C01 warning | canonical front matter 缺 ICS/CCS/发布机构，且源 PDF 文本层也取不到（如字体编码损坏）。用 `--front-matter-json` 提供已知值，或接受占位——不猜（AGENTS.md §0.3） |
 | 图比原文大很多 / 页数与预期不符 | 图源尺寸（GEN-098）优先取源 PDF 图元矩形；没有源 PDF 时取 MinerU 图块 bbox（偏差 0.2%~5%），再取不到就按默认尺寸排版。加 `--source-pdf` 可复现原始尺寸 |
-| `parse-report.json` 的 `status: partial` | 正常：报告里有 parser 修复或合规记录项（含规则 ID 与行号）。只有 `roundtrip` 不等价才需要按 `differences` 改 canonical |
+| `parse-report.json` 的 `status: partial` | 正常：报告里有 parser 修复或合规记录项（含规则 ID 与行号）。只有 `parse-report.json` 里带修复记录的行才需要人工核 canonical |
 | 表格/公式未按预期呈现 | 先看 raw 是否已是 CSM：云端 MinerU 的 `<table>`/`<eq>` 必须先经标记适配（`build_ssir.py` 会自动做）；再看 `render-report.json` 的 warning |
 | 抽取质量差、数字/拉丁串丢失 | 换 `--method ocr`；含表页可加 `--hybrid-tables`（GEN-094，较慢） |
 | `out/` 内容混乱 | `out/` 全是运行时产物（gitignore），`rm -rf out/mineru/<ID>` 后重跑即可，源码与语料不受影响 |
@@ -427,5 +425,6 @@ HTTP API（`/api/docs`、`/api/structure/<id>`、`/api/node/<id>/<node>`、`/api
 | [PROJECT.md](PROJECT.md) | 环境、目录、流水线流程、模块职责与踩坑速查 |
 | `docs/12_…知识库` | 问题 → 规则知识库（§2 问题映射、§3 详细记录、§5 规则 ID、§6 验证手册） |
 | `docs/07_…CSM 格式规范` | CSM Markdown 语法（front matter、表格/图/公式/列表） |
-| `docs/00`—`docs/11` | 数据模型、Schema、流水线架构、回环规范、金标准集、API 契约等规格 |
+| `docs/00`—`docs/11` | 数据模型、Schema、流水线架构、金标准集、API 契约等规格 |
+| `docs/16_…重构实施方案` | raw 起点、源 PDF 隔离、标注方案落地与 P0 任务拆解（当前权威） |
 | `naming_specification.txt` | 命名与阶段目录规范（`<STANDARD_ID>.<representation>.<ext>`） |

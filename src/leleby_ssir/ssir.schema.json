@@ -10,12 +10,440 @@
     }
   ],
   "definitions": {
-    "SSIRDocument": {
+    "NoteType":     {
+      "type": "string",
+      "enum": [
+        "note",
+        "footnote"
+      ]
+    },
+    "NoteKind":     {
+      "type": "string",
+      "enum": [
+        "clause",
+        "table",
+        "figure",
+        "term",
+        "example"
+      ]
+    },
+    "NoteAnchorKind":     {
+      "type": "string",
+      "enum": [
+        "page",
+        "tableCell",
+        "figurePart"
+      ]
+    },
+    "NumberingScope":     {
+      "type": "string",
+      "enum": [
+        "document",
+        "table",
+        "figure"
+      ]
+    },
+    "NoteScope":     {
+      "type": "string",
+      "comment": "注的归属要素类别（与 Note.kind 同集合，独立命名以便后续分化）",
+      "enum": [
+        "clause",
+        "table",
+        "figure",
+        "term",
+        "example"
+      ]
+    },
+    "NoteAnchor":     {
+      "type": "object",
+      "properties": {
+        "tableRef": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
+        },
+        "row": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "col": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "figureRef": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
+        },
+        "part": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Note":     {
+      "type": "object",
+      "description": "注（GBT-X03，块级无引用点）与脚注（GBT-X04，标记+解释成对）",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
+        },
+        "type": {
+          "$ref": "#/definitions/NoteType"
+        },
+        "kind": {
+          "$ref": "#/definitions/NoteKind"
+        },
+        "label": {
+          "type": "string"
+        },
+        "ownerRef": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
+        },
+        "contentRef": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
+        },
+        "anchorKind": {
+          "$ref": "#/definitions/NoteAnchorKind"
+        },
+        "scope": {
+          "$ref": "#/definitions/NoteScope"
+        },
+        "anchors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/NoteAnchor"
+          }
+        },
+        "placement": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "sourceAnchors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SourceAnchor"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    "TocEntry":     {
       "type": "object",
       "properties": {
         "id": {
           "type": "string",
-          "pattern": "^ssir:[A-Za-z0-9._:/-]+$",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "clause",
+            "annex",
+            "foreword",
+            "introduction",
+            "bibliography",
+            "index",
+            "other"
+          ]
+        },
+        "title": {
+          "type": "string"
+        },
+        "number": {
+          "type": "string"
+        },
+        "sourcePageLabel": {
+          "type": "string"
+        },
+        "renderPage": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "targetRef": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "additionalProperties": false
+    },
+    "ListGroup":     {
+      "type": "object",
+      "description": "列项组（docs/15 §3.4）：组边界与终止符显式化",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "dash",
+            "enumerated",
+            "lettered",
+            "roman",
+            "other"
+          ]
+        },
+        "level": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "introRef": {
+          "type": "string"
+        },
+        "terminator": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "TermSource":     {
+      "type": "object",
+      "properties": {
+        "raw": {
+          "type": "string"
+        },
+        "targetRef": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
+        }
+      },
+      "required": [
+        "raw"
+      ],
+      "additionalProperties": false
+    },
+    "AnnexScope":     {
+      "type": "object",
+      "properties": {
+        "letter": {
+          "type": "string",
+          "pattern": "^[A-Z]$"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "normative",
+            "informative"
+          ]
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "clause",
+            "table",
+            "figure",
+            "formula",
+            "other"
+          ]
+        }
+      },
+      "required": [
+        "letter"
+      ],
+      "additionalProperties": false
+    },
+    "ChecklistEntry":     {
+      "type": "object",
+      "properties": {
+        "raw": {
+          "type": "string"
+        },
+        "standardNumber": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "raw"
+      ],
+      "additionalProperties": false
+    },
+    "ChecklistSection":     {
+      "type": "object",
+      "properties": {
+        "heading": {
+          "type": "string"
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ChecklistEntry"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "BibliographyEntry":     {
+      "type": "object",
+      "properties": {
+        "raw": {
+          "type": "string"
+        },
+        "targetRef": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "raw"
+      ],
+      "additionalProperties": false
+    },
+    "BibliographySection":     {
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/BibliographyEntry"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "IndexEntry":     {
+      "type": "object",
+      "properties": {
+        "term": {
+          "type": "string"
+        },
+        "refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "term"
+      ],
+      "additionalProperties": false
+    },
+    "IndexSection":     {
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/IndexEntry"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "ExplanationItem":     {
+      "type": "object",
+      "properties": {
+        "symbol": {
+          "type": "string"
+        },
+        "definition": {
+          "type": "string"
+        },
+        "unit": {
+          "type": "string"
+        },
+        "terminator": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol"
+      ],
+      "additionalProperties": false
+    },
+    "FormulaExplanation":     {
+      "type": "object",
+      "properties": {
+        "introRef": {
+          "type": "string"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ExplanationItem"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "FigureLegend":     {
+      "type": "object",
+      "properties": {
+        "index": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "SubCaption":     {
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "sourceAnchors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SourceAnchor"
+          }
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "SSIRDocument": {
+      "type": "object",
+      "properties": {
+        "notes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Note"
+          }
+        },
+        "tocEntries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/TocEntry"
+          }
+        },
+        "checklists": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ChecklistSection"
+          }
+        },
+        "bibliography": {
+          "type": "object",
+          "$ref": "#/definitions/BibliographySection"
+        },
+        "index": {
+          "type": "object",
+          "$ref": "#/definitions/IndexSection"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
           "description": "SSIR文档唯一标识符"
         },
         "ssirVersion": {
@@ -353,7 +781,7 @@
       "properties": {
         "id": {
           "type": "string",
-          "pattern": "^ssir:[A-Za-z0-9._:/-]+/canonical$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#Canonical$"
         },
         "text": {
           "type": "string"
@@ -396,9 +824,19 @@
     "StructuralNode": {
       "type": "object",
       "properties": {
+        "annexScope": {
+          "$ref": "#/definitions/AnnexScope"
+        },
+        "exampleIndex": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "termSource": {
+          "$ref": "#/definitions/TermSource"
+        },
         "id": {
           "type": "string",
-          "pattern": "^ssir:[A-Za-z0-9._:/-]+/[A-Za-z0-9._-]+$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
         },
         "logicalId": {
           "type": "string"
@@ -509,16 +947,19 @@
     "ContentElement": {
       "type": "object",
       "properties": {
+        "listGroup": {
+          "$ref": "#/definitions/ListGroup"
+        },
         "id": {
           "type": "string",
-          "pattern": "^ssir:[A-Za-z0-9._:/-]+/content/[A-Za-z0-9_-]+$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
         },
         "presentationType": {
           "$ref": "#/definitions/PresentationType"
         },
         "parentNodeId": {
           "type": "string",
-          "pattern": "^ssir:[A-Za-z0-9._:/-]+/[A-Za-z0-9._-]+$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
         },
         "footnoteMarker": {
           "type": "string",
@@ -526,7 +967,7 @@
         },
         "footnoteAnchorRef": {
           "type": "string",
-          "pattern": "^ssir:[A-Za-z0-9._:/-]+/[A-Za-z0-9._-]+$",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$",
           "description": "该脚注所注释/出现的条款（structural node）id——脚注与条款关系，供本体层处理。"
         },
         "semanticTypes": {
@@ -565,19 +1006,19 @@
         },
         "tableRef": {
           "type": "string",
-          "pattern": "^ssir:[A-Za-z0-9._:/-]+/table/[A-Za-z0-9_-]+$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
         },
         "figureRef": {
           "type": "string",
-          "pattern": "^ssir:[A-Za-z0-9._:/-]+/figure/[A-Za-z0-9_-]+$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
         },
         "formulaRef": {
           "type": "string",
-          "pattern": "^ssir:[A-Za-z0-9._:/-]+/formula/[A-Za-z0-9_-]+$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
         },
         "unknownRef": {
           "type": "string",
-          "pattern": "^ssir:[A-Za-z0-9._:/-]+/unknown/[A-Za-z0-9_-]+$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
         },
         "sideBySideGroup": {
           "type": "string",
@@ -754,9 +1195,12 @@
     "ListItem": {
       "type": "object",
       "properties": {
+        "terminator": {
+          "type": "string"
+        },
         "id": {
           "type": "string",
-          "pattern": "^[A-Za-z0-9_-]+$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
         },
         "text": {
           "type": "string"
@@ -807,9 +1251,16 @@
     "Table": {
       "type": "object",
       "properties": {
+        "noteRefs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
+          }
+        },
         "id": {
           "type": "string",
-          "pattern": "^ssir:[A-Za-z0-9._:/-]+/table/[A-Za-z0-9_-]+$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
         },
         "number": {
           "type": "string"
@@ -955,9 +1406,28 @@
     "Figure": {
       "type": "object",
       "properties": {
+        "legend": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/FigureLegend"
+          }
+        },
+        "subCaptions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SubCaption"
+          }
+        },
+        "noteRefs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
+          }
+        },
         "id": {
           "type": "string",
-          "pattern": "^ssir:[A-Za-z0-9._:/-]+/figure/[A-Za-z0-9_-]+$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
         },
         "number": {
           "type": "string"
@@ -1003,9 +1473,12 @@
     "Formula": {
       "type": "object",
       "properties": {
+        "explanationGroup": {
+          "$ref": "#/definitions/FormulaExplanation"
+        },
         "id": {
           "type": "string",
-          "pattern": "^ssir:[A-Za-z0-9._:/-]+/formula/[A-Za-z0-9_-]+$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
         },
         "number": {
           "type": "string"
@@ -1043,7 +1516,7 @@
       "properties": {
         "id": {
           "type": "string",
-          "pattern": "^ssir:[A-Za-z0-9._:/-]+/unknown/[A-Za-z0-9_-]+$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
         },
         "rawContent": {
           "type": "string"
@@ -1071,11 +1544,11 @@
       "properties": {
         "id": {
           "type": "string",
-          "pattern": "^ssir:[A-Za-z0-9._:/-]+/span/[A-Za-z0-9_-]+$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
         },
         "canonicalTextId": {
           "type": "string",
-          "pattern": "^ssir:[A-Za-z0-9._:/-]+/canonical$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#Canonical$"
         },
         "startChar": {
           "type": "integer",
@@ -1107,7 +1580,7 @@
       "properties": {
         "id": {
           "type": "string",
-          "pattern": "^ssir:[A-Za-z0-9._:/-]+/anchor/[A-Za-z0-9_-]+$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#Anchor-[0-9]{4}$"
         },
         "sourceFileId": {
           "type": "string",
@@ -1134,7 +1607,7 @@
         },
         "textSpanRef": {
           "type": "string",
-          "pattern": "^ssir:[A-Za-z0-9._:/-]+/span/[A-Za-z0-9_-]+$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
         },
         "textQuote": {
           "type": "string"
@@ -1297,7 +1770,7 @@
       "properties": {
         "id": {
           "type": "string",
-          "pattern": "^ssir:[A-Za-z0-9._:/-]+/mention/[A-Za-z0-9_-]+$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
         },
         "surfaceForm": {
           "type": "string"
@@ -1310,11 +1783,11 @@
         },
         "parentNodeId": {
           "type": "string",
-          "pattern": "^ssir:[A-Za-z0-9._:/-]+/[A-Za-z0-9._-]+$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
         },
         "sourceElementId": {
           "type": "string",
-          "pattern": "^ssir:[A-Za-z0-9._:/-]+/content/[A-Za-z0-9_-]+$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
         },
         "textSpan": {
           "$ref": "#/definitions/TextSpan"
@@ -1397,7 +1870,7 @@
       "properties": {
         "id": {
           "type": "string",
-          "pattern": "^ssir:[A-Za-z0-9._:/-]+/relation/[A-Za-z0-9_-]+$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
         },
         "relationType": {
           "$ref": "#/definitions/RelationMentionType"
@@ -1413,11 +1886,11 @@
         },
         "parentNodeId": {
           "type": "string",
-          "pattern": "^ssir:[A-Za-z0-9._:/-]+/[A-Za-z0-9._-]+$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
         },
         "sourceElementId": {
           "type": "string",
-          "pattern": "^ssir:[A-Za-z0-9._:/-]+/content/[A-Za-z0-9_-]+$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
         },
         "textSpan": {
           "$ref": "#/definitions/TextSpan"
@@ -1469,11 +1942,11 @@
       "properties": {
         "id": {
           "type": "string",
-          "pattern": "^ssir:[A-Za-z0-9._:/-]+/reference/[A-Za-z0-9_-]+$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
         },
         "sourceNodeId": {
           "type": "string",
-          "pattern": "^ssir:[A-Za-z0-9._:/-]+/[A-Za-z0-9._-]+$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
         },
         "referenceType": {
           "$ref": "#/definitions/ReferenceType"
@@ -1545,11 +2018,11 @@
       "properties": {
         "id": {
           "type": "string",
-          "pattern": "^ssir:[A-Za-z0-9._:/-]+/docrel/[A-Za-z0-9_-]+$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9._/-]*$"
         },
         "sourceDocumentId": {
           "type": "string",
-          "pattern": "^ssir:[A-Za-z0-9._:/-]+$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
         },
         "relationType": {
           "$ref": "#/definitions/DocumentRelationshipType"
@@ -1604,7 +2077,7 @@
       "properties": {
         "id": {
           "type": "string",
-          "pattern": "^ssir:processing/run/[0-9]{8}-[0-9]+$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#ProcessingRun_[0-9]{8}-[0-9]+$"
         },
         "sourceFileId": {
           "type": "string",
@@ -1673,15 +2146,15 @@
       "properties": {
         "id": {
           "type": "string",
-          "pattern": "^ssir:[A-Za-z0-9._:/-]+/qa/[A-Za-z0-9_-]+$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#QualityAssessment_[A-Za-z0-9._-]+$"
         },
         "documentId": {
           "type": "string",
-          "pattern": "^ssir:[A-Za-z0-9._:/-]+$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
         },
         "runId": {
           "type": "string",
-          "pattern": "^ssir:processing/run/[0-9]{8}-[0-9]+$"
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*#ProcessingRun_[0-9]{8}-[0-9]+$"
         },
         "renderingProfile": {
           "$ref": "#/definitions/NormativeRenderingProfile"

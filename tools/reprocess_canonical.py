@@ -4,14 +4,14 @@
 “半程处理程序”（新主程序，尽量复用 tools/mineru_full_standard.py 的既有函数）：
 以 ``out/mineru/<ID>/02_canonical/<ID>.canonical.md``（唯一人工可编辑的权威基线，
 见 AGENTS.md §2）为输入，跳过 抽取/合并/normalize——绝不重跑 normalize、绝不覆盖
-curated canonical——直接重跑 parse → roundtrip → render（PDF）→
+curated canonical——直接重跑 parse → render（PDF）→ render.md 投影 →
 （源 PDF 存在时）PDF 版面印记恢复与渲染对比，最后刷新 ``manifest.json``。
 
 复用关系（不重复实现）：
 - ``mineru_full_standard._stage_paths``：阶段目录与产物命名（naming_specification §4）；
 - ``mineru_full_standard._stamp_example_styles/_stamp_figure_source_sizes/
   _stamp_side_by_side_layout``：PDF 源几何印记恢复（规则对应见各自 docstring）；
-- ``mineru_full_standard._post_parse_verify_render``：roundtrip → render（PDF）
+- ``mineru_full_standard._post_parse_verify_render``：render（PDF）+ render.md 投影
   → compare → manifest 公共尾部（规则对应：verify=GEN-051/090/091，render=GEN-070—076）；
 - ``mineru_full_standard._load_json``：pipeline-state / manifest 读取。
 
@@ -22,7 +22,7 @@ curated canonical——直接重跑 parse → roundtrip → render（PDF）→
     .venv/bin/python tools/reprocess_canonical.py \\
         --input out/mineru/GB_T_1.1-2020/02_canonical/GB_T_1.1-2020.canonical.md
 
-退出码：0 成功；2 失败（roundtrip 返回 3 = SSIR 与 Verify 不等价/关键损失，
+退出码：0 成功；2 失败（parse/render 阶段失败，
 与全流程工具一致：记录结果但不算失败）。
 """
 
@@ -39,7 +39,7 @@ for _path in (str(TOOLS), str(ROOT / "src")):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
-# 复用全流程工具的阶段路径 / 版面印记 / 尾部 roundtrip-render-manifest（同仓库内稳定私有接口）。
+# 复用全流程工具的阶段路径 / 版面印记 / 尾部 render + 投影 + manifest（同仓库内稳定私有接口）。
 import mineru_full_standard as mfs  # noqa: E402
 
 
@@ -81,7 +81,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Re-run the downstream stages from an existing curated canonical CSM "
-            "(parse -> roundtrip -> render -> compare -> manifest) without re-running "
+            "(parse -> render -> render.md -> manifest) without re-running "
             "extract/merge/normalize, so a hand-edited canonical is preserved as-is."
         )
     )
@@ -99,7 +99,6 @@ def main() -> int:
         help="并列版面识别（GEN-095）用的整份文档 middle.json（page_idx 为 0 基绝对页号）；"
              "与文档根的 parts/ 分片目录合并使用（两侧锚点都参与匹配）",
     )
-    parser.add_argument("--no-roundtrip", action="store_true", help="（兼容保留，默认即不跑回环验证）")
     parser.add_argument("--no-render", action="store_true", help="跳过 PDF 渲染与对比")
     args = parser.parse_args()
     if not args.input and not args.file:
@@ -113,7 +112,7 @@ def main() -> int:
     if args.output_stem:
         stem = args.output_stem
     paths = mfs._stage_paths(docroot, stem)
-    for stage_path in (paths["ssir"], paths["render_pdf"], paths["render_md"], paths["verify"]):
+    for stage_path in (paths["ssir"], paths["render_pdf"], paths["render_md"]):
         stage_path.parent.mkdir(parents=True, exist_ok=True)
 
     # provenance 保留：pipeline-state/manifest 里的 created/sha/title/number/原输入
@@ -138,8 +137,7 @@ def main() -> int:
     # 复用 mineru_full_standard._post_parse_verify_render 需要的其余命名空间属性
     args.output_dir = docroot
     args.output_stem = stem
-    # 验证独立：默认不跑回环验证（需回环请用 tools/verify_conversion.py）
-    args.roundtrip = False
+    # 验证独立：构建不做验证（需验证请用 tools/verify_conversion.py）
     args.render = not args.no_render
 
     mfs._log(f"Input canonical: {canonical.resolve()}")
@@ -160,22 +158,28 @@ def main() -> int:
         return 2
     mfs._log(f"SSIR JSON written: {paths['ssir']}")
 
-    # PDF 源才有的版面印记恢复（复用原函数；无源 PDF 时无几何可读，跳过）
-    if args.input_kind == "pdf":
-        mfs._stamp_example_styles(paths["ssir"], args.input)
-        mfs._stamp_figure_source_sizes(paths["ssir"], args.input)
+    # 版面印记只读抽取阶段写出的 ``01_extract/<stem>.layout.json``（docs/16 §2.3/§3：
+    # 「源 PDF 在 MinerU 之后不再读取」——本程序属构建路径，绝不打开源 PDF）。
+    # 通道缺失时按「无判据」处理：记日志、不猜、不阻断。
+    layout = mfs.load_stage_layout(args)
+    if layout:
+        mfs._stamp_example_styles(paths["ssir"], layout)
+        mfs._stamp_figure_source_sizes(paths["ssir"], layout)
         mfs._stamp_side_by_side_layout(
-            paths["ssir"], docroot / "parts", middle_json=args.side_by_side_middle
+            paths["ssir"], docroot / "parts", middle_json=args.side_by_side_middle, layout=layout,
         )
     elif args.side_by_side_middle is not None:
-        # 无源 PDF 但给了整份 middle.json：并列版面仍可识别（云抽取产物即这份几何）。
+        # 无 layout.json 但给了整份 middle.json：并列版面仍可识别（云抽取产物即这份几何）。
         mfs._stamp_side_by_side_layout(
-            paths["ssir"], docroot / "parts", middle_json=args.side_by_side_middle
+            paths["ssir"], docroot / "parts", middle_json=args.side_by_side_middle, layout=layout,
         )
     else:
-        mfs._log("No source PDF present; skipping PDF-geometry stamps (example style / figure sizes / side-by-side)")
+        mfs._log(
+            "No layout.json present; skipping layout stamps (example style / figure sizes / side-by-side). "
+            "Run `tools/mineru_full_standard.py --stage layout` for this document root to produce it."
+        )
 
-    # 公共尾部（复用原函数）：roundtrip -> render（PDF）-> compare -> manifest
+    # 公共尾部（复用原函数）：render（PDF）-> render.md 投影 -> manifest
     try:
         mfs._post_parse_verify_render(args, state, paths, ssir=paths["ssir"])
     except RuntimeError as exc:

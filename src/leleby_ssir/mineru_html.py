@@ -117,7 +117,7 @@ def html_table_to_csm(html: str, table_id: str, caption: str | None) -> str:
         if match:
             # Bare "表 N" captions (no title) set only caption-number; the
             # renderer prints the number line, GBT-X02 passes, and the
-            # roundtrip keeps the attribute (GEN-033 孤立题注抑制).
+            # 该属性由下游一直保留（GEN-033 孤立题注抑制）。
             attrs.append(f'caption-number="{match.group(1)}"')
             if match.group(2):
                 attrs.append(f'caption="{match.group(2).replace(chr(34), "&quot;")}"')

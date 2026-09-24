@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""独立的一致性验证程序：canonical ↔ SSIR 往返验证 ＋（可选）PDF 版面/文本量对比。
+"""独立的一致性验证程序：SSIR 投影 ＋ 合规/质量报告 ＋（可选）PDF 版面/文本量对比。
 
 从构建流水线里抽出来的**可单独运行**的验证入口：只读既有产物，不生成 canonical，
-不修改任何输入。构建程序（`tools/build_ssir.py`）内部的 roundtrip 也调用同一套引擎
-（`ssir csm roundtrip` + `leleby_ssir.pdf_compare`），因此独立运行与流水线内的结论一致。
+不修改任何输入。构建流程本身不做任何验证（docs/16 §P0-F：回环验证永久下线）。
 
 用法::
 
@@ -19,29 +18,34 @@
 
 产物（写入既有文档根，不覆盖 canonical）::
 
-    04_render/<stem>.render.md              SSIR → CSM 回写（往返中转产物）
+    04_render/<stem>.render.md               SSIR 的标准 markdown 投影（零指令、零 HTML 注释）
     04_render/<stem>.render-comparison.json 与源 PDF 的对比统计（需源 PDF）
-    05_verify/<stem>.verify.json            SSIR 合规/质量报告
-    05_verify/<stem>.roundtrip.json         分层等价结论（identity/structure/content/semantic/criticalInformation）
+    05_verify/<stem>.verify.json             SSIR 合规/质量报告（parse report）
 
-退出码：``0`` 等价；``3`` 不等价（关键信息丢失等，详见 roundtrip 报告）；``2`` 用法/引擎错误。
+退出码：``0`` 通过；``2`` 用法/引擎错误。
 
-规则对应：GEN-051（元数据往返一致）、GEN-090（机器验证）、GEN-091（基于 PDF 内部对象验证）。
+规则对应：GEN-090（机器验证）、GEN-091（基于 PDF 内部对象验证）。
+回环验证（canonical↔SSIR↔render.md↔verify）已于 2026-09-22 永久下线（用户裁定）：
+本程序只做「投影 + 合规/质量报告 + （可选）PDF 对比」。
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
-import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from leleby_ssir.pdf_compare import compare  # noqa: E402
+from leleby_ssir.csm_renderer import asset_base_for, render_csm  # noqa: E402
+from leleby_ssir.html_renderer import render_html  # noqa: E402
 from leleby_ssir.pipeline import _log, _stage_paths  # noqa: E402
+from leleby_ssir.service import parse_csm_with_report  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
+VERIFY_DIR = "05_verify"  # 验证报告目录（构建流程不写；本程序与 docs 的约定）
 
 CANONICAL_SUFFIX = ".canonical.md"
 SSIR_SUFFIX = ".ssir.json"
@@ -84,7 +88,7 @@ def resolve_targets(entry: str | Path, root: Path, output_dir: Path | None = Non
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="独立验证：canonical ↔ SSIR 往返回环（+ 可选 PDF 对比），只读既有产物。"
+        description="独立验证：SSIR markdown 投影 + 合规/质量报告（+ 可选 PDF 对比），只读既有产物。"
     )
     parser.add_argument("entry", nargs="?", help="裸标准 ID / 文档根目录 / *.canonical.md / *.ssir.json")
     parser.add_argument("--input", type=Path, help="与位置参数二选一")
@@ -105,21 +109,32 @@ def main() -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     paths = _stage_paths(docroot, stem)
-    for stage_path in (paths["render_md"], paths["verify"], paths["roundtrip"], paths["render_pdf"]):
+    for stage_path in (paths["render_md"], paths["render_html"], paths["render_pdf"]):
         stage_path.parent.mkdir(parents=True, exist_ok=True)
 
-    roundtrip = [
-        str(Path(sys.prefix) / "bin" / "ssir"), "csm", "roundtrip",
-        "--input", str(canonical), "--render-md-output", str(paths["render_md"]),
-        "--verify-output", str(paths["verify"]), "--report", str(paths["roundtrip"]),
-    ]
-    _log(f"Verifying {stem}: canonical -> SSIR -> render.md -> layered comparison")
-    result = subprocess.run(roundtrip, cwd=ROOT)
-    if result.returncode not in (0, 3):
-        print("error: SSIR round-trip verification failed", file=sys.stderr)
-        return 2
-    _log(f"Round-trip result: {result.returncode} (0 = equivalent; 3 = critical information loss)")
-    _log(f"Reports: {paths['roundtrip']} / {paths['verify']}")
+    # render.md = SSIR 的标准 markdown 投影；verify.json = 合规/质量报告（parse report）。
+    # 报告是**本验证程序**的产物（构建流程不写），故路径在此定义而不取自流水线阶段表。
+    verify_path = docroot / VERIFY_DIR / f"{stem}.verify.json"
+    verify_path.parent.mkdir(parents=True, exist_ok=True)
+    _log(f"Verifying {stem}: SSIR markdown projection + compliance/quality report")
+    _ssir, report = parse_csm_with_report(canonical)
+    report.write_json(verify_path)
+    document = json.loads(paths["ssir"].read_text(encoding="utf-8")) if paths["ssir"].is_file() else _ssir
+    paths["render_md"].write_text(
+        render_csm(document, asset_base=asset_base_for(paths["render_md"], docroot)),
+        encoding="utf-8",
+        newline="\n",
+    )
+    # render.html 与 render.md 同一 SSIR、同一批次写出（GEN-130 结构投影）。
+    paths["render_html"].write_text(
+        render_html(document, asset_base=asset_base_for(paths["render_html"], docroot)),
+        encoding="utf-8",
+        newline="\n",
+    )
+    _log(f"Reports: {verify_path} / {paths['render_md']}")
+    print(json.dumps({"documentId": _ssir.get("id") or stem, "verify": str(verify_path),
+                      "renderMd": str(paths["render_md"]), "renderHtml": str(paths["render_html"]),
+                      "overallStatus": report.overall_status}, ensure_ascii=False))
 
     source_pdf = args.source_pdf
     if source_pdf is None:
@@ -136,7 +151,7 @@ def main() -> int:
         compare(Path(source_pdf), paths["render_pdf"], paths["render_comparison"])
         _log(f"Generated PDF comparison: {paths['render_comparison']}")
 
-    return result.returncode
+    return 0
 
 
 if __name__ == "__main__":

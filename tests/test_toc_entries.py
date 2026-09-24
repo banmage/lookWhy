@@ -94,7 +94,7 @@ class TocCaptionRowsTests(unittest.TestCase):
 
 
 class TocRenderingTests(unittest.TestCase):
-    """真 PDF / docx 目次里必须出现图、表行与页码（含附录图题与跨页大表）。"""
+    """真 PDF 目次里必须出现图、表行与页码（含附录图题与跨页大表）。"""
 
     @classmethod
     def setUpClass(cls) -> None:

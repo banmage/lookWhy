@@ -1,1 +1,1810 @@
-{"createdAt": "1970-01-01T00:00:00Z", "documentType": "standard", "figures": [], "formulas": [], "id": "ssir:GB-T-20001.5-2017", "metadata": {"common": {"documentIdentifier": "GB/T 20001.5-2017", "effectiveDate": "2018-04-01", "issuer": "中华人民共和国国家质量监督检验检疫总局 中国国家标准化管理委员会", "language": "zh-CN", "publicationDate": "2017-12-29", "title": "标准编写规则 第5部分：规范标准", "titleEn": "Rules for drafting standards—Part 5:Specification standards"}, "standard": {"ccs": "A 00", "chineseTitle": "标准编写规则 第5部分：规范标准", "ics": "01.120", "standardNumber": "GB/T 20001.5-2017"}}, "preservationLevel": "Level3", "processingRuns": [{"configuration": {"csmVersion": "1.0"}, "id": "ssir:processing/run/19700101-001", "ocrUsed": false, "runType": "extraction", "sourceFileId": "src:699b6ae1d1b33d01", "timestamp": "1970-01-01T00:00:00Z", "tool": "leleby-csm-parser", "toolVersion": "0.1.0"}], "qualityAssessments": [{"assessedAt": "1970-01-01T00:00:00Z", "comments": "[CSM-STRUCT-001/warning] line 419: bare numbered paragraph was promoted to a heading (5.1, level 3) by ancestor-chain promotion.\n[CSM-STRUCT-001/warning] line 421: bare numbered paragraph was promoted to a heading (5.2, level 3) by ancestor-chain promotion.\n[CSM-STRUCT-001/warning] line 423: bare numbered paragraph was promoted to a heading (5.3, level 3) by ancestor-chain promotion.\n[CSM-STRUCT-001/warning] line 425: bare numbered paragraph was promoted to a heading (5.4, level 3) by ancestor-chain promotion.\n[CSM-STRUCT-001/warning] line 528: bare numbered paragraph was promoted to a heading (4.1.1, level 4) by ancestor-chain promotion.\n[CSM-STRUCT-001/warning] line 530: bare numbered paragraph was promoted to a heading (4.1.2, level 4) by ancestor-chain promotion.\n[CSM-STRUCT-001/warning] line 585: bare numbered paragraph was promoted to a heading (6.1, level 3) by ancestor-chain promotion.\n[CSM-STRUCT-001/warning] line 692: bare numbered paragraph was promoted to a heading (4.3.1, level 4) by ancestor-chain promotion.\n[CSM-OCR-001/warning] line 61: List marker '-' unified to '——' (majority of sibling list symbols).\n[CSM-OCR-001/warning] line 62: List marker '-' unified to '——' (majority of sibling list symbols).\n[CSM-OCR-001/warning] line 286: List marker '——' unified to '—' (majority of sibling list symbols).\n[CSM-OCR-008/warning] line 464: Example heading '示例2：' sat at level 2 (extractor chapter level) inside clause context level 3; raised to level 4 so it nests under its clause.\n[CSM-OCR-008/warning] line 558: Example heading '示例 2：' sat at level 2 (extractor chapter level) inside clause context level 3; raised to level 4 so it nests under its clause.\n[CSM-OCR-008/warning] line 664: Example heading '示例2：' sat at level 2 (extractor chapter level) inside clause context level 4; raised to level 5 so it nests under its clause.\n[CSM-OCR-009/warning] line 419: Heading '5.1 变电站监控系统由站控层、间隔层两部分组成，并用分层、分布、开放式网络系统实现连接。在应用电子互感器、合并单元的情况下，可增加过程层。' is a sentence-bodied numbered clause, not a title (ends with sentence-final punctuation); demoted to a paragraph.\n[CSM-OCR-009/warning] line 421: Heading '5.2 站控层由计算机网络连接的主机、操作员站和工作站等设备构成，提供站内运行的人机联系界面，实现管理控制间隔层设备等功能，并能与调度中心通信。' is a sentence-bodied numbered clause, not a title (ends with sentence-final punctuation); demoted to a paragraph.\n[CSM-OCR-009/warning] line 423: Heading '5.3 间隔层由测控单元、间隔层网络和各种网络、通信接口设备等构成，完成面向单元设备的监测控制等功能。' is a sentence-bodied numbered clause, not a title (ends with sentence-final punctuation); demoted to a paragraph.\n[CSM-OCR-009/warning] line 425: Heading '5.4 过程层面对电气一次设备对象，包括智能开关、智能终端等智能一次及辅助设备。' is a sentence-bodied numbered clause, not a title (ends with sentence-final punctuation); demoted to a paragraph.\n[CSM-OCR-009/warning] line 528: Heading '4.1.1 在标准制修订过程中的任何阶段，参与标准制修订的组织或个人应尽早向相关全国专业标准化技术委员会或归口单位披露自身及关联者拥有的必要专利，宜尽早披露其所知悉的他人(方)拥有的必要专利。' is a sentence-bodied numbered clause, not a title (ends with sentence-final punctuation); demoted to a paragraph.\n[CSM-OCR-009/warning] line 530: Heading '4.1.2 在标准制修订过程中的任何阶段，披露必要专利信息时，应按要求填写必要专利信息披露表(见表A.1)并保证所有必填项被100%正确填写。' is a sentence-bodied numbered clause, not a title (ends with sentence-final punctuation); demoted to a paragraph.\n[CSM-OCR-009/warning] line 585: Heading '6.1 含水率测定试验木材含水率按照GB/T ×××××—××××中的方法进行测定。人造板含水率按照GB/T ×××××—××××中的方法进行测定。' is a sentence-bodied numbered clause, not a title (ends with sentence-final punctuation); demoted to a paragraph.\n[CSM-OCR-009/warning] line 692: Heading '4.3.1 服务人员提供服务时，应耐心细致地引导服务对象表达诉求。宜使用普通话。' is a sentence-bodied numbered clause, not a title (ends with sentence-final punctuation); demoted to a paragraph.\n[GB-T-1.1-CHAPTER-001/warning] main chapter numbering must be continuous from 1; found [1, 2, 3, 4, 5, 6, 1, 5, 6, 7, 4, 5, 4, 5, 6, 4, 5, 4, 5]; original numbering was preserved.\n[GB-T-1.1-ID-002/warning] Standard number uses an ASCII hyphen; original number was preserved for source fidelity.", "documentId": "ssir:GB-T-20001.5-2017", "figureConfidence": 1.0, "formulaConfidence": 1.0, "humanReviewStatus": "machineReviewed", "id": "ssir:GB-T-20001.5-2017/qa/m1", "overallStatus": "partial", "runId": "ssir:processing/run/19700101-001", "structureConfidence": 1.0, "tableConfidence": 1.0}], "sourceFiles": [{"fileHash": {"algorithm": "SHA-256", "value": "699b6ae1d1b33d0147a6ddc9f4339dc1fb6ef5f1e075873d83cc74d1968c394d"}, "fileName": "GB_T_20001.5-2017.canonical.md", "fileSize": 42800, "id": "src:699b6ae1d1b33d01", "mimeType": "text/markdown"}], "ssirVersion": "0.4", "structuralRoot": {"children": [{"contentElements": [{"id": "ssir:GB-T-20001.5-2017/content/c-0119", "parentNodeId": "ssir:GB-T-20001.5-2017/annex-A-035", "presentationType": "paragraph", "semanticTypes": [], "sortOrder": 0, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0190", "markdownEndLine": 407, "markdownNodePath": "md:paragraph:407", "markdownStartLine": 407, "sourceFileId": "src:699b6ae1d1b33d01"}], "textContent": "本附录以标准文本形式给出示例的目的，在于帮助标准使用者理解GB/T 20001的本部分的相关规定。示例仅是为了说明本部分的规定而编写或由其他文件改编，选取的要素及其技术内容不保证是最佳和准确的。"}], "id": "ssir:GB-T-20001.5-2017/annex-A-035", "level": 1, "logicalId": "annex-A", "nodeType": "annex", "number": "A", "sortOrder": 34, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0189", "markdownEndLine": 405, "markdownNodePath": "md:heading:405", "markdownStartLine": 405, "sourceFileId": "src:699b6ae1d1b33d01"}], "title": "（资料性） 规范标准编写示例"}, {"contentElements": [{"id": "ssir:GB-T-20001.5-2017/content/c-0120", "parentNodeId": "ssir:GB-T-20001.5-2017/documentBlock-A.1-036", "presentationType": "paragraph", "semanticTypes": [], "sortOrder": 0, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0192", "markdownEndLine": 411, "markdownNodePath": "md:paragraph:411", "markdownStartLine": 411, "sourceFileId": "src:699b6ae1d1b33d01"}], "textContent": "示例1示出了以系统为标准化对象的产品规范标准，在确立系统的构成要素及各要素之间关系、规定系统的特性及特性值时的编写方法。其中的第5章确立了1000kV变电站监控系统的构成要素，描述了这些构成要素之间的关系（见5.1），并进一步描述了该系统的各个构成要素的功能及其构成（见5.2、5.3和5.4）；第7章规定了系统整体的性能要求（见7.1和7.2）。"}], "id": "ssir:GB-T-20001.5-2017/documentBlock-A.1-036", "level": 1, "logicalId": "documentBlock-A.1", "nodeType": "documentBlock", "sortOrder": 35, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0191", "markdownEndLine": 409, "markdownNodePath": "md:heading:409", "markdownStartLine": 409, "sourceFileId": "src:699b6ae1d1b33d01"}], "title": "A.1 产品规范标准编写示例"}, {"exampleContent": true, "id": "ssir:GB-T-20001.5-2017/documentBlock-1-037", "level": 1, "logicalId": "documentBlock-1", "nodeType": "documentBlock", "sortOrder": 36, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0193", "markdownEndLine": 413, "markdownNodePath": "md:heading:413", "markdownStartLine": 413, "sourceFileId": "src:699b6ae1d1b33d01"}], "title": "示例 1："}, {"exampleContent": true, "id": "ssir:GB-T-20001.5-2017/documentBlock-1-000-kV-038", "level": 1, "logicalId": "documentBlock-1-000-kV", "nodeType": "documentBlock", "sortOrder": 37, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0194", "markdownEndLine": 415, "markdownNodePath": "md:heading:415", "markdownStartLine": 415, "sourceFileId": "src:699b6ae1d1b33d01"}], "title": "1 000 kV 变电站监控系统 技术规范"}, {"contentElements": [{"id": "ssir:GB-T-20001.5-2017/content/c-0121", "parentNodeId": "ssir:GB-T-20001.5-2017/section-5-039", "presentationType": "paragraph", "semanticTypes": [], "sortOrder": 0, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0196", "markdownEndLine": 419, "markdownNodePath": "md:paragraph:419", "markdownStartLine": 419, "sourceFileId": "src:699b6ae1d1b33d01"}], "textContent": "5.1 变电站监控系统由站控层、间隔层两部分组成，并用分层、分布、开放式网络系统实现连接。在应用电子互感器、合并单元的情况下，可增加过程层。"}, {"id": "ssir:GB-T-20001.5-2017/content/c-0122", "parentNodeId": "ssir:GB-T-20001.5-2017/section-5-039", "presentationType": "paragraph", "semanticTypes": [], "sortOrder": 1, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0197", "markdownEndLine": 421, "markdownNodePath": "md:paragraph:421", "markdownStartLine": 421, "sourceFileId": "src:699b6ae1d1b33d01"}], "textContent": "5.2 站控层由计算机网络连接的主机、操作员站和工作站等设备构成，提供站内运行的人机联系界面，实现管理控制间隔层设备等功能，并能与调度中心通信。"}, {"id": "ssir:GB-T-20001.5-2017/content/c-0123", "parentNodeId": "ssir:GB-T-20001.5-2017/section-5-039", "presentationType": "paragraph", "semanticTypes": [], "sortOrder": 2, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0198", "markdownEndLine": 423, "markdownNodePath": "md:paragraph:423", "markdownStartLine": 423, "sourceFileId": "src:699b6ae1d1b33d01"}], "textContent": "5.3 间隔层由测控单元、间隔层网络和各种网络、通信接口设备等构成，完成面向单元设备的监测控制等功能。"}, {"id": "ssir:GB-T-20001.5-2017/content/c-0124", "parentNodeId": "ssir:GB-T-20001.5-2017/section-5-039", "presentationType": "paragraph", "semanticTypes": [], "sortOrder": 3, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0199", "markdownEndLine": 425, "markdownNodePath": "md:paragraph:425", "markdownStartLine": 425, "sourceFileId": "src:699b6ae1d1b33d01"}], "textContent": "5.4 过程层面对电气一次设备对象，包括智能开关、智能终端等智能一次及辅助设备。"}], "exampleContent": true, "id": "ssir:GB-T-20001.5-2017/section-5-039", "level": 1, "logicalId": "section-5", "nodeType": "section", "number": "5", "sortOrder": 38, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0195", "markdownEndLine": 417, "markdownNodePath": "md:heading:417", "markdownStartLine": 417, "sourceFileId": "src:699b6ae1d1b33d01"}], "title": "系统结构"}, {"children": [{"contentElements": [{"id": "ssir:GB-T-20001.5-2017/content/c-0125", "parentNodeId": "ssir:GB-T-20001.5-2017/clause-6.1-041", "presentationType": "paragraph", "semanticTypes": [], "sortOrder": 0, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0202", "markdownEndLine": 431, "markdownNodePath": "md:paragraph:431", "markdownStartLine": 431, "sourceFileId": "src:699b6ae1d1b33d01"}], "textContent": "6.1.1 系统应通过测控单元实时采集模拟量、开关量。测控单元以下列方式获取模拟量和开关量："}], "exampleContent": true, "id": "ssir:GB-T-20001.5-2017/clause-6.1-041", "level": 2, "logicalId": "clause-6.1", "nodeType": "clause", "number": "6.1", "sortOrder": 40, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0201", "markdownEndLine": 429, "markdownNodePath": "md:heading:429", "markdownStartLine": 429, "sourceFileId": "src:699b6ae1d1b33d01"}], "title": "数据采集处理"}], "exampleContent": true, "id": "ssir:GB-T-20001.5-2017/section-6-040", "level": 1, "logicalId": "section-6", "nodeType": "section", "number": "6", "sortOrder": 39, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0200", "markdownEndLine": 427, "markdownNodePath": "md:heading:427", "markdownStartLine": 427, "sourceFileId": "src:699b6ae1d1b33d01"}], "title": "系统功能"}, {"children": [{"contentElements": [{"id": "ssir:GB-T-20001.5-2017/content/c-0126", "parentNodeId": "ssir:GB-T-20001.5-2017/clause-7.1-043", "presentationType": "paragraph", "semanticTypes": [], "sortOrder": 0, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0205", "markdownEndLine": 437, "markdownNodePath": "md:paragraph:437", "markdownStartLine": 437, "sourceFileId": "src:699b6ae1d1b33d01"}], "textContent": "系统性能应符合表1规定的要求。"}, {"id": "ssir:GB-T-20001.5-2017/content/c-0127", "parentNodeId": "ssir:GB-T-20001.5-2017/clause-7.1-043", "presentationType": "table", "sortOrder": 1, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0206", "markdownEndLine": 446, "markdownNodePath": "md:table:441", "markdownStartLine": 441, "sourceBlockId": "mineru-table-p001-003", "sourceFileId": "src:699b6ae1d1b33d01"}], "tableRef": "ssir:GB-T-20001.5-2017/table/mineru-table-p001-003"}], "exampleContent": true, "id": "ssir:GB-T-20001.5-2017/clause-7.1-043", "level": 2, "logicalId": "clause-7.1", "nodeType": "clause", "number": "7.1", "sortOrder": 42, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0204", "markdownEndLine": 435, "markdownNodePath": "md:heading:435", "markdownStartLine": 435, "sourceFileId": "src:699b6ae1d1b33d01"}], "title": "系统性能要求"}, {"children": [{"exampleContent": true, "id": "ssir:GB-T-20001.5-2017/documentBlock-2-045", "level": 3, "logicalId": "documentBlock-2", "nodeType": "documentBlock", "sortOrder": 44, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0213", "markdownEndLine": 464, "markdownNodePath": "md:heading:464", "markdownStartLine": 464, "sourceFileId": "src:699b6ae1d1b33d01"}], "title": "示例2："}], "contentElements": [{"id": "ssir:GB-T-20001.5-2017/content/c-0128", "parentNodeId": "ssir:GB-T-20001.5-2017/clause-7.2-044", "presentationType": "paragraph", "semanticTypes": [], "sortOrder": 0, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0209", "markdownEndLine": 450, "markdownNodePath": "md:paragraph:450", "markdownStartLine": 450, "sourceFileId": "src:699b6ae1d1b33d01"}], "textContent": "装置不应通过交直流输入回路外接抗干扰元件来满足有关电磁兼容要求。按表2的方法进行试验，装置电磁兼容能力应达到相对应的级别。"}, {"id": "ssir:GB-T-20001.5-2017/content/c-0129", "parentNodeId": "ssir:GB-T-20001.5-2017/clause-7.2-044", "presentationType": "table", "sortOrder": 1, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0210", "markdownEndLine": 458, "markdownNodePath": "md:table:454", "markdownStartLine": 454, "sourceBlockId": "mineru-table-p001-004", "sourceFileId": "src:699b6ae1d1b33d01"}], "tableRef": "ssir:GB-T-20001.5-2017/table/mineru-table-p001-004"}, {"id": "ssir:GB-T-20001.5-2017/content/c-0130", "parentNodeId": "ssir:GB-T-20001.5-2017/clause-7.2-044", "presentationType": "paragraph", "semanticTypes": [], "sortOrder": 2, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0212", "markdownEndLine": 461, "markdownNodePath": "md:paragraph:461", "markdownStartLine": 461, "sourceFileId": "src:699b6ae1d1b33d01"}], "textContent": "示例2示出了以制成品为标准化对象的产品规范标准，在规定产品的性能特性及特性值、描述试验方法时的编写方法。对于手持式金属探测器，根据性能原则优先规定的是使用性能一探测性能（见4.1）。探测性能进一步由灵敏度、探测能力、稳定性等特性及特性值来表达，示例中的5.1描述了与探测性能相对应的试验方法。除此之外，手持式金属探测器对工作环境的适应能力也是影响其使用的重要因素，示例中的4.3规定了环境适应性方面的要求。"}], "exampleContent": true, "id": "ssir:GB-T-20001.5-2017/clause-7.2-044", "level": 2, "logicalId": "clause-7.2", "nodeType": "clause", "number": "7.2", "sortOrder": 43, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0208", "markdownEndLine": 448, "markdownNodePath": "md:heading:448", "markdownStartLine": 448, "sourceFileId": "src:699b6ae1d1b33d01"}], "title": "电磁兼容性能要求"}], "exampleContent": true, "id": "ssir:GB-T-20001.5-2017/section-7-042", "level": 1, "logicalId": "section-7", "nodeType": "section", "number": "7", "sortOrder": 41, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0203", "markdownEndLine": 433, "markdownNodePath": "md:heading:433", "markdownStartLine": 433, "sourceFileId": "src:699b6ae1d1b33d01"}], "title": "性能要求"}, {"exampleContent": true, "id": "ssir:GB-T-20001.5-2017/documentBlock-document-046", "level": 1, "logicalId": "documentBlock-document", "nodeType": "documentBlock", "sortOrder": 45, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0214", "markdownEndLine": 466, "markdownNodePath": "md:heading:466", "markdownStartLine": 466, "sourceFileId": "src:699b6ae1d1b33d01"}], "title": "手持式金属探测器通用技术规范"}, {"children": [{"children": [{"contentElements": [{"id": "ssir:GB-T-20001.5-2017/content/c-0131", "parentNodeId": "ssir:GB-T-20001.5-2017/subClause-4.1.1-049", "presentationType": "paragraph", "semanticTypes": [], "sortOrder": 0, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0218", "markdownEndLine": 474, "markdownNodePath": "md:paragraph:474", "markdownStartLine": 474, "sourceFileId": "src:699b6ae1d1b33d01"}], "textContent": "按5.1.1的方法操作探测器，至少应适合或覆盖一个检测等级。"}], "exampleContent": true, "id": "ssir:GB-T-20001.5-2017/subClause-4.1.1-049", "level": 3, "logicalId": "subClause-4.1.1", "nodeType": "subClause", "number": "4.1.1", "sortOrder": 48, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0217", "markdownEndLine": 472, "markdownNodePath": "md:heading:472", "markdownStartLine": 472, "sourceFileId": "src:699b6ae1d1b33d01"}], "title": "灵敏度范围"}, {"contentElements": [{"id": "ssir:GB-T-20001.5-2017/content/c-0132", "parentNodeId": "ssir:GB-T-20001.5-2017/subClause-4.1.2-050", "presentationType": "paragraph", "semanticTypes": [], "sortOrder": 0, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0220", "markdownEndLine": 478, "markdownNodePath": "md:paragraph:478", "markdownStartLine": 478, "sourceFileId": "src:699b6ae1d1b33d01"}], "textContent": "针对每个检测等级，按5.1.2的方法试验，应满足表1的要求。"}, {"id": "ssir:GB-T-20001.5-2017/content/c-0133", "parentNodeId": "ssir:GB-T-20001.5-2017/subClause-4.1.2-050", "presentationType": "table", "sortOrder": 1, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0221", "markdownEndLine": 487, "markdownNodePath": "md:table:482", "markdownStartLine": 482, "sourceBlockId": "mineru-table-p001-005", "sourceFileId": "src:699b6ae1d1b33d01"}], "tableRef": "ssir:GB-T-20001.5-2017/table/mineru-table-p001-005"}], "exampleContent": true, "id": "ssir:GB-T-20001.5-2017/subClause-4.1.2-050", "level": 3, "logicalId": "subClause-4.1.2", "nodeType": "subClause", "number": "4.1.2", "sortOrder": 49, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0219", "markdownEndLine": 476, "markdownNodePath": "md:heading:476", "markdownStartLine": 476, "sourceFileId": "src:699b6ae1d1b33d01"}], "title": "探测能力"}, {"contentElements": [{"id": "ssir:GB-T-20001.5-2017/content/c-0134", "parentNodeId": "ssir:GB-T-20001.5-2017/subClause-4.1.3-051", "presentationType": "paragraph", "semanticTypes": [], "sortOrder": 0, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0224", "markdownEndLine": 500, "markdownNodePath": "md:paragraph:500", "markdownStartLine": 500, "sourceFileId": "src:699b6ae1d1b33d01"}], "textContent": "探测器持续工作时间不应短于40h，且在持续工作期间不做任何调整的情况下应能够稳定可靠地工作，并应满足4.1.2的要求。"}], "exampleContent": true, "id": "ssir:GB-T-20001.5-2017/subClause-4.1.3-051", "level": 3, "logicalId": "subClause-4.1.3", "nodeType": "subClause", "number": "4.1.3", "sortOrder": 50, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0223", "markdownEndLine": 498, "markdownNodePath": "md:heading:498", "markdownStartLine": 498, "sourceFileId": "src:699b6ae1d1b33d01"}], "title": "持续工作稳定性"}], "exampleContent": true, "id": "ssir:GB-T-20001.5-2017/clause-4.1-048", "level": 2, "logicalId": "clause-4.1", "nodeType": "clause", "number": "4.1", "sortOrder": 47, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0216", "markdownEndLine": 470, "markdownNodePath": "md:heading:470", "markdownStartLine": 470, "sourceFileId": "src:699b6ae1d1b33d01"}], "title": "探测性能"}, {"children": [{"contentElements": [{"id": "ssir:GB-T-20001.5-2017/content/c-0135", "parentNodeId": "ssir:GB-T-20001.5-2017/subClause-4.3.1-053", "presentationType": "paragraph", "semanticTypes": [], "sortOrder": 0, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0227", "markdownEndLine": 506, "markdownNodePath": "md:paragraph:506", "markdownStartLine": 506, "sourceFileId": "src:699b6ae1d1b33d01"}], "textContent": "室内工作型探测器在5℃～40℃、最大相对湿度95%的环境条件下工作，应满足4.1.2的要求。"}], "exampleContent": true, "id": "ssir:GB-T-20001.5-2017/subClause-4.3.1-053", "level": 3, "logicalId": "subClause-4.3.1", "nodeType": "subClause", "number": "4.3.1", "sortOrder": 52, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0226", "markdownEndLine": 504, "markdownNodePath": "md:heading:504", "markdownStartLine": 504, "sourceFileId": "src:699b6ae1d1b33d01"}], "title": "工作环境"}], "exampleContent": true, "id": "ssir:GB-T-20001.5-2017/clause-4.3-052", "level": 2, "logicalId": "clause-4.3", "nodeType": "clause", "number": "4.3", "sortOrder": 51, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0225", "markdownEndLine": 502, "markdownNodePath": "md:heading:502", "markdownStartLine": 502, "sourceFileId": "src:699b6ae1d1b33d01"}], "title": "环境适应性"}], "exampleContent": true, "id": "ssir:GB-T-20001.5-2017/section-4-047", "level": 1, "logicalId": "section-4", "nodeType": "section", "number": "4", "sortOrder": 46, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0215", "markdownEndLine": 468, "markdownNodePath": "md:heading:468", "markdownStartLine": 468, "sourceFileId": "src:699b6ae1d1b33d01"}], "title": "技术要求"}, {"children": [{"children": [{"exampleContent": true, "id": "ssir:GB-T-20001.5-2017/subClause-5.1.1-056", "level": 3, "logicalId": "subClause-5.1.1", "nodeType": "subClause", "number": "5.1.1", "sortOrder": 55, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0230", "markdownEndLine": 512, "markdownNodePath": "md:heading:512", "markdownStartLine": 512, "sourceFileId": "src:699b6ae1d1b33d01"}], "title": "灵敏度试验"}, {"exampleContent": true, "id": "ssir:GB-T-20001.5-2017/subClause-5.1.2-057", "level": 3, "logicalId": "subClause-5.1.2", "nodeType": "subClause", "number": "5.1.2", "sortOrder": 56, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0231", "markdownEndLine": 514, "markdownNodePath": "md:heading:514", "markdownStartLine": 514, "sourceFileId": "src:699b6ae1d1b33d01"}], "title": "探测能力试验"}], "exampleContent": true, "id": "ssir:GB-T-20001.5-2017/clause-5.1-055", "level": 2, "logicalId": "clause-5.1", "nodeType": "clause", "number": "5.1", "sortOrder": 54, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0229", "markdownEndLine": 510, "markdownNodePath": "md:heading:510", "markdownStartLine": 510, "sourceFileId": "src:699b6ae1d1b33d01"}], "title": "探测性能试验"}], "exampleContent": true, "id": "ssir:GB-T-20001.5-2017/section-5-054", "level": 1, "logicalId": "section-5", "nodeType": "section", "number": "5", "sortOrder": 53, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0228", "markdownEndLine": 508, "markdownNodePath": "md:heading:508", "markdownStartLine": 508, "sourceFileId": "src:699b6ae1d1b33d01"}], "title": "试验方法"}], "contentElements": [{"id": "ssir:GB-T-20001.5-2017/content/c-0001", "parentNodeId": "ssir:GB-T-20001.5-2017/document", "presentationType": "paragraph", "semanticTypes": [], "sortOrder": 0, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0001", "markdownEndLine": 22, "markdownNodePath": "md:paragraph:22", "markdownStartLine": 22, "sourceFileId": "src:699b6ae1d1b33d01"}], "textContent": "中华人民共和国国家标准"}, {"id": "ssir:GB-T-20001.5-2017/content/c-0002", "parentNodeId": "ssir:GB-T-20001.5-2017/document", "presentationType": "paragraph", "semanticTypes": [], "sortOrder": 1, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0002", "markdownEndLine": 24, "markdownNodePath": "md:paragraph:24", "markdownStartLine": 24, "sourceFileId": "src:699b6ae1d1b33d01"}], "textContent": "GB/T 20001.5—2017"}, {"id": "ssir:GB-T-20001.5-2017/content/c-0003", "parentNodeId": "ssir:GB-T-20001.5-2017/document", "presentationType": "paragraph", "semanticTypes": [], "sortOrder": 2, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0003", "markdownEndLine": 28, "markdownNodePath": "md:paragraph:28", "markdownStartLine": 28, "sourceFileId": "src:699b6ae1d1b33d01"}], "textContent": "Rules for drafting standards—Part 5:Specification standards"}, {"id": "ssir:GB-T-20001.5-2017/content/c-0004", "parentNodeId": "ssir:GB-T-20001.5-2017/document", "presentationType": "paragraph", "semanticTypes": [], "sortOrder": 3, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0004", "markdownEndLine": 30, "markdownNodePath": "md:paragraph:30", "markdownStartLine": 30, "sourceFileId": "src:699b6ae1d1b33d01"}], "textContent": "2017-12-29 发布"}, {"id": "ssir:GB-T-20001.5-2017/content/c-0005", "parentNodeId": "ssir:GB-T-20001.5-2017/document", "presentationType": "paragraph", "semanticTypes": [], "sortOrder": 4, "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0005", "markdownEndLine": 32, "markdownNodePath": "md:paragraph:32", "markdownStartLine": 32, "sourceFileId": "src:699b6ae1d1b33d01"}], "textContent": "2018-04-01 实施"}], "id": "ssir:GB-T-20001.5-2017/document", "logicalId": "document", "nodeType": "document", "sortOrder": 0}, "tables": [{"caption": "系统性能要求", "colCount": 3, "id": "ssir:GB-T-20001.5-2017/table/mineru-table-p001-003", "number": "1", "preservationStatus": "preserved", "rowCount": 5, "rows": [{"cells": [{"colIndex": 0, "colspan": 1, "id": "cell-0054", "isHeader": true, "rowIndex": 0, "rowspan": 1, "text": "序号"}, {"colIndex": 1, "colspan": 1, "id": "cell-0055", "isHeader": true, "rowIndex": 0, "rowspan": 1, "text": "技术参数名称"}, {"colIndex": 2, "colspan": 1, "id": "cell-0056", "isHeader": true, "rowIndex": 0, "rowspan": 1, "text": "参数"}], "id": "row-0018", "isHeader": true, "rowIndex": 0}, {"cells": [{"colIndex": 0, "colspan": 1, "id": "cell-0057", "isHeader": false, "rowIndex": 1, "rowspan": 1, "text": "1"}, {"colIndex": 1, "colspan": 1, "id": "cell-0058", "isHeader": false, "rowIndex": 1, "rowspan": 1, "text": "模拟量U、I测量误差"}, {"colIndex": 2, "colspan": 1, "id": "cell-0059", "isHeader": false, "rowIndex": 1, "rowspan": 1, "text": "≤0.2%"}], "id": "row-0019", "isHeader": false, "rowIndex": 1}, {"cells": [{"colIndex": 0, "colspan": 1, "id": "cell-0060", "isHeader": false, "rowIndex": 2, "rowspan": 1, "text": "……"}, {"colIndex": 1, "colspan": 1, "id": "cell-0061", "isHeader": false, "rowIndex": 2, "rowspan": 1, "text": "……"}, {"colIndex": 2, "colspan": 1, "id": "cell-0062", "isHeader": false, "rowIndex": 2, "rowspan": 1, "text": "……"}], "id": "row-0020", "isHeader": false, "rowIndex": 2}, {"cells": [{"colIndex": 0, "colspan": 1, "id": "cell-0063", "isHeader": false, "rowIndex": 3, "rowspan": 1, "text": "5"}, {"colIndex": 1, "colspan": 1, "id": "cell-0064", "isHeader": false, "rowIndex": 3, "rowspan": 1, "text": "通信变位传送时间(至站控层)"}, {"colIndex": 2, "colspan": 1, "id": "cell-0065", "isHeader": false, "rowIndex": 3, "rowspan": 1, "text": "≤1 s"}], "id": "row-0021", "isHeader": false, "rowIndex": 3}, {"cells": [{"colIndex": 0, "colspan": 1, "id": "cell-0066", "isHeader": false, "rowIndex": 4, "rowspan": 1, "text": "……"}, {"colIndex": 1, "colspan": 1, "id": "cell-0067", "isHeader": false, "rowIndex": 4, "rowspan": 1, "text": "……"}, {"colIndex": 2, "colspan": 1, "id": "cell-0068", "isHeader": false, "rowIndex": 4, "rowspan": 1, "text": "……"}], "id": "row-0022", "isHeader": false, "rowIndex": 4}], "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0207", "markdownEndLine": 446, "markdownNodePath": "md:table:441", "markdownStartLine": 441, "sourceBlockId": "mineru-table-p001-003", "sourceFileId": "src:699b6ae1d1b33d01"}]}, {"caption": "电磁兼容性能要求及试验方法", "colCount": 4, "id": "ssir:GB-T-20001.5-2017/table/mineru-table-p001-004", "number": "2", "preservationStatus": "preserved", "rowCount": 4, "rows": [{"cells": [{"colIndex": 0, "colspan": 1, "id": "cell-0069", "isHeader": true, "rowIndex": 0, "rowspan": 1, "text": "编号"}, {"colIndex": 1, "colspan": 1, "id": "cell-0070", "isHeader": true, "rowIndex": 0, "rowspan": 1, "text": "特性"}, {"colIndex": 2, "colspan": 1, "id": "cell-0071", "isHeader": true, "rowIndex": 0, "rowspan": 1, "text": "特性值(级别)"}, {"colIndex": 3, "colspan": 1, "id": "cell-0072", "isHeader": true, "rowIndex": 0, "rowspan": 1, "text": "证实方法"}], "id": "row-0023", "isHeader": true, "rowIndex": 0}, {"cells": [{"colIndex": 0, "colspan": 1, "id": "cell-0073", "isHeader": false, "rowIndex": 1, "rowspan": 1, "text": "1"}, {"colIndex": 1, "colspan": 1, "id": "cell-0074", "isHeader": false, "rowIndex": 1, "rowspan": 1, "text": "静电放电抗扰度"}, {"colIndex": 2, "colspan": 1, "id": "cell-0075", "isHeader": false, "rowIndex": 1, "rowspan": 1, "text": "四级"}, {"colIndex": 3, "colspan": 1, "id": "cell-0076", "isHeader": false, "rowIndex": 1, "rowspan": 1, "text": "GB/T 17626.2"}], "id": "row-0024", "isHeader": false, "rowIndex": 1}, {"cells": [{"colIndex": 0, "colspan": 1, "id": "cell-0077", "isHeader": false, "rowIndex": 2, "rowspan": 1, "text": "2"}, {"colIndex": 1, "colspan": 1, "id": "cell-0078", "isHeader": false, "rowIndex": 2, "rowspan": 1, "text": "射频电磁场辐射抗扰度"}, {"colIndex": 2, "colspan": 1, "id": "cell-0079", "isHeader": false, "rowIndex": 2, "rowspan": 1, "text": "三级"}, {"colIndex": 3, "colspan": 1, "id": "cell-0080", "isHeader": false, "rowIndex": 2, "rowspan": 1, "text": "GB/T 17626.3"}], "id": "row-0025", "isHeader": false, "rowIndex": 2}, {"cells": [{"colIndex": 0, "colspan": 1, "id": "cell-0081", "isHeader": false, "rowIndex": 3, "rowspan": 1, "text": "……"}, {"colIndex": 1, "colspan": 1, "id": "cell-0082", "isHeader": false, "rowIndex": 3, "rowspan": 1, "text": "……"}, {"colIndex": 2, "colspan": 1, "id": "cell-0083", "isHeader": false, "rowIndex": 3, "rowspan": 1, "text": "……"}, {"colIndex": 3, "colspan": 1, "id": "cell-0084", "isHeader": false, "rowIndex": 3, "rowspan": 1, "text": "……"}], "id": "row-0026", "isHeader": false, "rowIndex": 3}], "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0211", "markdownEndLine": 458, "markdownNodePath": "md:table:454", "markdownStartLine": 454, "sourceBlockId": "mineru-table-p001-004", "sourceFileId": "src:699b6ae1d1b33d01"}]}, {"caption": "不同检测等级的探测能力要求", "colCount": 9, "id": "ssir:GB-T-20001.5-2017/table/mineru-table-p001-005", "number": "1", "preservationStatus": "preserved", "rowCount": 5, "rows": [{"cells": [{"colIndex": 0, "colspan": 1, "id": "cell-0085", "isHeader": true, "rowIndex": 0, "rowspan": 2, "text": "检测等级"}, {"colIndex": 1, "colspan": 4, "id": "cell-0086", "isHeader": true, "rowIndex": 0, "rowspan": 1, "text": "应报警"}, {"colIndex": 2, "colspan": 1, "id": "cell-0087", "isHeader": true, "rowIndex": 0, "rowspan": 1, "text": ""}, {"colIndex": 3, "colspan": 1, "id": "cell-0088", "isHeader": true, "rowIndex": 0, "rowspan": 1, "text": ""}, {"colIndex": 4, "colspan": 1, "id": "cell-0089", "isHeader": true, "rowIndex": 0, "rowspan": 1, "text": ""}, {"colIndex": 5, "colspan": 4, "id": "cell-0090", "isHeader": true, "rowIndex": 0, "rowspan": 1, "text": "不应报警"}, {"colIndex": 6, "colspan": 1, "id": "cell-0091", "isHeader": true, "rowIndex": 0, "rowspan": 1, "text": ""}, {"colIndex": 7, "colspan": 1, "id": "cell-0092", "isHeader": true, "rowIndex": 0, "rowspan": 1, "text": ""}, {"colIndex": 8, "colspan": 1, "id": "cell-0093", "isHeader": true, "rowIndex": 0, "rowspan": 1, "text": ""}], "id": "row-0027", "isHeader": true, "rowIndex": 0}, {"cells": [{"colIndex": 0, "colspan": 1, "id": "cell-0094", "isHeader": false, "rowIndex": 1, "rowspan": 1, "text": ""}, {"colIndex": 1, "colspan": 1, "id": "cell-0095", "isHeader": false, "rowIndex": 1, "rowspan": 1, "text": "检测方式"}, {"colIndex": 2, "colspan": 1, "id": "cell-0096", "isHeader": false, "rowIndex": 1, "rowspan": 1, "text": "测试物"}, {"colIndex": 3, "colspan": 1, "id": "cell-0097", "isHeader": false, "rowIndex": 1, "rowspan": 1, "text": "探测距离"}, {"colIndex": 4, "colspan": 1, "id": "cell-0098", "isHeader": false, "rowIndex": 1, "rowspan": 1, "text": "姿态"}, {"colIndex": 5, "colspan": 1, "id": "cell-0099", "isHeader": false, "rowIndex": 1, "rowspan": 1, "text": "检测方式"}, {"colIndex": 6, "colspan": 1, "id": "cell-0100", "isHeader": false, "rowIndex": 1, "rowspan": 1, "text": "测试物"}, {"colIndex": 7, "colspan": 1, "id": "cell-0101", "isHeader": false, "rowIndex": 1, "rowspan": 1, "text": "探测距离"}, {"colIndex": 8, "colspan": 1, "id": "cell-0102", "isHeader": false, "rowIndex": 1, "rowspan": 1, "text": "姿态"}], "id": "row-0028", "isHeader": false, "rowIndex": 1}, {"cells": [{"colIndex": 0, "colspan": 1, "id": "cell-0103", "isHeader": false, "rowIndex": 2, "rowspan": 1, "text": "A"}, {"colIndex": 1, "colspan": 1, "id": "cell-0104", "isHeader": false, "rowIndex": 2, "rowspan": 3, "text": "接近、擦过"}, {"colIndex": 2, "colspan": 1, "id": "cell-0105", "isHeader": false, "rowIndex": 2, "rowspan": 3, "text": "T1"}, {"colIndex": 3, "colspan": 1, "id": "cell-0106", "isHeader": false, "rowIndex": 2, "rowspan": 1, "text": "65 mm"}, {"colIndex": 4, "colspan": 1, "id": "cell-0107", "isHeader": false, "rowIndex": 2, "rowspan": 3, "text": "横向"}, {"colIndex": 5, "colspan": 1, "id": "cell-0108", "isHeader": false, "rowIndex": 2, "rowspan": 3, "text": "接近、擦过"}, {"colIndex": 6, "colspan": 1, "id": "cell-0109", "isHeader": false, "rowIndex": 2, "rowspan": 3, "text": "T1"}, {"colIndex": 7, "colspan": 1, "id": "cell-0110", "isHeader": false, "rowIndex": 2, "rowspan": 1, "text": "100 mm"}, {"colIndex": 8, "colspan": 1, "id": "cell-0111", "isHeader": false, "rowIndex": 2, "rowspan": 3, "text": "横向"}], "id": "row-0029", "isHeader": false, "rowIndex": 2}, {"cells": [{"colIndex": 0, "colspan": 1, "id": "cell-0112", "isHeader": false, "rowIndex": 3, "rowspan": 1, "text": "B"}, {"colIndex": 1, "colspan": 1, "id": "cell-0113", "isHeader": false, "rowIndex": 3, "rowspan": 1, "text": "45 mm"}, {"colIndex": 2, "colspan": 1, "id": "cell-0114", "isHeader": false, "rowIndex": 3, "rowspan": 1, "text": "……"}, {"colIndex": 3, "colspan": 1, "id": "cell-0115", "isHeader": false, "rowIndex": 3, "rowspan": 1, "text": ""}, {"colIndex": 4, "colspan": 1, "id": "cell-0116", "isHeader": false, "rowIndex": 3, "rowspan": 1, "text": ""}, {"colIndex": 5, "colspan": 1, "id": "cell-0117", "isHeader": false, "rowIndex": 3, "rowspan": 1, "text": ""}, {"colIndex": 6, "colspan": 1, "id": "cell-0118", "isHeader": false, "rowIndex": 3, "rowspan": 1, "text": ""}, {"colIndex": 7, "colspan": 1, "id": "cell-0119", "isHeader": false, "rowIndex": 3, "rowspan": 1, "text": ""}, {"colIndex": 8, "colspan": 1, "id": "cell-0120", "isHeader": false, "rowIndex": 3, "rowspan": 1, "text": ""}], "id": "row-0030", "isHeader": false, "rowIndex": 3}, {"cells": [{"colIndex": 0, "colspan": 1, "id": "cell-0121", "isHeader": false, "rowIndex": 4, "rowspan": 1, "text": "C"}, {"colIndex": 1, "colspan": 1, "id": "cell-0122", "isHeader": false, "rowIndex": 4, "rowspan": 1, "text": "25 mm"}, {"colIndex": 2, "colspan": 1, "id": "cell-0123", "isHeader": false, "rowIndex": 4, "rowspan": 1, "text": "……"}, {"colIndex": 3, "colspan": 1, "id": "cell-0124", "isHeader": false, "rowIndex": 4, "rowspan": 1, "text": ""}, {"colIndex": 4, "colspan": 1, "id": "cell-0125", "isHeader": false, "rowIndex": 4, "rowspan": 1, "text": ""}, {"colIndex": 5, "colspan": 1, "id": "cell-0126", "isHeader": false, "rowIndex": 4, "rowspan": 1, "text": ""}, {"colIndex": 6, "colspan": 1, "id": "cell-0127", "isHeader": false, "rowIndex": 4, "rowspan": 1, "text": ""}, {"colIndex": 7, "colspan": 1, "id": "cell-0128", "isHeader": false, "rowIndex": 4, "rowspan": 1, "text": ""}, {"colIndex": 8, "colspan": 1, "id": "cell-0129", "isHeader": false, "rowIndex": 4, "rowspan": 1, "text": ""}], "id": "row-0031", "isHeader": false, "rowIndex": 4}], "sourceAnchors": [{"anchorType": "markdown", "id": "ssir:GB-T-20001.5-2017/anchor/a-0222", "markdownEndLine": 487, "markdownNodePath": "md:table:482", "markdownStartLine": 482, "sourceBlockId": "mineru-table-p001-005", "sourceFileId": "src:699b6ae1d1b33d01"}]}], "unknownContents": []}
+{
+  "createdAt": "1970-01-01T00:00:00Z",
+  "documentType": "standard",
+  "figures": [],
+  "formulas": [],
+  "id": "GB_T_20001.5-2017",
+  "metadata": {
+    "common": {
+      "documentIdentifier": "GB/T 20001.5-2017",
+      "effectiveDate": "2018-04-01",
+      "issuer": "中华人民共和国国家质量监督检验检疫总局 中国国家标准化管理委员会",
+      "language": "zh-CN",
+      "publicationDate": "2017-12-29",
+      "title": "标准编写规则 第5部分：规范标准",
+      "titleEn": "Rules for drafting standards—Part 5:Specification standards"
+    },
+    "standard": {
+      "ccs": "A 00",
+      "chineseTitle": "标准编写规则 第5部分：规范标准",
+      "ics": "01.120",
+      "standardNumber": "GB/T 20001.5-2017"
+    }
+  },
+  "preservationLevel": "Level3",
+  "processingRuns": [
+    {
+      "configuration": {
+        "csmVersion": "1.0"
+      },
+      "id": "GB_T_20001.5-2017#ProcessingRun_19700101-001",
+      "ocrUsed": false,
+      "runType": "extraction",
+      "sourceFileId": "src:699b6ae1d1b33d01",
+      "timestamp": "1970-01-01T00:00:00Z",
+      "tool": "leleby-csm-parser",
+      "toolVersion": "0.1.0"
+    }
+  ],
+  "qualityAssessments": [
+    {
+      "assessedAt": "1970-01-01T00:00:00Z",
+      "comments": "[CSM-STRUCT-001/warning] line 419: bare numbered paragraph was promoted to a heading (5.1, level 3) by ancestor-chain promotion.\n[CSM-STRUCT-001/warning] line 421: bare numbered paragraph was promoted to a heading (5.2, level 3) by ancestor-chain promotion.\n[CSM-STRUCT-001/warning] line 423: bare numbered paragraph was promoted to a heading (5.3, level 3) by ancestor-chain promotion.\n[CSM-STRUCT-001/warning] line 425: bare numbered paragraph was promoted to a heading (5.4, level 3) by ancestor-chain promotion.\n[CSM-STRUCT-001/warning] line 528: bare numbered paragraph was promoted to a heading (4.1.1, level 4) by ancestor-chain promotion.\n[CSM-STRUCT-001/warning] line 530: bare numbered paragraph was promoted to a heading (4.1.2, level 4) by ancestor-chain promotion.\n[CSM-STRUCT-001/warning] line 585: bare numbered paragraph was promoted to a heading (6.1, level 3) by ancestor-chain promotion.\n[CSM-STRUCT-001/warning] line 692: bare numbered paragraph was promoted to a heading (4.3.1, level 4) by ancestor-chain promotion.\n[CSM-OCR-001/warning] line 61: List marker '-' unified to '——' (majority of sibling list symbols).\n[CSM-OCR-001/warning] line 62: List marker '-' unified to '——' (majority of sibling list symbols).\n[CSM-OCR-001/warning] line 286: List marker '——' unified to '—' (majority of sibling list symbols).\n[CSM-OCR-008/warning] line 464: Example heading '示例2：' sat at level 2 (extractor chapter level) inside clause context level 3; raised to level 4 so it nests under its clause.\n[CSM-OCR-008/warning] line 558: Example heading '示例 2：' sat at level 2 (extractor chapter level) inside clause context level 3; raised to level 4 so it nests under its clause.\n[CSM-OCR-008/warning] line 664: Example heading '示例2：' sat at level 2 (extractor chapter level) inside clause context level 4; raised to level 5 so it nests under its clause.\n[CSM-OCR-009/warning] line 419: Heading '5.1 变电站监控系统由站控层、间隔层两部分组成，并用分层、分布、开放式网络系统实现连接。在应用电子互感器、合并单元的情况下，可增加过程层。' is a sentence-bodied numbered clause, not a title (ends with sentence-final punctuation); demoted to a paragraph.\n[CSM-OCR-009/warning] line 421: Heading '5.2 站控层由计算机网络连接的主机、操作员站和工作站等设备构成，提供站内运行的人机联系界面，实现管理控制间隔层设备等功能，并能与调度中心通信。' is a sentence-bodied numbered clause, not a title (ends with sentence-final punctuation); demoted to a paragraph.\n[CSM-OCR-009/warning] line 423: Heading '5.3 间隔层由测控单元、间隔层网络和各种网络、通信接口设备等构成，完成面向单元设备的监测控制等功能。' is a sentence-bodied numbered clause, not a title (ends with sentence-final punctuation); demoted to a paragraph.\n[CSM-OCR-009/warning] line 425: Heading '5.4 过程层面对电气一次设备对象，包括智能开关、智能终端等智能一次及辅助设备。' is a sentence-bodied numbered clause, not a title (ends with sentence-final punctuation); demoted to a paragraph.\n[CSM-OCR-009/warning] line 528: Heading '4.1.1 在标准制修订过程中的任何阶段，参与标准制修订的组织或个人应尽早向相关全国专业标准化技术委员会或归口单位披露自身及关联者拥有的必要专利，宜尽早披露其所知悉的他人(方)拥有的必要专利。' is a sentence-bodied numbered clause, not a title (ends with sentence-final punctuation); demoted to a paragraph.\n[CSM-OCR-009/warning] line 530: Heading '4.1.2 在标准制修订过程中的任何阶段，披露必要专利信息时，应按要求填写必要专利信息披露表(见表A.1)并保证所有必填项被100%正确填写。' is a sentence-bodied numbered clause, not a title (ends with sentence-final punctuation); demoted to a paragraph.\n[CSM-OCR-009/warning] line 585: Heading '6.1 含水率测定试验木材含水率按照GB/T ×××××—××××中的方法进行测定。人造板含水率按照GB/T ×××××—××××中的方法进行测定。' is a sentence-bodied numbered clause, not a title (ends with sentence-final punctuation); demoted to a paragraph.\n[CSM-OCR-009/warning] line 692: Heading '4.3.1 服务人员提供服务时，应耐心细致地引导服务对象表达诉求。宜使用普通话。' is a sentence-bodied numbered clause, not a title (ends with sentence-final punctuation); demoted to a paragraph.\n[GB-T-1.1-CHAPTER-001/warning] main chapter numbering must be continuous from 1; found [1, 2, 3, 4, 5, 6, 1, 5, 6, 7, 4, 5, 4, 5, 6, 4, 5, 4, 5]; original numbering was preserved.\n[GB-T-1.1-ID-002/warning] Standard number uses an ASCII hyphen; original number was preserved for source fidelity.",
+      "documentId": "GB_T_20001.5-2017",
+      "figureConfidence": 1.0,
+      "formulaConfidence": 1.0,
+      "humanReviewStatus": "machineReviewed",
+      "id": "GB_T_20001.5-2017#QualityAssessment_M1",
+      "overallStatus": "partial",
+      "runId": "GB_T_20001.5-2017#ProcessingRun_19700101-001",
+      "structureConfidence": 1.0,
+      "tableConfidence": 1.0
+    }
+  ],
+  "sourceFiles": [
+    {
+      "fileHash": {
+        "algorithm": "SHA-256",
+        "value": "699b6ae1d1b33d0147a6ddc9f4339dc1fb6ef5f1e075873d83cc74d1968c394d"
+      },
+      "fileName": "GB_T_20001.5-2017.canonical.md",
+      "fileSize": 42800,
+      "id": "src:699b6ae1d1b33d01",
+      "mimeType": "text/markdown"
+    }
+  ],
+  "ssirVersion": "0.4",
+  "structuralRoot": {
+    "children": [
+      {
+        "contentElements": [
+          {
+            "id": "GB_T_20001.5-2017#Annex_A/Paragraph-006",
+            "parentNodeId": "GB_T_20001.5-2017#Annex_A",
+            "presentationType": "paragraph",
+            "semanticTypes": [],
+            "sortOrder": 0,
+            "sourceAnchors": [
+              {
+                "anchorType": "markdown",
+                "id": "GB_T_20001.5-2017#Anchor-0007",
+                "markdownEndLine": 407,
+                "markdownNodePath": "md:paragraph:407",
+                "markdownStartLine": 407,
+                "sourceFileId": "src:699b6ae1d1b33d01"
+              }
+            ],
+            "textContent": "本附录以标准文本形式给出示例的目的，在于帮助标准使用者理解GB/T 20001的本部分的相关规定。示例仅是为了说明本部分的规定而编写或由其他文件改编，选取的要素及其技术内容不保证是最佳和准确的。"
+          }
+        ],
+        "id": "GB_T_20001.5-2017#Annex_A",
+        "level": 1,
+        "logicalId": "Annex_A",
+        "nodeType": "annex",
+        "number": "A",
+        "sortOrder": 34,
+        "sourceAnchors": [
+          {
+            "anchorType": "markdown",
+            "id": "GB_T_20001.5-2017#Anchor-0006",
+            "markdownEndLine": 405,
+            "markdownNodePath": "md:heading:405",
+            "markdownStartLine": 405,
+            "sourceFileId": "src:699b6ae1d1b33d01"
+          }
+        ],
+        "title": "（资料性） 规范标准编写示例"
+      },
+      {
+        "contentElements": [
+          {
+            "id": "GB_T_20001.5-2017#documentBlock_0001/Paragraph-007",
+            "parentNodeId": "GB_T_20001.5-2017#documentBlock_0001",
+            "presentationType": "paragraph",
+            "semanticTypes": [],
+            "sortOrder": 0,
+            "sourceAnchors": [
+              {
+                "anchorType": "markdown",
+                "id": "GB_T_20001.5-2017#Anchor-0009",
+                "markdownEndLine": 411,
+                "markdownNodePath": "md:paragraph:411",
+                "markdownStartLine": 411,
+                "sourceFileId": "src:699b6ae1d1b33d01"
+              }
+            ],
+            "textContent": "示例1示出了以系统为标准化对象的产品规范标准，在确立系统的构成要素及各要素之间关系、规定系统的特性及特性值时的编写方法。其中的第5章确立了1000kV变电站监控系统的构成要素，描述了这些构成要素之间的关系（见5.1），并进一步描述了该系统的各个构成要素的功能及其构成（见5.2、5.3和5.4）；第7章规定了系统整体的性能要求（见7.1和7.2）。"
+          }
+        ],
+        "id": "GB_T_20001.5-2017#documentBlock_0001",
+        "level": 1,
+        "logicalId": "documentBlock_0001",
+        "nodeType": "documentBlock",
+        "sortOrder": 35,
+        "sourceAnchors": [
+          {
+            "anchorType": "markdown",
+            "id": "GB_T_20001.5-2017#Anchor-0008",
+            "markdownEndLine": 409,
+            "markdownNodePath": "md:heading:409",
+            "markdownStartLine": 409,
+            "sourceFileId": "src:699b6ae1d1b33d01"
+          }
+        ],
+        "title": "A.1 产品规范标准编写示例"
+      },
+      {
+        "exampleContent": true,
+        "id": "GB_T_20001.5-2017#documentBlock_0002",
+        "level": 1,
+        "logicalId": "documentBlock_0002",
+        "nodeType": "documentBlock",
+        "sortOrder": 36,
+        "sourceAnchors": [
+          {
+            "anchorType": "markdown",
+            "id": "GB_T_20001.5-2017#Anchor-0010",
+            "markdownEndLine": 413,
+            "markdownNodePath": "md:heading:413",
+            "markdownStartLine": 413,
+            "sourceFileId": "src:699b6ae1d1b33d01"
+          }
+        ],
+        "title": "示例 1："
+      },
+      {
+        "exampleContent": true,
+        "id": "GB_T_20001.5-2017#documentBlock_0003",
+        "level": 1,
+        "logicalId": "documentBlock_0003",
+        "nodeType": "documentBlock",
+        "sortOrder": 37,
+        "sourceAnchors": [
+          {
+            "anchorType": "markdown",
+            "id": "GB_T_20001.5-2017#Anchor-0011",
+            "markdownEndLine": 415,
+            "markdownNodePath": "md:heading:415",
+            "markdownStartLine": 415,
+            "sourceFileId": "src:699b6ae1d1b33d01"
+          }
+        ],
+        "title": "1 000 kV 变电站监控系统 技术规范"
+      },
+      {
+        "contentElements": [
+          {
+            "id": "GB_T_20001.5-2017#5/Paragraph-008",
+            "parentNodeId": "GB_T_20001.5-2017#5",
+            "presentationType": "paragraph",
+            "semanticTypes": [],
+            "sortOrder": 0,
+            "sourceAnchors": [
+              {
+                "anchorType": "markdown",
+                "id": "GB_T_20001.5-2017#Anchor-0013",
+                "markdownEndLine": 419,
+                "markdownNodePath": "md:paragraph:419",
+                "markdownStartLine": 419,
+                "sourceFileId": "src:699b6ae1d1b33d01"
+              }
+            ],
+            "textContent": "5.1 变电站监控系统由站控层、间隔层两部分组成，并用分层、分布、开放式网络系统实现连接。在应用电子互感器、合并单元的情况下，可增加过程层。"
+          },
+          {
+            "id": "GB_T_20001.5-2017#5/Paragraph-009",
+            "parentNodeId": "GB_T_20001.5-2017#5",
+            "presentationType": "paragraph",
+            "semanticTypes": [],
+            "sortOrder": 1,
+            "sourceAnchors": [
+              {
+                "anchorType": "markdown",
+                "id": "GB_T_20001.5-2017#Anchor-0014",
+                "markdownEndLine": 421,
+                "markdownNodePath": "md:paragraph:421",
+                "markdownStartLine": 421,
+                "sourceFileId": "src:699b6ae1d1b33d01"
+              }
+            ],
+            "textContent": "5.2 站控层由计算机网络连接的主机、操作员站和工作站等设备构成，提供站内运行的人机联系界面，实现管理控制间隔层设备等功能，并能与调度中心通信。"
+          },
+          {
+            "id": "GB_T_20001.5-2017#5/Paragraph-010",
+            "parentNodeId": "GB_T_20001.5-2017#5",
+            "presentationType": "paragraph",
+            "semanticTypes": [],
+            "sortOrder": 2,
+            "sourceAnchors": [
+              {
+                "anchorType": "markdown",
+                "id": "GB_T_20001.5-2017#Anchor-0015",
+                "markdownEndLine": 423,
+                "markdownNodePath": "md:paragraph:423",
+                "markdownStartLine": 423,
+                "sourceFileId": "src:699b6ae1d1b33d01"
+              }
+            ],
+            "textContent": "5.3 间隔层由测控单元、间隔层网络和各种网络、通信接口设备等构成，完成面向单元设备的监测控制等功能。"
+          },
+          {
+            "id": "GB_T_20001.5-2017#5/Paragraph-011",
+            "parentNodeId": "GB_T_20001.5-2017#5",
+            "presentationType": "paragraph",
+            "semanticTypes": [],
+            "sortOrder": 3,
+            "sourceAnchors": [
+              {
+                "anchorType": "markdown",
+                "id": "GB_T_20001.5-2017#Anchor-0016",
+                "markdownEndLine": 425,
+                "markdownNodePath": "md:paragraph:425",
+                "markdownStartLine": 425,
+                "sourceFileId": "src:699b6ae1d1b33d01"
+              }
+            ],
+            "textContent": "5.4 过程层面对电气一次设备对象，包括智能开关、智能终端等智能一次及辅助设备。"
+          }
+        ],
+        "exampleContent": true,
+        "id": "GB_T_20001.5-2017#5",
+        "level": 1,
+        "logicalId": "5",
+        "nodeType": "section",
+        "number": "5",
+        "sortOrder": 38,
+        "sourceAnchors": [
+          {
+            "anchorType": "markdown",
+            "id": "GB_T_20001.5-2017#Anchor-0012",
+            "markdownEndLine": 417,
+            "markdownNodePath": "md:heading:417",
+            "markdownStartLine": 417,
+            "sourceFileId": "src:699b6ae1d1b33d01"
+          }
+        ],
+        "title": "系统结构"
+      },
+      {
+        "children": [
+          {
+            "contentElements": [
+              {
+                "id": "GB_T_20001.5-2017#6.1/Paragraph-012",
+                "parentNodeId": "GB_T_20001.5-2017#6.1",
+                "presentationType": "paragraph",
+                "semanticTypes": [],
+                "sortOrder": 0,
+                "sourceAnchors": [
+                  {
+                    "anchorType": "markdown",
+                    "id": "GB_T_20001.5-2017#Anchor-0019",
+                    "markdownEndLine": 431,
+                    "markdownNodePath": "md:paragraph:431",
+                    "markdownStartLine": 431,
+                    "sourceFileId": "src:699b6ae1d1b33d01"
+                  }
+                ],
+                "textContent": "6.1.1 系统应通过测控单元实时采集模拟量、开关量。测控单元以下列方式获取模拟量和开关量："
+              }
+            ],
+            "exampleContent": true,
+            "id": "GB_T_20001.5-2017#6.1",
+            "level": 2,
+            "logicalId": "6.1",
+            "nodeType": "clause",
+            "number": "6.1",
+            "sortOrder": 40,
+            "sourceAnchors": [
+              {
+                "anchorType": "markdown",
+                "id": "GB_T_20001.5-2017#Anchor-0018",
+                "markdownEndLine": 429,
+                "markdownNodePath": "md:heading:429",
+                "markdownStartLine": 429,
+                "sourceFileId": "src:699b6ae1d1b33d01"
+              }
+            ],
+            "title": "数据采集处理"
+          }
+        ],
+        "exampleContent": true,
+        "id": "GB_T_20001.5-2017#6",
+        "level": 1,
+        "logicalId": "6",
+        "nodeType": "section",
+        "number": "6",
+        "sortOrder": 39,
+        "sourceAnchors": [
+          {
+            "anchorType": "markdown",
+            "id": "GB_T_20001.5-2017#Anchor-0017",
+            "markdownEndLine": 427,
+            "markdownNodePath": "md:heading:427",
+            "markdownStartLine": 427,
+            "sourceFileId": "src:699b6ae1d1b33d01"
+          }
+        ],
+        "title": "系统功能"
+      },
+      {
+        "children": [
+          {
+            "contentElements": [
+              {
+                "id": "GB_T_20001.5-2017#7.1/Paragraph-013",
+                "parentNodeId": "GB_T_20001.5-2017#7.1",
+                "presentationType": "paragraph",
+                "semanticTypes": [],
+                "sortOrder": 0,
+                "sourceAnchors": [
+                  {
+                    "anchorType": "markdown",
+                    "id": "GB_T_20001.5-2017#Anchor-0022",
+                    "markdownEndLine": 437,
+                    "markdownNodePath": "md:paragraph:437",
+                    "markdownStartLine": 437,
+                    "sourceFileId": "src:699b6ae1d1b33d01"
+                  }
+                ],
+                "textContent": "系统性能应符合表1规定的要求。"
+              },
+              {
+                "id": "GB_T_20001.5-2017#7.1/Block-014",
+                "parentNodeId": "GB_T_20001.5-2017#7.1",
+                "presentationType": "table",
+                "sortOrder": 1,
+                "sourceAnchors": [
+                  {
+                    "anchorType": "markdown",
+                    "id": "GB_T_20001.5-2017#Anchor-0023",
+                    "markdownEndLine": 446,
+                    "markdownNodePath": "md:table:441",
+                    "markdownStartLine": 441,
+                    "sourceBlockId": "mineru-table-p001-003",
+                    "sourceFileId": "src:699b6ae1d1b33d01"
+                  }
+                ],
+                "tableRef": "GB_T_20001.5-2017#Table_1"
+              }
+            ],
+            "exampleContent": true,
+            "id": "GB_T_20001.5-2017#7.1",
+            "level": 2,
+            "logicalId": "7.1",
+            "nodeType": "clause",
+            "number": "7.1",
+            "sortOrder": 42,
+            "sourceAnchors": [
+              {
+                "anchorType": "markdown",
+                "id": "GB_T_20001.5-2017#Anchor-0021",
+                "markdownEndLine": 435,
+                "markdownNodePath": "md:heading:435",
+                "markdownStartLine": 435,
+                "sourceFileId": "src:699b6ae1d1b33d01"
+              }
+            ],
+            "title": "系统性能要求"
+          },
+          {
+            "children": [
+              {
+                "exampleContent": true,
+                "id": "GB_T_20001.5-2017#documentBlock_0004",
+                "level": 3,
+                "logicalId": "documentBlock_0004",
+                "nodeType": "documentBlock",
+                "sortOrder": 44,
+                "sourceAnchors": [
+                  {
+                    "anchorType": "markdown",
+                    "id": "GB_T_20001.5-2017#Anchor-0028",
+                    "markdownEndLine": 464,
+                    "markdownNodePath": "md:heading:464",
+                    "markdownStartLine": 464,
+                    "sourceFileId": "src:699b6ae1d1b33d01"
+                  }
+                ],
+                "title": "示例2："
+              }
+            ],
+            "contentElements": [
+              {
+                "id": "GB_T_20001.5-2017#7.2/Paragraph-015",
+                "parentNodeId": "GB_T_20001.5-2017#7.2",
+                "presentationType": "paragraph",
+                "semanticTypes": [],
+                "sortOrder": 0,
+                "sourceAnchors": [
+                  {
+                    "anchorType": "markdown",
+                    "id": "GB_T_20001.5-2017#Anchor-0025",
+                    "markdownEndLine": 450,
+                    "markdownNodePath": "md:paragraph:450",
+                    "markdownStartLine": 450,
+                    "sourceFileId": "src:699b6ae1d1b33d01"
+                  }
+                ],
+                "textContent": "装置不应通过交直流输入回路外接抗干扰元件来满足有关电磁兼容要求。按表2的方法进行试验，装置电磁兼容能力应达到相对应的级别。"
+              },
+              {
+                "id": "GB_T_20001.5-2017#7.2/Block-016",
+                "parentNodeId": "GB_T_20001.5-2017#7.2",
+                "presentationType": "table",
+                "sortOrder": 1,
+                "sourceAnchors": [
+                  {
+                    "anchorType": "markdown",
+                    "id": "GB_T_20001.5-2017#Anchor-0026",
+                    "markdownEndLine": 458,
+                    "markdownNodePath": "md:table:454",
+                    "markdownStartLine": 454,
+                    "sourceBlockId": "mineru-table-p001-004",
+                    "sourceFileId": "src:699b6ae1d1b33d01"
+                  }
+                ],
+                "tableRef": "GB_T_20001.5-2017#Table_2"
+              },
+              {
+                "id": "GB_T_20001.5-2017#7.2/Paragraph-017",
+                "parentNodeId": "GB_T_20001.5-2017#7.2",
+                "presentationType": "paragraph",
+                "semanticTypes": [],
+                "sortOrder": 2,
+                "sourceAnchors": [
+                  {
+                    "anchorType": "markdown",
+                    "id": "GB_T_20001.5-2017#Anchor-0027",
+                    "markdownEndLine": 461,
+                    "markdownNodePath": "md:paragraph:461",
+                    "markdownStartLine": 461,
+                    "sourceFileId": "src:699b6ae1d1b33d01"
+                  }
+                ],
+                "textContent": "示例2示出了以制成品为标准化对象的产品规范标准，在规定产品的性能特性及特性值、描述试验方法时的编写方法。对于手持式金属探测器，根据性能原则优先规定的是使用性能一探测性能（见4.1）。探测性能进一步由灵敏度、探测能力、稳定性等特性及特性值来表达，示例中的5.1描述了与探测性能相对应的试验方法。除此之外，手持式金属探测器对工作环境的适应能力也是影响其使用的重要因素，示例中的4.3规定了环境适应性方面的要求。"
+              }
+            ],
+            "exampleContent": true,
+            "id": "GB_T_20001.5-2017#7.2",
+            "level": 2,
+            "logicalId": "7.2",
+            "nodeType": "clause",
+            "number": "7.2",
+            "sortOrder": 43,
+            "sourceAnchors": [
+              {
+                "anchorType": "markdown",
+                "id": "GB_T_20001.5-2017#Anchor-0024",
+                "markdownEndLine": 448,
+                "markdownNodePath": "md:heading:448",
+                "markdownStartLine": 448,
+                "sourceFileId": "src:699b6ae1d1b33d01"
+              }
+            ],
+            "title": "电磁兼容性能要求"
+          }
+        ],
+        "exampleContent": true,
+        "id": "GB_T_20001.5-2017#7",
+        "level": 1,
+        "logicalId": "7",
+        "nodeType": "section",
+        "number": "7",
+        "sortOrder": 41,
+        "sourceAnchors": [
+          {
+            "anchorType": "markdown",
+            "id": "GB_T_20001.5-2017#Anchor-0020",
+            "markdownEndLine": 433,
+            "markdownNodePath": "md:heading:433",
+            "markdownStartLine": 433,
+            "sourceFileId": "src:699b6ae1d1b33d01"
+          }
+        ],
+        "title": "性能要求"
+      },
+      {
+        "exampleContent": true,
+        "id": "GB_T_20001.5-2017#documentBlock_0005",
+        "level": 1,
+        "logicalId": "documentBlock_0005",
+        "nodeType": "documentBlock",
+        "sortOrder": 45,
+        "sourceAnchors": [
+          {
+            "anchorType": "markdown",
+            "id": "GB_T_20001.5-2017#Anchor-0029",
+            "markdownEndLine": 466,
+            "markdownNodePath": "md:heading:466",
+            "markdownStartLine": 466,
+            "sourceFileId": "src:699b6ae1d1b33d01"
+          }
+        ],
+        "title": "手持式金属探测器通用技术规范"
+      },
+      {
+        "children": [
+          {
+            "children": [
+              {
+                "contentElements": [
+                  {
+                    "id": "GB_T_20001.5-2017#4.1.1/Paragraph-018",
+                    "parentNodeId": "GB_T_20001.5-2017#4.1.1",
+                    "presentationType": "paragraph",
+                    "semanticTypes": [],
+                    "sortOrder": 0,
+                    "sourceAnchors": [
+                      {
+                        "anchorType": "markdown",
+                        "id": "GB_T_20001.5-2017#Anchor-0033",
+                        "markdownEndLine": 474,
+                        "markdownNodePath": "md:paragraph:474",
+                        "markdownStartLine": 474,
+                        "sourceFileId": "src:699b6ae1d1b33d01"
+                      }
+                    ],
+                    "textContent": "按5.1.1的方法操作探测器，至少应适合或覆盖一个检测等级。"
+                  }
+                ],
+                "exampleContent": true,
+                "id": "GB_T_20001.5-2017#4.1.1",
+                "level": 3,
+                "logicalId": "4.1.1",
+                "nodeType": "subClause",
+                "number": "4.1.1",
+                "sortOrder": 48,
+                "sourceAnchors": [
+                  {
+                    "anchorType": "markdown",
+                    "id": "GB_T_20001.5-2017#Anchor-0032",
+                    "markdownEndLine": 472,
+                    "markdownNodePath": "md:heading:472",
+                    "markdownStartLine": 472,
+                    "sourceFileId": "src:699b6ae1d1b33d01"
+                  }
+                ],
+                "title": "灵敏度范围"
+              },
+              {
+                "contentElements": [
+                  {
+                    "id": "GB_T_20001.5-2017#4.1.2/Paragraph-019",
+                    "parentNodeId": "GB_T_20001.5-2017#4.1.2",
+                    "presentationType": "paragraph",
+                    "semanticTypes": [],
+                    "sortOrder": 0,
+                    "sourceAnchors": [
+                      {
+                        "anchorType": "markdown",
+                        "id": "GB_T_20001.5-2017#Anchor-0035",
+                        "markdownEndLine": 478,
+                        "markdownNodePath": "md:paragraph:478",
+                        "markdownStartLine": 478,
+                        "sourceFileId": "src:699b6ae1d1b33d01"
+                      }
+                    ],
+                    "textContent": "针对每个检测等级，按5.1.2的方法试验，应满足表1的要求。"
+                  },
+                  {
+                    "id": "GB_T_20001.5-2017#4.1.2/Block-020",
+                    "parentNodeId": "GB_T_20001.5-2017#4.1.2",
+                    "presentationType": "table",
+                    "sortOrder": 1,
+                    "sourceAnchors": [
+                      {
+                        "anchorType": "markdown",
+                        "id": "GB_T_20001.5-2017#Anchor-0036",
+                        "markdownEndLine": 487,
+                        "markdownNodePath": "md:table:482",
+                        "markdownStartLine": 482,
+                        "sourceBlockId": "mineru-table-p001-005",
+                        "sourceFileId": "src:699b6ae1d1b33d01"
+                      }
+                    ],
+                    "tableRef": "GB_T_20001.5-2017#Table_1-2"
+                  }
+                ],
+                "exampleContent": true,
+                "id": "GB_T_20001.5-2017#4.1.2",
+                "level": 3,
+                "logicalId": "4.1.2",
+                "nodeType": "subClause",
+                "number": "4.1.2",
+                "sortOrder": 49,
+                "sourceAnchors": [
+                  {
+                    "anchorType": "markdown",
+                    "id": "GB_T_20001.5-2017#Anchor-0034",
+                    "markdownEndLine": 476,
+                    "markdownNodePath": "md:heading:476",
+                    "markdownStartLine": 476,
+                    "sourceFileId": "src:699b6ae1d1b33d01"
+                  }
+                ],
+                "title": "探测能力"
+              },
+              {
+                "contentElements": [
+                  {
+                    "id": "GB_T_20001.5-2017#4.1.3/Paragraph-021",
+                    "parentNodeId": "GB_T_20001.5-2017#4.1.3",
+                    "presentationType": "paragraph",
+                    "semanticTypes": [],
+                    "sortOrder": 0,
+                    "sourceAnchors": [
+                      {
+                        "anchorType": "markdown",
+                        "id": "GB_T_20001.5-2017#Anchor-0038",
+                        "markdownEndLine": 500,
+                        "markdownNodePath": "md:paragraph:500",
+                        "markdownStartLine": 500,
+                        "sourceFileId": "src:699b6ae1d1b33d01"
+                      }
+                    ],
+                    "textContent": "探测器持续工作时间不应短于40h，且在持续工作期间不做任何调整的情况下应能够稳定可靠地工作，并应满足4.1.2的要求。"
+                  }
+                ],
+                "exampleContent": true,
+                "id": "GB_T_20001.5-2017#4.1.3",
+                "level": 3,
+                "logicalId": "4.1.3",
+                "nodeType": "subClause",
+                "number": "4.1.3",
+                "sortOrder": 50,
+                "sourceAnchors": [
+                  {
+                    "anchorType": "markdown",
+                    "id": "GB_T_20001.5-2017#Anchor-0037",
+                    "markdownEndLine": 498,
+                    "markdownNodePath": "md:heading:498",
+                    "markdownStartLine": 498,
+                    "sourceFileId": "src:699b6ae1d1b33d01"
+                  }
+                ],
+                "title": "持续工作稳定性"
+              }
+            ],
+            "exampleContent": true,
+            "id": "GB_T_20001.5-2017#4.1",
+            "level": 2,
+            "logicalId": "4.1",
+            "nodeType": "clause",
+            "number": "4.1",
+            "sortOrder": 47,
+            "sourceAnchors": [
+              {
+                "anchorType": "markdown",
+                "id": "GB_T_20001.5-2017#Anchor-0031",
+                "markdownEndLine": 470,
+                "markdownNodePath": "md:heading:470",
+                "markdownStartLine": 470,
+                "sourceFileId": "src:699b6ae1d1b33d01"
+              }
+            ],
+            "title": "探测性能"
+          },
+          {
+            "children": [
+              {
+                "contentElements": [
+                  {
+                    "id": "GB_T_20001.5-2017#4.3.1/Paragraph-022",
+                    "parentNodeId": "GB_T_20001.5-2017#4.3.1",
+                    "presentationType": "paragraph",
+                    "semanticTypes": [],
+                    "sortOrder": 0,
+                    "sourceAnchors": [
+                      {
+                        "anchorType": "markdown",
+                        "id": "GB_T_20001.5-2017#Anchor-0041",
+                        "markdownEndLine": 506,
+                        "markdownNodePath": "md:paragraph:506",
+                        "markdownStartLine": 506,
+                        "sourceFileId": "src:699b6ae1d1b33d01"
+                      }
+                    ],
+                    "textContent": "室内工作型探测器在5℃～40℃、最大相对湿度95%的环境条件下工作，应满足4.1.2的要求。"
+                  }
+                ],
+                "exampleContent": true,
+                "id": "GB_T_20001.5-2017#4.3.1",
+                "level": 3,
+                "logicalId": "4.3.1",
+                "nodeType": "subClause",
+                "number": "4.3.1",
+                "sortOrder": 52,
+                "sourceAnchors": [
+                  {
+                    "anchorType": "markdown",
+                    "id": "GB_T_20001.5-2017#Anchor-0040",
+                    "markdownEndLine": 504,
+                    "markdownNodePath": "md:heading:504",
+                    "markdownStartLine": 504,
+                    "sourceFileId": "src:699b6ae1d1b33d01"
+                  }
+                ],
+                "title": "工作环境"
+              }
+            ],
+            "exampleContent": true,
+            "id": "GB_T_20001.5-2017#4.3",
+            "level": 2,
+            "logicalId": "4.3",
+            "nodeType": "clause",
+            "number": "4.3",
+            "sortOrder": 51,
+            "sourceAnchors": [
+              {
+                "anchorType": "markdown",
+                "id": "GB_T_20001.5-2017#Anchor-0039",
+                "markdownEndLine": 502,
+                "markdownNodePath": "md:heading:502",
+                "markdownStartLine": 502,
+                "sourceFileId": "src:699b6ae1d1b33d01"
+              }
+            ],
+            "title": "环境适应性"
+          }
+        ],
+        "exampleContent": true,
+        "id": "GB_T_20001.5-2017#4",
+        "level": 1,
+        "logicalId": "4",
+        "nodeType": "section",
+        "number": "4",
+        "sortOrder": 46,
+        "sourceAnchors": [
+          {
+            "anchorType": "markdown",
+            "id": "GB_T_20001.5-2017#Anchor-0030",
+            "markdownEndLine": 468,
+            "markdownNodePath": "md:heading:468",
+            "markdownStartLine": 468,
+            "sourceFileId": "src:699b6ae1d1b33d01"
+          }
+        ],
+        "title": "技术要求"
+      },
+      {
+        "children": [
+          {
+            "children": [
+              {
+                "exampleContent": true,
+                "id": "GB_T_20001.5-2017#5.1.1",
+                "level": 3,
+                "logicalId": "5.1.1",
+                "nodeType": "subClause",
+                "number": "5.1.1",
+                "sortOrder": 55,
+                "sourceAnchors": [
+                  {
+                    "anchorType": "markdown",
+                    "id": "GB_T_20001.5-2017#Anchor-0044",
+                    "markdownEndLine": 512,
+                    "markdownNodePath": "md:heading:512",
+                    "markdownStartLine": 512,
+                    "sourceFileId": "src:699b6ae1d1b33d01"
+                  }
+                ],
+                "title": "灵敏度试验"
+              },
+              {
+                "exampleContent": true,
+                "id": "GB_T_20001.5-2017#5.1.2",
+                "level": 3,
+                "logicalId": "5.1.2",
+                "nodeType": "subClause",
+                "number": "5.1.2",
+                "sortOrder": 56,
+                "sourceAnchors": [
+                  {
+                    "anchorType": "markdown",
+                    "id": "GB_T_20001.5-2017#Anchor-0045",
+                    "markdownEndLine": 514,
+                    "markdownNodePath": "md:heading:514",
+                    "markdownStartLine": 514,
+                    "sourceFileId": "src:699b6ae1d1b33d01"
+                  }
+                ],
+                "title": "探测能力试验"
+              }
+            ],
+            "exampleContent": true,
+            "id": "GB_T_20001.5-2017#5.1",
+            "level": 2,
+            "logicalId": "5.1",
+            "nodeType": "clause",
+            "number": "5.1",
+            "sortOrder": 54,
+            "sourceAnchors": [
+              {
+                "anchorType": "markdown",
+                "id": "GB_T_20001.5-2017#Anchor-0043",
+                "markdownEndLine": 510,
+                "markdownNodePath": "md:heading:510",
+                "markdownStartLine": 510,
+                "sourceFileId": "src:699b6ae1d1b33d01"
+              }
+            ],
+            "title": "探测性能试验"
+          }
+        ],
+        "exampleContent": true,
+        "id": "GB_T_20001.5-2017#5-2",
+        "level": 1,
+        "logicalId": "5",
+        "nodeType": "section",
+        "number": "5",
+        "sortOrder": 53,
+        "sourceAnchors": [
+          {
+            "anchorType": "markdown",
+            "id": "GB_T_20001.5-2017#Anchor-0042",
+            "markdownEndLine": 508,
+            "markdownNodePath": "md:heading:508",
+            "markdownStartLine": 508,
+            "sourceFileId": "src:699b6ae1d1b33d01"
+          }
+        ],
+        "title": "试验方法"
+      }
+    ],
+    "contentElements": [
+      {
+        "id": "GB_T_20001.5-2017#Root/Paragraph-001",
+        "parentNodeId": "GB_T_20001.5-2017#Root",
+        "presentationType": "paragraph",
+        "semanticTypes": [],
+        "sortOrder": 0,
+        "sourceAnchors": [
+          {
+            "anchorType": "markdown",
+            "id": "GB_T_20001.5-2017#Anchor-0001",
+            "markdownEndLine": 22,
+            "markdownNodePath": "md:paragraph:22",
+            "markdownStartLine": 22,
+            "sourceFileId": "src:699b6ae1d1b33d01"
+          }
+        ],
+        "textContent": "中华人民共和国国家标准"
+      },
+      {
+        "id": "GB_T_20001.5-2017#Root/Paragraph-002",
+        "parentNodeId": "GB_T_20001.5-2017#Root",
+        "presentationType": "paragraph",
+        "semanticTypes": [],
+        "sortOrder": 1,
+        "sourceAnchors": [
+          {
+            "anchorType": "markdown",
+            "id": "GB_T_20001.5-2017#Anchor-0002",
+            "markdownEndLine": 24,
+            "markdownNodePath": "md:paragraph:24",
+            "markdownStartLine": 24,
+            "sourceFileId": "src:699b6ae1d1b33d01"
+          }
+        ],
+        "textContent": "GB/T 20001.5—2017"
+      },
+      {
+        "id": "GB_T_20001.5-2017#Root/Paragraph-003",
+        "parentNodeId": "GB_T_20001.5-2017#Root",
+        "presentationType": "paragraph",
+        "semanticTypes": [],
+        "sortOrder": 2,
+        "sourceAnchors": [
+          {
+            "anchorType": "markdown",
+            "id": "GB_T_20001.5-2017#Anchor-0003",
+            "markdownEndLine": 28,
+            "markdownNodePath": "md:paragraph:28",
+            "markdownStartLine": 28,
+            "sourceFileId": "src:699b6ae1d1b33d01"
+          }
+        ],
+        "textContent": "Rules for drafting standards—Part 5:Specification standards"
+      },
+      {
+        "id": "GB_T_20001.5-2017#Root/Paragraph-004",
+        "parentNodeId": "GB_T_20001.5-2017#Root",
+        "presentationType": "paragraph",
+        "semanticTypes": [],
+        "sortOrder": 3,
+        "sourceAnchors": [
+          {
+            "anchorType": "markdown",
+            "id": "GB_T_20001.5-2017#Anchor-0004",
+            "markdownEndLine": 30,
+            "markdownNodePath": "md:paragraph:30",
+            "markdownStartLine": 30,
+            "sourceFileId": "src:699b6ae1d1b33d01"
+          }
+        ],
+        "textContent": "2017-12-29 发布"
+      },
+      {
+        "id": "GB_T_20001.5-2017#Root/Paragraph-005",
+        "parentNodeId": "GB_T_20001.5-2017#Root",
+        "presentationType": "paragraph",
+        "semanticTypes": [],
+        "sortOrder": 4,
+        "sourceAnchors": [
+          {
+            "anchorType": "markdown",
+            "id": "GB_T_20001.5-2017#Anchor-0005",
+            "markdownEndLine": 32,
+            "markdownNodePath": "md:paragraph:32",
+            "markdownStartLine": 32,
+            "sourceFileId": "src:699b6ae1d1b33d01"
+          }
+        ],
+        "textContent": "2018-04-01 实施"
+      }
+    ],
+    "id": "GB_T_20001.5-2017#Root",
+    "logicalId": "Root",
+    "nodeType": "document",
+    "sortOrder": 0
+  },
+  "tables": [
+    {
+      "caption": "系统性能要求",
+      "colCount": 3,
+      "id": "GB_T_20001.5-2017#Table_1",
+      "number": "1",
+      "preservationStatus": "preserved",
+      "rowCount": 5,
+      "rows": [
+        {
+          "cells": [
+            {
+              "colIndex": 0,
+              "colspan": 1,
+              "id": "cell-0054",
+              "isHeader": true,
+              "rowIndex": 0,
+              "rowspan": 1,
+              "text": "序号"
+            },
+            {
+              "colIndex": 1,
+              "colspan": 1,
+              "id": "cell-0055",
+              "isHeader": true,
+              "rowIndex": 0,
+              "rowspan": 1,
+              "text": "技术参数名称"
+            },
+            {
+              "colIndex": 2,
+              "colspan": 1,
+              "id": "cell-0056",
+              "isHeader": true,
+              "rowIndex": 0,
+              "rowspan": 1,
+              "text": "参数"
+            }
+          ],
+          "id": "row-0018",
+          "isHeader": true,
+          "rowIndex": 0
+        },
+        {
+          "cells": [
+            {
+              "colIndex": 0,
+              "colspan": 1,
+              "id": "cell-0057",
+              "isHeader": false,
+              "rowIndex": 1,
+              "rowspan": 1,
+              "text": "1"
+            },
+            {
+              "colIndex": 1,
+              "colspan": 1,
+              "id": "cell-0058",
+              "isHeader": false,
+              "rowIndex": 1,
+              "rowspan": 1,
+              "text": "模拟量U、I测量误差"
+            },
+            {
+              "colIndex": 2,
+              "colspan": 1,
+              "id": "cell-0059",
+              "isHeader": false,
+              "rowIndex": 1,
+              "rowspan": 1,
+              "text": "≤0.2%"
+            }
+          ],
+          "id": "row-0019",
+          "isHeader": false,
+          "rowIndex": 1
+        },
+        {
+          "cells": [
+            {
+              "colIndex": 0,
+              "colspan": 1,
+              "id": "cell-0060",
+              "isHeader": false,
+              "rowIndex": 2,
+              "rowspan": 1,
+              "text": "……"
+            },
+            {
+              "colIndex": 1,
+              "colspan": 1,
+              "id": "cell-0061",
+              "isHeader": false,
+              "rowIndex": 2,
+              "rowspan": 1,
+              "text": "……"
+            },
+            {
+              "colIndex": 2,
+              "colspan": 1,
+              "id": "cell-0062",
+              "isHeader": false,
+              "rowIndex": 2,
+              "rowspan": 1,
+              "text": "……"
+            }
+          ],
+          "id": "row-0020",
+          "isHeader": false,
+          "rowIndex": 2
+        },
+        {
+          "cells": [
+            {
+              "colIndex": 0,
+              "colspan": 1,
+              "id": "cell-0063",
+              "isHeader": false,
+              "rowIndex": 3,
+              "rowspan": 1,
+              "text": "5"
+            },
+            {
+              "colIndex": 1,
+              "colspan": 1,
+              "id": "cell-0064",
+              "isHeader": false,
+              "rowIndex": 3,
+              "rowspan": 1,
+              "text": "通信变位传送时间(至站控层)"
+            },
+            {
+              "colIndex": 2,
+              "colspan": 1,
+              "id": "cell-0065",
+              "isHeader": false,
+              "rowIndex": 3,
+              "rowspan": 1,
+              "text": "≤1 s"
+            }
+          ],
+          "id": "row-0021",
+          "isHeader": false,
+          "rowIndex": 3
+        },
+        {
+          "cells": [
+            {
+              "colIndex": 0,
+              "colspan": 1,
+              "id": "cell-0066",
+              "isHeader": false,
+              "rowIndex": 4,
+              "rowspan": 1,
+              "text": "……"
+            },
+            {
+              "colIndex": 1,
+              "colspan": 1,
+              "id": "cell-0067",
+              "isHeader": false,
+              "rowIndex": 4,
+              "rowspan": 1,
+              "text": "……"
+            },
+            {
+              "colIndex": 2,
+              "colspan": 1,
+              "id": "cell-0068",
+              "isHeader": false,
+              "rowIndex": 4,
+              "rowspan": 1,
+              "text": "……"
+            }
+          ],
+          "id": "row-0022",
+          "isHeader": false,
+          "rowIndex": 4
+        }
+      ],
+      "sourceAnchors": [
+        {
+          "anchorType": "markdown",
+          "id": "GB_T_20001.5-2017#Anchor-0046",
+          "markdownEndLine": 446,
+          "markdownNodePath": "md:table:441",
+          "markdownStartLine": 441,
+          "sourceBlockId": "mineru-table-p001-003",
+          "sourceFileId": "src:699b6ae1d1b33d01"
+        }
+      ]
+    },
+    {
+      "caption": "电磁兼容性能要求及试验方法",
+      "colCount": 4,
+      "id": "GB_T_20001.5-2017#Table_2",
+      "number": "2",
+      "preservationStatus": "preserved",
+      "rowCount": 4,
+      "rows": [
+        {
+          "cells": [
+            {
+              "colIndex": 0,
+              "colspan": 1,
+              "id": "cell-0069",
+              "isHeader": true,
+              "rowIndex": 0,
+              "rowspan": 1,
+              "text": "编号"
+            },
+            {
+              "colIndex": 1,
+              "colspan": 1,
+              "id": "cell-0070",
+              "isHeader": true,
+              "rowIndex": 0,
+              "rowspan": 1,
+              "text": "特性"
+            },
+            {
+              "colIndex": 2,
+              "colspan": 1,
+              "id": "cell-0071",
+              "isHeader": true,
+              "rowIndex": 0,
+              "rowspan": 1,
+              "text": "特性值(级别)"
+            },
+            {
+              "colIndex": 3,
+              "colspan": 1,
+              "id": "cell-0072",
+              "isHeader": true,
+              "rowIndex": 0,
+              "rowspan": 1,
+              "text": "证实方法"
+            }
+          ],
+          "id": "row-0023",
+          "isHeader": true,
+          "rowIndex": 0
+        },
+        {
+          "cells": [
+            {
+              "colIndex": 0,
+              "colspan": 1,
+              "id": "cell-0073",
+              "isHeader": false,
+              "rowIndex": 1,
+              "rowspan": 1,
+              "text": "1"
+            },
+            {
+              "colIndex": 1,
+              "colspan": 1,
+              "id": "cell-0074",
+              "isHeader": false,
+              "rowIndex": 1,
+              "rowspan": 1,
+              "text": "静电放电抗扰度"
+            },
+            {
+              "colIndex": 2,
+              "colspan": 1,
+              "id": "cell-0075",
+              "isHeader": false,
+              "rowIndex": 1,
+              "rowspan": 1,
+              "text": "四级"
+            },
+            {
+              "colIndex": 3,
+              "colspan": 1,
+              "id": "cell-0076",
+              "isHeader": false,
+              "rowIndex": 1,
+              "rowspan": 1,
+              "text": "GB/T 17626.2"
+            }
+          ],
+          "id": "row-0024",
+          "isHeader": false,
+          "rowIndex": 1
+        },
+        {
+          "cells": [
+            {
+              "colIndex": 0,
+              "colspan": 1,
+              "id": "cell-0077",
+              "isHeader": false,
+              "rowIndex": 2,
+              "rowspan": 1,
+              "text": "2"
+            },
+            {
+              "colIndex": 1,
+              "colspan": 1,
+              "id": "cell-0078",
+              "isHeader": false,
+              "rowIndex": 2,
+              "rowspan": 1,
+              "text": "射频电磁场辐射抗扰度"
+            },
+            {
+              "colIndex": 2,
+              "colspan": 1,
+              "id": "cell-0079",
+              "isHeader": false,
+              "rowIndex": 2,
+              "rowspan": 1,
+              "text": "三级"
+            },
+            {
+              "colIndex": 3,
+              "colspan": 1,
+              "id": "cell-0080",
+              "isHeader": false,
+              "rowIndex": 2,
+              "rowspan": 1,
+              "text": "GB/T 17626.3"
+            }
+          ],
+          "id": "row-0025",
+          "isHeader": false,
+          "rowIndex": 2
+        },
+        {
+          "cells": [
+            {
+              "colIndex": 0,
+              "colspan": 1,
+              "id": "cell-0081",
+              "isHeader": false,
+              "rowIndex": 3,
+              "rowspan": 1,
+              "text": "……"
+            },
+            {
+              "colIndex": 1,
+              "colspan": 1,
+              "id": "cell-0082",
+              "isHeader": false,
+              "rowIndex": 3,
+              "rowspan": 1,
+              "text": "……"
+            },
+            {
+              "colIndex": 2,
+              "colspan": 1,
+              "id": "cell-0083",
+              "isHeader": false,
+              "rowIndex": 3,
+              "rowspan": 1,
+              "text": "……"
+            },
+            {
+              "colIndex": 3,
+              "colspan": 1,
+              "id": "cell-0084",
+              "isHeader": false,
+              "rowIndex": 3,
+              "rowspan": 1,
+              "text": "……"
+            }
+          ],
+          "id": "row-0026",
+          "isHeader": false,
+          "rowIndex": 3
+        }
+      ],
+      "sourceAnchors": [
+        {
+          "anchorType": "markdown",
+          "id": "GB_T_20001.5-2017#Anchor-0047",
+          "markdownEndLine": 458,
+          "markdownNodePath": "md:table:454",
+          "markdownStartLine": 454,
+          "sourceBlockId": "mineru-table-p001-004",
+          "sourceFileId": "src:699b6ae1d1b33d01"
+        }
+      ]
+    },
+    {
+      "caption": "不同检测等级的探测能力要求",
+      "colCount": 9,
+      "id": "GB_T_20001.5-2017#Table_1-2",
+      "number": "1",
+      "preservationStatus": "preserved",
+      "rowCount": 5,
+      "rows": [
+        {
+          "cells": [
+            {
+              "colIndex": 0,
+              "colspan": 1,
+              "id": "cell-0085",
+              "isHeader": true,
+              "rowIndex": 0,
+              "rowspan": 2,
+              "text": "检测等级"
+            },
+            {
+              "colIndex": 1,
+              "colspan": 4,
+              "id": "cell-0086",
+              "isHeader": true,
+              "rowIndex": 0,
+              "rowspan": 1,
+              "text": "应报警"
+            },
+            {
+              "colIndex": 2,
+              "colspan": 1,
+              "id": "cell-0087",
+              "isHeader": true,
+              "rowIndex": 0,
+              "rowspan": 1,
+              "text": ""
+            },
+            {
+              "colIndex": 3,
+              "colspan": 1,
+              "id": "cell-0088",
+              "isHeader": true,
+              "rowIndex": 0,
+              "rowspan": 1,
+              "text": ""
+            },
+            {
+              "colIndex": 4,
+              "colspan": 1,
+              "id": "cell-0089",
+              "isHeader": true,
+              "rowIndex": 0,
+              "rowspan": 1,
+              "text": ""
+            },
+            {
+              "colIndex": 5,
+              "colspan": 4,
+              "id": "cell-0090",
+              "isHeader": true,
+              "rowIndex": 0,
+              "rowspan": 1,
+              "text": "不应报警"
+            },
+            {
+              "colIndex": 6,
+              "colspan": 1,
+              "id": "cell-0091",
+              "isHeader": true,
+              "rowIndex": 0,
+              "rowspan": 1,
+              "text": ""
+            },
+            {
+              "colIndex": 7,
+              "colspan": 1,
+              "id": "cell-0092",
+              "isHeader": true,
+              "rowIndex": 0,
+              "rowspan": 1,
+              "text": ""
+            },
+            {
+              "colIndex": 8,
+              "colspan": 1,
+              "id": "cell-0093",
+              "isHeader": true,
+              "rowIndex": 0,
+              "rowspan": 1,
+              "text": ""
+            }
+          ],
+          "id": "row-0027",
+          "isHeader": true,
+          "rowIndex": 0
+        },
+        {
+          "cells": [
+            {
+              "colIndex": 0,
+              "colspan": 1,
+              "id": "cell-0094",
+              "isHeader": false,
+              "rowIndex": 1,
+              "rowspan": 1,
+              "text": ""
+            },
+            {
+              "colIndex": 1,
+              "colspan": 1,
+              "id": "cell-0095",
+              "isHeader": false,
+              "rowIndex": 1,
+              "rowspan": 1,
+              "text": "检测方式"
+            },
+            {
+              "colIndex": 2,
+              "colspan": 1,
+              "id": "cell-0096",
+              "isHeader": false,
+              "rowIndex": 1,
+              "rowspan": 1,
+              "text": "测试物"
+            },
+            {
+              "colIndex": 3,
+              "colspan": 1,
+              "id": "cell-0097",
+              "isHeader": false,
+              "rowIndex": 1,
+              "rowspan": 1,
+              "text": "探测距离"
+            },
+            {
+              "colIndex": 4,
+              "colspan": 1,
+              "id": "cell-0098",
+              "isHeader": false,
+              "rowIndex": 1,
+              "rowspan": 1,
+              "text": "姿态"
+            },
+            {
+              "colIndex": 5,
+              "colspan": 1,
+              "id": "cell-0099",
+              "isHeader": false,
+              "rowIndex": 1,
+              "rowspan": 1,
+              "text": "检测方式"
+            },
+            {
+              "colIndex": 6,
+              "colspan": 1,
+              "id": "cell-0100",
+              "isHeader": false,
+              "rowIndex": 1,
+              "rowspan": 1,
+              "text": "测试物"
+            },
+            {
+              "colIndex": 7,
+              "colspan": 1,
+              "id": "cell-0101",
+              "isHeader": false,
+              "rowIndex": 1,
+              "rowspan": 1,
+              "text": "探测距离"
+            },
+            {
+              "colIndex": 8,
+              "colspan": 1,
+              "id": "cell-0102",
+              "isHeader": false,
+              "rowIndex": 1,
+              "rowspan": 1,
+              "text": "姿态"
+            }
+          ],
+          "id": "row-0028",
+          "isHeader": false,
+          "rowIndex": 1
+        },
+        {
+          "cells": [
+            {
+              "colIndex": 0,
+              "colspan": 1,
+              "id": "cell-0103",
+              "isHeader": false,
+              "rowIndex": 2,
+              "rowspan": 1,
+              "text": "A"
+            },
+            {
+              "colIndex": 1,
+              "colspan": 1,
+              "id": "cell-0104",
+              "isHeader": false,
+              "rowIndex": 2,
+              "rowspan": 3,
+              "text": "接近、擦过"
+            },
+            {
+              "colIndex": 2,
+              "colspan": 1,
+              "id": "cell-0105",
+              "isHeader": false,
+              "rowIndex": 2,
+              "rowspan": 3,
+              "text": "T1"
+            },
+            {
+              "colIndex": 3,
+              "colspan": 1,
+              "id": "cell-0106",
+              "isHeader": false,
+              "rowIndex": 2,
+              "rowspan": 1,
+              "text": "65 mm"
+            },
+            {
+              "colIndex": 4,
+              "colspan": 1,
+              "id": "cell-0107",
+              "isHeader": false,
+              "rowIndex": 2,
+              "rowspan": 3,
+              "text": "横向"
+            },
+            {
+              "colIndex": 5,
+              "colspan": 1,
+              "id": "cell-0108",
+              "isHeader": false,
+              "rowIndex": 2,
+              "rowspan": 3,
+              "text": "接近、擦过"
+            },
+            {
+              "colIndex": 6,
+              "colspan": 1,
+              "id": "cell-0109",
+              "isHeader": false,
+              "rowIndex": 2,
+              "rowspan": 3,
+              "text": "T1"
+            },
+            {
+              "colIndex": 7,
+              "colspan": 1,
+              "id": "cell-0110",
+              "isHeader": false,
+              "rowIndex": 2,
+              "rowspan": 1,
+              "text": "100 mm"
+            },
+            {
+              "colIndex": 8,
+              "colspan": 1,
+              "id": "cell-0111",
+              "isHeader": false,
+              "rowIndex": 2,
+              "rowspan": 3,
+              "text": "横向"
+            }
+          ],
+          "id": "row-0029",
+          "isHeader": false,
+          "rowIndex": 2
+        },
+        {
+          "cells": [
+            {
+              "colIndex": 0,
+              "colspan": 1,
+              "id": "cell-0112",
+              "isHeader": false,
+              "rowIndex": 3,
+              "rowspan": 1,
+              "text": "B"
+            },
+            {
+              "colIndex": 1,
+              "colspan": 1,
+              "id": "cell-0113",
+              "isHeader": false,
+              "rowIndex": 3,
+              "rowspan": 1,
+              "text": "45 mm"
+            },
+            {
+              "colIndex": 2,
+              "colspan": 1,
+              "id": "cell-0114",
+              "isHeader": false,
+              "rowIndex": 3,
+              "rowspan": 1,
+              "text": "……"
+            },
+            {
+              "colIndex": 3,
+              "colspan": 1,
+              "id": "cell-0115",
+              "isHeader": false,
+              "rowIndex": 3,
+              "rowspan": 1,
+              "text": ""
+            },
+            {
+              "colIndex": 4,
+              "colspan": 1,
+              "id": "cell-0116",
+              "isHeader": false,
+              "rowIndex": 3,
+              "rowspan": 1,
+              "text": ""
+            },
+            {
+              "colIndex": 5,
+              "colspan": 1,
+              "id": "cell-0117",
+              "isHeader": false,
+              "rowIndex": 3,
+              "rowspan": 1,
+              "text": ""
+            },
+            {
+              "colIndex": 6,
+              "colspan": 1,
+              "id": "cell-0118",
+              "isHeader": false,
+              "rowIndex": 3,
+              "rowspan": 1,
+              "text": ""
+            },
+            {
+              "colIndex": 7,
+              "colspan": 1,
+              "id": "cell-0119",
+              "isHeader": false,
+              "rowIndex": 3,
+              "rowspan": 1,
+              "text": ""
+            },
+            {
+              "colIndex": 8,
+              "colspan": 1,
+              "id": "cell-0120",
+              "isHeader": false,
+              "rowIndex": 3,
+              "rowspan": 1,
+              "text": ""
+            }
+          ],
+          "id": "row-0030",
+          "isHeader": false,
+          "rowIndex": 3
+        },
+        {
+          "cells": [
+            {
+              "colIndex": 0,
+              "colspan": 1,
+              "id": "cell-0121",
+              "isHeader": false,
+              "rowIndex": 4,
+              "rowspan": 1,
+              "text": "C"
+            },
+            {
+              "colIndex": 1,
+              "colspan": 1,
+              "id": "cell-0122",
+              "isHeader": false,
+              "rowIndex": 4,
+              "rowspan": 1,
+              "text": "25 mm"
+            },
+            {
+              "colIndex": 2,
+              "colspan": 1,
+              "id": "cell-0123",
+              "isHeader": false,
+              "rowIndex": 4,
+              "rowspan": 1,
+              "text": "……"
+            },
+            {
+              "colIndex": 3,
+              "colspan": 1,
+              "id": "cell-0124",
+              "isHeader": false,
+              "rowIndex": 4,
+              "rowspan": 1,
+              "text": ""
+            },
+            {
+              "colIndex": 4,
+              "colspan": 1,
+              "id": "cell-0125",
+              "isHeader": false,
+              "rowIndex": 4,
+              "rowspan": 1,
+              "text": ""
+            },
+            {
+              "colIndex": 5,
+              "colspan": 1,
+              "id": "cell-0126",
+              "isHeader": false,
+              "rowIndex": 4,
+              "rowspan": 1,
+              "text": ""
+            },
+            {
+              "colIndex": 6,
+              "colspan": 1,
+              "id": "cell-0127",
+              "isHeader": false,
+              "rowIndex": 4,
+              "rowspan": 1,
+              "text": ""
+            },
+            {
+              "colIndex": 7,
+              "colspan": 1,
+              "id": "cell-0128",
+              "isHeader": false,
+              "rowIndex": 4,
+              "rowspan": 1,
+              "text": ""
+            },
+            {
+              "colIndex": 8,
+              "colspan": 1,
+              "id": "cell-0129",
+              "isHeader": false,
+              "rowIndex": 4,
+              "rowspan": 1,
+              "text": ""
+            }
+          ],
+          "id": "row-0031",
+          "isHeader": false,
+          "rowIndex": 4
+        }
+      ],
+      "sourceAnchors": [
+        {
+          "anchorType": "markdown",
+          "id": "GB_T_20001.5-2017#Anchor-0048",
+          "markdownEndLine": 487,
+          "markdownNodePath": "md:table:482",
+          "markdownStartLine": 482,
+          "sourceBlockId": "mineru-table-p001-005",
+          "sourceFileId": "src:699b6ae1d1b33d01"
+        }
+      ]
+    }
+  ],
+  "unknownContents": []
+}

@@ -141,10 +141,10 @@ class FormulaVariableLineRepairTests(unittest.TestCase):
         )
         blocks, issues = _parse(body)
         texts = _paragraph_texts(blocks)
-        self.assertIn("$\\Delta t$——绕组温升，单位为开尔文(K)；", texts)
-        self.assertIn("$R _ { 2 }$——试验结束时的绕组电阻，单位为欧姆(Ω)；", texts)
+        self.assertIn("$\\Delta t$——绕组温升，单位为开尔文（K）；", texts)
+        self.assertIn("$R _ { 2 }$——试验结束时的绕组电阻，单位为欧姆（Ω）；", texts)
         self.assertIn("$k$——常数，对铜绕组为234.5；", texts)
-        self.assertIn("$t _ { 2 }$——试验结束时的冷却介质温度，单位为摄氏度(℃)。", texts)
+        self.assertIn("$t _ { 2 }$——试验结束时的冷却介质温度，单位为摄氏度（℃）。", texts)
         self.assertTrue(any(i.code == "CSM-OCR-018" and i.repaired for i in issues))
 
     def test_missing_terminators_are_added_last_item_gets_period(self) -> None:
@@ -160,7 +160,7 @@ class FormulaVariableLineRepairTests(unittest.TestCase):
         blocks, _ = _parse(body)
         texts = _paragraph_texts(blocks)
         self.assertIn("J——负载的标称转动惯量，单位为千克二次方米；", texts)
-        self.assertIn("$P _ { \\mathrm { ~ N ~ } }$——电动机的额定功率，单位为瓦(W)；", texts)
+        self.assertIn("$P _ { \\mathrm { ~ N ~ } }$——电动机的额定功率，单位为瓦（W）；", texts)
         self.assertIn("$n _ { \\mathrm { ~ N ~ } }$——电动机的同步转速，单位为转每分。", texts)
 
     def test_wrong_terminator_is_normalised(self) -> None:
@@ -173,7 +173,7 @@ class FormulaVariableLineRepairTests(unittest.TestCase):
         blocks, _ = _parse(body)
         texts = _paragraph_texts(blocks)
         self.assertIn("J——负载的标称转动惯量；", texts)
-        self.assertIn("$P _ { \\mathrm { ~ N ~ } }$——电动机的额定功率，单位为瓦(W)。", texts)
+        self.assertIn("$P _ { \\mathrm { ~ N ~ } }$——电动机的额定功率，单位为瓦（W）。", texts)
 
     def test_existing_period_inside_group_is_not_forced_to_semicolon(self) -> None:
         # 组内已有的「。」可能是示例边界（GB/T 1.1-2020 9.9.3.2 的"正确/不正确"
@@ -210,7 +210,7 @@ class FormulaVariableLineRepairTests(unittest.TestCase):
             "P ——功率，单位为瓦(W)；\n\n"
         )
         blocks, issues = _parse(body)
-        self.assertIn("P ——功率，单位为瓦(W)；", _paragraph_texts(blocks))
+        self.assertIn("P ——功率，单位为瓦（W）；", _paragraph_texts(blocks))
         self.assertFalse(any(i.code == "CSM-OCR-018" for i in issues))
 
 

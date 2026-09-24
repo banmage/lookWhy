@@ -83,8 +83,8 @@ class EmphasisMarkupTests(unittest.TestCase):
 
         self.assertEqual(_markup("***封面***"), "<b><i>封面</i></b>")
         self.assertEqual(_markup("*目次*"), "<i>目次</i>")
-        self.assertEqual(_markup("**范围**(见 6.3)"), "<b>范围</b>(见 6.3)")
-        self.assertEqual(_markup("*文字(自动生成的内容) *"), "<i>文字(自动生成的内容)</i>")
+        self.assertEqual(_markup("**范围**（见 6.3）"), "<b>范围</b>（见 6.3）")
+        self.assertEqual(_markup("*文字（自动生成的内容） *"), "<i>文字（自动生成的内容）</i>")
 
     def test_latin_content_emphasis_still_works(self) -> None:
         from leleby_ssir.pdf_renderer import _markup
@@ -119,7 +119,7 @@ class EmphasisMarkupTests(unittest.TestCase):
     def test_escaped_star_is_literal(self) -> None:
         from leleby_ssir.pdf_renderer import _markup
 
-        self.assertEqual(_markup("(第#页/共\\*页)"), "(第#页/共*页)")
+        self.assertEqual(_markup("（第#页/共\\*页）"), "（第#页/共*页）")
         self.assertEqual(_markup("第\\*部分："), "第*部分：")
 
 
@@ -266,7 +266,7 @@ class EmphasisPdfRenderingTests(unittest.TestCase):
         # 负例：条文脚注星号簇（行内公式拍平后）、共*页、转义星号仍按字面星号印出。
         self.assertIn("即 * 、 ** 、 *** 代替", lines)
         self.assertEqual(lines.count("共*页"), 2, lines)  # 未成对的裸星号 + 转义 \*
-        self.assertIn("(第#页/共*页)", lines)
+        self.assertIn("（第#页/共*页）", lines)
         # 正例：强调标记本身不得残留成字面文本。
         self.assertNotIn("***封面***", lines)
         self.assertNotIn("**范围**", lines)

@@ -6,8 +6,9 @@
 - **构建程序**（raw(json/md) → canonical（可人工修改）→ SSIR → render.pdf）：两个入口——
   从 raw 起跑（normalize → canonical，canonical 已存在时默认拒绝覆盖）或从 canonical 起跑
   （只重跑下游）——都调用本模块的 ``finalize`` / ``_post_parse_verify_render`` / ``_stage_paths``；
-- **验证程序**（独立，可单独跑或由构建程序调用）：``ssir csm roundtrip``（引擎在
-  ``leleby_ssir.roundtrip``）＋ ``leleby_ssir.pdf_compare.compare``。
+- **验证程序**（独立，可单独跑）：``leleby_ssir.pdf_compare.compare``（PDF 外部对比，见
+  ``tools/verify_conversion.py``）。**回环验证已永久下线**（2026-09-22 用户裁定）：不再有
+  canonical↔SSIR↔render.md↔verify 的往返比较，render.md 是 SSIR 的标准 markdown 投影。
 
 本模块此前内嵌在 ``tools/mineru_full_standard.py``（抽取工具）里，导致 raw 起点的构建路径
 必须 import 抽取脚本才能跑；2026-09-12 按用户提出的三层划分把这些阶段函数搬到 src，
@@ -33,6 +34,21 @@ import sys
 import time
 from typing import Any
 
+from leleby_ssir.layout import (
+    _ELLIPSIS_CHARS,
+    _FULLWIDTH_DIGITS,
+    build_layout,
+    clause_skeleton as _clause_skeleton,
+    is_short_ellipsis as _is_short_ellipsis,
+    latex_key as _latex_key,
+    load_layout,
+    middle_geometry_sources,
+    parse_middle_geometry,
+    PART_PAGE_RANGE_RE as _PART_PAGE_RANGE_RE,
+    raw_line_starts_with_number as _raw_line_starts_with_number,
+    text_layer_content_lines as _text_layer_content_lines,
+    write_layout,
+)
 from leleby_ssir.mineru_html import convert_mineru_markup, formula_assets_index, html_table_to_csm
 from leleby_ssir.naming import standard_filename, standard_number_from_text
 
@@ -102,12 +118,13 @@ def _stage_paths(output_dir: Path, stem: str, *, source_ext: str = "pdf") -> dic
     00_source/ 01_extract/ 02_canonical/ 03_ssir/ 04_render/ 05_verify/；
     资产统一放文档根 assets/（SSIR 的 assetRef 相对路径以
     ``assets/images/...`` 引用，渲染器自 03_ssir/ 向上查找）。
-    ``source_ext`` 区分源文档类型（目前只用 pdf；docx 导入已暂时停用）。
+    ``source_ext`` 区分源文档类型（目前只用 pdf）。
     """
     return {
         "source": output_dir / "00_source" / f"{stem}.source.{source_ext}",
         "checksum": output_dir / "00_source" / f"{stem}.checksum.sha256",
         "raw": output_dir / "01_extract" / f"{stem}.raw.md",
+        "layout": output_dir / "01_extract" / f"{stem}.layout.json",
         "extract_report": output_dir / "01_extract" / f"{stem}.extract-report.json",
         "provenance": output_dir / "01_extract" / f"{stem}.provenance.json",
         "canonical": output_dir / "02_canonical" / f"{stem}.canonical.md",
@@ -116,10 +133,9 @@ def _stage_paths(output_dir: Path, stem: str, *, source_ext: str = "pdf") -> dic
         "parse_report": output_dir / "03_ssir" / f"{stem}.parse-report.json",
         "render_pdf": output_dir / "04_render" / f"{stem}.render.pdf",
         "render_md": output_dir / "04_render" / f"{stem}.render.md",
+        "render_html": output_dir / "04_render" / f"{stem}.render.html",
         "render_report": output_dir / "04_render" / f"{stem}.render-report.json",
         "render_comparison": output_dir / "04_render" / f"{stem}.render-comparison.json",
-        "verify": output_dir / "05_verify" / f"{stem}.verify.json",
-        "roundtrip": output_dir / "05_verify" / f"{stem}.roundtrip.json",
     }
 
 
@@ -144,9 +160,8 @@ def _write_manifest(args: argparse.Namespace, state: dict[str, Any], title: str 
             "canonical": str(paths["canonical"].relative_to(args.output_dir)),
             "ssir": str(paths["ssir"].relative_to(args.output_dir)),
             "renderMd": str(paths["render_md"].relative_to(args.output_dir)),
+            "renderHtml": str(paths["render_html"].relative_to(args.output_dir)),
             "render": str(paths["render_pdf"].relative_to(args.output_dir)),
-            "verify": str(paths["verify"].relative_to(args.output_dir)),
-            "roundtrip": str(paths["roundtrip"].relative_to(args.output_dir)),
         },
         "stages": {
             name: str(path.relative_to(args.output_dir)) if path.exists() else None
@@ -154,6 +169,80 @@ def _write_manifest(args: argparse.Namespace, state: dict[str, Any], title: str 
         },
     }
     _write_json(args.output_dir / "manifest.json", manifest)
+
+
+def stage_layout_path(args: argparse.Namespace) -> Path:
+    """当前文档根的 ``01_extract/<stem>.layout.json`` 路径（docs/16 §2.2）。"""
+    return _stage_paths(args.output_dir, args.output_stem or args.input.stem)["layout"]
+
+
+def write_stage_layout(args: argparse.Namespace, state: dict[str, Any]) -> dict[str, Any]:
+    """抽取阶段产出 ``01_extract/<stem>.layout.json``（docs/16 §2.3，D1 裁定的落点）。
+
+    这是整条流水线**唯一读源 PDF 取版面几何与文本**的地方：normalize / parse / render
+    只读 canonical 与 layout.json（docs/16 §1/§3「通道不改判据」——判据仍留在消费端，
+    此处只搬运读数）。源 PDF 不在场（raw 起点）时不产出，并如实记日志：消费端按
+    「无判据」处理，不猜、不阻断（AGENTS.md §0.2/§0.3）。
+    """
+    source_pdf = Path(args.input) if args.input and getattr(args, "input_kind", "") in {"pdf", "pdf-copy"} else None
+    if source_pdf is None or not source_pdf.is_file():
+        _log("No source PDF present; layout.json not produced (layout channels read as no-predicate)")
+        return {}
+    paths = _stage_paths(args.output_dir, args.output_stem or args.input.stem)
+    data = build_layout(
+        source_pdf,
+        # MinerU 侧几何（并列版面 GEN-095）：分片目录与整份 middle.json 都在场就都收，
+        # 只在抽取阶段可读——构建端此后只读 layout.json（docs/16 §1/§3）。
+        part_dir=args.output_dir / "parts",
+        middle_json=getattr(args, "side_by_side_middle", None),
+    )
+    write_layout(paths["layout"], data)
+    _log(
+        f"Layout written: {paths['layout']} "
+        f"({len(data.get('textLines') or [])} text line(s), "
+        f"{len(data.get('ellipsisLines') or [])} ellipsis line(s), "
+        f"{len(data.get('columns') or [])} geometry page(s))"
+    )
+    return data
+
+
+def resolve_stage_layout_path(args: argparse.Namespace) -> Path | None:
+    """定位当前文档根的 layout.json。
+
+    优先与当前 stem 同名；同名文件不存在而该文档根下**恰有一份** layout.json 时取它，
+    并如实记日志——孪生 stem（同一标准两套命名，如 ``GB_T_51711-2014`` 与
+    ``GB_T_5171.1-2014``）下文件名会与当前 stem 不同，静默换源比报错更糟。零份或多份
+    都返回 ``None``：消费端按「无判据」处理。
+    """
+    preferred = stage_layout_path(args)
+    if preferred.is_file():
+        return preferred
+    candidates = sorted((args.output_dir / "01_extract").glob("*.layout.json")) if args.output_dir else []
+    if len(candidates) == 1:
+        _log(
+            "layout.json stem mismatch: using "
+            f"{candidates[0].name} for stem {args.output_stem or args.input.stem}"
+        )
+        return candidates[0]
+    return None
+
+
+def load_stage_layout(args: argparse.Namespace, state: dict[str, Any] | None = None) -> dict[str, Any]:
+    """读当前文档根的 layout.json；缺失/损坏 → 空 dict（消费端按无判据处理，不猜）。
+
+    带 ``state`` 时做一次新鲜度核对（仅在记录来源本身是 PDF 时）：通道里的源 SHA-256
+    与 pipeline-state 记录的不一致 → 记日志提示重跑 ``--stage layout``，不阻断。
+    """
+    layout = load_layout(resolve_stage_layout_path(args))
+    recorded = str((state or {}).get("input") or "")
+    expected = (state or {}).get("sourceSha256")
+    got = (layout.get("source") or {}).get("pdfSha256")
+    if layout and expected and got and recorded.lower().endswith(".pdf") and expected != got:
+        _log(
+            f"WARNING: layout.json records source sha256 {got[:12]}… but pipeline-state records "
+            f"{expected[:12]}…; layout channels may be stale — re-run --stage layout"
+        )
+    return layout
 
 
 def _looks_like_document_number(text: str) -> bool:
@@ -174,7 +263,9 @@ def _looks_like_document_number(text: str) -> bool:
     )
 
 
-def _cover_metadata(part_dir: Path, markdown_text: str) -> dict[str, str]:
+def _cover_metadata(
+    part_dir: Path, markdown_text: str, *, layout: dict[str, Any] | None = None
+) -> dict[str, str]:
     """Recover cover-only fields (English title, dates, issuer) for the front matter.
 
     规则对应: GEN-013（发布/实施日期识别）、GEN-014（发布机构识别）、
@@ -263,7 +354,7 @@ def _cover_metadata(part_dir: Path, markdown_text: str) -> dict[str, str]:
     if not english_parts:
         # Fallback: read the cover English title straight from the PDF text
         # layer (MinerU may mangle spacing/case but the raw layer keeps it).
-        english_parts = _cover_english_from_pdf(part_dir)
+        english_parts = _cover_english_from_pdf(part_dir, layout=layout)
     if english_parts:
         result.setdefault("title-en", _tidy_english_title(" ".join(english_parts)))
 
@@ -311,13 +402,37 @@ def _cover_metadata(part_dir: Path, markdown_text: str) -> dict[str, str]:
     # 识别错，如"国家督管理委员 局会 发 布"），用原 PDF 文本层重取——文本层
     # 对封面字段可靠，命中机构名录才覆盖。
     if result.get("issuer") and not _canonical_issuer_known(result["issuer"]):
-        pdf_issuer = _cover_issuer_from_pdf(part_dir)
+        pdf_issuer = _cover_issuer_from_pdf(part_dir, layout=layout)
         if pdf_issuer:
             result["issuer"] = pdf_issuer
     return result
 
 
-def _cover_english_from_pdf(part_dir: Path) -> list[str]:
+def _cover_page0_lines(part_dir: Path, layout: dict[str, Any] | None = None) -> list[str]:
+    """封面（第 1 页）原始文本行：优先 ``layout.json`` 的 ``cover.pdfPage0Lines`` 通道。
+
+    规则对应: GEN-016 / GEN-014（封面英文标题、发布机构的 PDF 文本层兜底），
+    docs/16 §3（抽取阶段读源 PDF 后落进通道，消费端只读通道）。通道缺失（raw 起点
+    无 layout.json）时回退到分片目录里的源 PDF 副本——抽取阶段仍允许读源 PDF。
+    **判定不在这里**：横幅/"标准$"、日期、文档号等过滤留在调用方。
+    """
+    channel = ((layout or {}).get("cover") or {}).get("pdfPage0Lines")
+    if isinstance(channel, list) and channel:
+        return [str(item) for item in channel]
+    pdf_candidates = sorted(part_dir.rglob("*.pdf")) if part_dir is not None else []
+    if not pdf_candidates:
+        return []
+    try:
+        import pymupdf  # type: ignore
+
+        with pymupdf.open(pdf_candidates[0]) as document:
+            page0_text = document[0].get_text()
+    except Exception:
+        return []
+    return [line.strip() for line in page0_text.splitlines() if line.strip()]
+
+
+def _cover_english_from_pdf(part_dir: Path, *, layout: dict[str, Any] | None = None) -> list[str]:
     """Read consecutive cover English-title lines from the PDF raw text layer.
 
     规则对应: GEN-016（英文标题识别，PDF 文本层兜底）。
@@ -327,18 +442,14 @@ def _cover_english_from_pdf(part_dir: Path) -> list[str]:
     the run of Latin-only lines between the Chinese banner block and the
     publication dates.
     """
-    markdown_candidates = sorted(part_dir.rglob("*.md"), key=lambda p: p.stat().st_size, reverse=True)
-    pdf_candidates = sorted(part_dir.rglob("*.pdf"))
-    if not markdown_candidates or not pdf_candidates:
+    lines = _cover_page0_lines(part_dir, layout)
+    if not lines:
         return []
-    try:
-        import pymupdf
-
-        with pymupdf.open(pdf_candidates[0]) as doc:
-            page0_text = doc[0].get_text()
-    except Exception:
-        return []
-    lines = [line.strip() for line in page0_text.splitlines() if line.strip()]
+    if not (((layout or {}).get("cover") or {}).get("pdfPage0Lines")):
+        # 回退路径（无 layout.json 的抽取起点）：保持迁移前的门槛——分片目录里既要有
+        # MinerU markdown 又要有源 PDF 副本，才认为封面文本层可信。
+        if not sorted(part_dir.rglob("*.md")):
+            return []
     english: list[str] = []
     seen_banner = False
     for line in lines:
@@ -476,24 +587,17 @@ def _canonical_issuer_known(text: str) -> str:
     return ""
 
 
-def _cover_issuer_from_pdf(part_dir: Path) -> str:
+def _cover_issuer_from_pdf(part_dir: Path, *, layout: dict[str, Any] | None = None) -> str:
     """Recover the cover issuer from the PDF raw text layer (GEN-014 兜底).
 
     OCR 常把机构行识别错（"国家督管理委员 局会 发 布"），而原 PDF 文本层
     对封面字段可靠。pymupdf 会把 "<机构A>\\n<机构B>\\n发布" 拆成多行，
     从"发布"行向上合并相邻机构行再查机构名录。
     """
-    pdf_candidates = sorted(part_dir.rglob("*.pdf"))
-    if not pdf_candidates:
+    raw_lines = _cover_page0_lines(part_dir, layout)
+    if not raw_lines:
         return ""
-    try:
-        import pymupdf
-
-        with pymupdf.open(pdf_candidates[0]) as doc:
-            page0_text = doc[0].get_text()
-    except Exception:
-        return ""
-    lines = [re.sub(r"\s+", "", line) for line in page0_text.splitlines() if line.strip()]
+    lines = [re.sub(r"\s+", "", line) for line in raw_lines]
     for i, line in enumerate(lines):
         if "发布" in line and not re.match(r"^\d{4}-\d{2}-\d{2}", line):
             parts = [line]
@@ -711,71 +815,20 @@ def _cover_title(markdown: str) -> str:
     return ""
 
 
-_ELLIPSIS_CHARS = ("…", "⋯")  # U+2026 与 U+22EF（中线省略号，部分字体映射）
+# 「读文本层」与省略号判据的单一来源在 ``leleby_ssir.layout``（抽取阶段唯一读源 PDF 的
+# 模块）：``_text_layer_content_lines`` / ``_is_short_ellipsis`` / ``_clause_skeleton`` /
+# ``_raw_line_starts_with_number`` / ``_ELLIPSIS_CHARS`` / ``_FULLWIDTH_DIGITS`` 由上方
+# import 提供（保留原名，抽取工具的既有 import 与单测不受影响）。消费端只读 layout.json，
+# 见 docs/16 §3「通道不改判据」。
 
 
-_FULLWIDTH_DIGITS = str.maketrans("０１２３４５６７８９．", "0123456789.")
-
-
-def _text_layer_content_lines(pdf: Path) -> list[dict[str, Any]]:
-    """Extract content lines (page/x0/y0/text) from the source PDF text layer.
-
-    通用后验的输入基础：文本层是版面真值的唯一权威来源（MinerU OCR 可能丢弃
-    纯符号行——如"……"占位行——而文本层完整保留；中文虽可能乱码，但行数、
-    坐标、数字、拉丁与标点符号可信）。
-    """
-    try:
-        import pymupdf
-    except ImportError:
-        return []
-    lines: list[dict[str, Any]] = []
-    with pymupdf.open(pdf) as document:
-        for page_index in range(len(document)):
-            page = document[page_index]
-            for block in page.get_text("dict")["blocks"]:  # type: ignore[index]
-                for line in block.get("lines", []):  # type: ignore[union-attr]
-                    text = "".join(span["text"] for span in line["spans"]).strip()  # type: ignore[index]
-                    if not text:
-                        continue
-                    y0 = line["bbox"][1]  # type: ignore[index]
-                    x0 = line["bbox"][0]  # type: ignore[index]
-                    if y0 < 80:
-                        continue  # 页眉（标准号眉线）
-                    if y0 > 740 and re.fullmatch(r"[0-9０-９IVXⅣⅤⅧ]+", text):
-                        continue  # 页脚页码（奇偶页左右交替，只按内容形态过滤）
-                    lines.append({"page": page_index + 1, "x0": x0, "y0": y0, "text": text})
-    return lines
-
-
-def _is_short_ellipsis(text: str) -> bool:
-    """Pure ellipsis line (1-6 个 …/⋯)。目录点线（40+ 个 …）不属于内容占位。"""
-    t = text.replace(" ", "")
-    return 1 <= len(t) <= 6 and set(t) <= set(_ELLIPSIS_CHARS)
-
-
-def _clause_skeleton(text: str) -> str | None:
-    """行首条号骨架：５．８ → 5.8、６ → 6。仅当行首（可带破折号/空白）是
-    点分数字链**且后随空白或行尾**时返回——乱码行中段碎片（如 "7b…"）的
-    伪编号不匹配，避免把省略号锚到错误位置。"""
-    t = text.translate(_FULLWIDTH_DIGITS)
-    # 后随空白时空白后不得再是数字（"１ 01" 型目录页码行不算条号）；
-    # 后随行尾也可（孤立的章号行）。
-    match = re.match(r"^[\s—–\-]*(\d+(?:\.\d+){0,3})(?=\s(?![0-9０-９])|$)", t)
-    return match.group(1) if match else None
-
-
-def _raw_line_starts_with_number(line: str, skeleton: str) -> bool:
-    """raw 行（可带 markdown 标题前缀）是否以该条号骨架开头且不吞掉更长编号。"""
-    s = line.lstrip("#").strip()
-    return bool(re.match(rf"^{re.escape(skeleton)}(?=[^\d.]|$)", s))
-
-
-def _restore_ellipsis_lines(body: str, pdf: Path) -> str:
+def _restore_ellipsis_lines(body: str, layout: dict[str, Any]) -> str:
     """Generic restoration of OCR-dropped pure-ellipsis lines (GEN-092 后验补盲)。
 
     现象（GB_T_20001.6-2017 等规程/指南标准的示例文档）：MinerU OCR 丢弃
     纯"……"占位行（5.3/5.4.1/5.4.2/5.4.3/5.7.1 a)/5.8/5.9/6.2 末尾等），
-    源 PDF 文本层完整保留。恢复分两类：
+    源 PDF 文本层完整保留（抽取阶段写进 ``layout.json.textLines``，本函数只读它、
+    不再打开源 PDF——docs/16 §3）。恢复分两类：
 
     - 正文省略号：以省略号行之后的**下一个带条号骨架的文本层行**为锚（锚定到
       raw 中该骨架的最后一个出现位置，靠单调游标保持插入顺序），把"……"插到
@@ -787,7 +840,7 @@ def _restore_ellipsis_lines(body: str, pdf: Path) -> str:
     保守原则：锚点/长度无法可靠匹配时不改（不猜测）；raw 已在插入点附近有
     短省略号行时跳过（防重复）。
     """
-    text_lines = _text_layer_content_lines(pdf)
+    text_lines = list(layout.get("textLines") or [])
     if not text_lines:
         return body
     ellipsis_indexes = [i for i, line in enumerate(text_lines) if _is_short_ellipsis(line["text"])]
@@ -907,7 +960,9 @@ def finalize(args: argparse.Namespace, merged: Path) -> Path | None:
     # 函数，绝不会改写已存在的 curated canonical（AGENTS.md §2）。幂等：已有
     # “[^N]” 标记与定义时不重复写。
     if args.input.suffix.lower() == ".pdf" and canonical.is_file():
-        recovered = _recover_pdf_footnotes(canonical, args.input)
+        # 脚注回收的读数来自 layout.json 的 textSpans/pages 通道（docs/16 §3；通道缺失时
+        # 函数内部回退读源 PDF——抽取阶段仍允许）。
+        recovered = _recover_pdf_footnotes(canonical, args.input, layout=load_stage_layout(args))
         if recovered:
             _log(f"Recovered {recovered} footnote(s) from the source PDF text layer into {canonical.name}")
     _log("Parsing normalized CSM into SSIR JSON")
@@ -915,52 +970,40 @@ def finalize(args: argparse.Namespace, merged: Path) -> Path | None:
         print("SSIR parsing needs review; normalized CSM remains available.", file=sys.stderr)
         return None
     _log(f"SSIR JSON written: {ssir}\n")
-    if args.input.suffix.lower() == ".pdf":
-        # 版面几何印记仅对 PDF 源有效（读取源 PDF 的矢量几何/裁剪尺寸）。
-        _stamp_example_styles(ssir, args.input)
-        _stamp_figure_source_sizes(ssir, args.input)
+    layout = load_stage_layout(args)
+    if layout:
+        # 版面几何印记只读抽取阶段写出的 layout.json（docs/16 §3：构建阶段不再打开源 PDF）。
+        _stamp_example_styles(ssir, layout)
+        _stamp_figure_source_sizes(ssir, layout)
         _stamp_side_by_side_layout(
-            ssir, args.output_dir / "parts", middle_json=getattr(args, "side_by_side_middle", None)
+            ssir, args.output_dir / "parts",
+            middle_json=getattr(args, "side_by_side_middle", None), layout=layout,
         )
     elif getattr(args, "figure_size_map", None):
         # raw 起点（middle.json 输入）没有源 PDF：图源尺寸取图块 bbox（GEN-098 第二来源）。
         _stamp_figure_source_sizes_from_map(ssir, args.figure_size_map)
         _stamp_side_by_side_layout(
-            ssir, args.output_dir / "parts", middle_json=getattr(args, "side_by_side_middle", None)
+            ssir, args.output_dir / "parts",
+            middle_json=getattr(args, "side_by_side_middle", None), layout=layout,
         )
     return ssir
 
 
-def _stamp_example_styles(ssir_path: Path, source_pdf: Path) -> None:
+def _stamp_example_styles(ssir_path: Path, layout: dict[str, Any]) -> None:
     """Detect the original example-box style and record it on SSIR example nodes
     (GBT-B11 示例线框：frame=黑色细实线框 / shaded=浅色背景，两种模式都要保留，
     渲染与原文一致).
 
-    检测依据是源 PDF 的矢量几何：大尺寸描边矩形 → frame；大尺寸填充矩形 → shaded。
-    扫描型 PDF（页面是位图、无矢量框线）检测不到，节点不带 exampleStyle，
-    渲染时回退到渲染 profile 的 examples.style 默认值。
+    检测依据是**源 PDF 的矢量几何读数**——抽取阶段写进 ``layout.json.frames``
+    （大尺寸描边矩形 / 大尺寸填充矩形）；本函数只做**风格判定**（stroke ≥ fill → frame），
+    不再打开源 PDF（docs/16 §3「通道不改判据」）。扫描型 PDF（页面是位图、无矢量框线）
+    检测不到，节点不带 exampleStyle，渲染时回退到渲染 profile 的 examples.style 默认值。
     """
-    try:
-        import fitz  # type: ignore
-    except Exception:
-        return
-    stroke_rects = 0
-    fill_rects = 0
-    try:
-        with fitz.open(source_pdf) as document:
-            for page in document:
-                for drawing in page.get_drawings():
-                    rect = drawing["rect"]
-                    if rect.width < 80 or rect.height < 30:
-                        continue
-                    if drawing.get("fill"):
-                        fill_rects += 1
-                    elif drawing.get("stroke"):
-                        stroke_rects += 1
-    except Exception:
-        return
+    frames = [item for item in (layout.get("frames") or []) if isinstance(item, dict)]
+    stroke_rects = sum(1 for item in frames if item.get("style") == "frame")
+    fill_rects = sum(1 for item in frames if item.get("style") == "shaded")
     if not (stroke_rects or fill_rects):
-        return  # 无矢量几何（扫描型）→ 保留 profile 默认
+        return  # 无读数（扫描型 / 通道缺失）→ 保留 profile 默认，不猜
     style = "frame" if stroke_rects >= fill_rects else "shaded"
     try:
         data = json.loads(ssir_path.read_text(encoding="utf-8"))
@@ -975,10 +1018,10 @@ def _stamp_example_styles(ssir_path: Path, source_pdf: Path) -> None:
 
     visit(data.get("structuralRoot", {}).get("children", []) or [])
     ssir_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    _log(f"Example style detected from source PDF: {style} (stroke={stroke_rects}, fill={fill_rects})")
+    _log(f"Example style detected from the layout channel: {style} (stroke={stroke_rects}, fill={fill_rects})")
 
 
-def _stamp_figure_source_sizes(ssir_path: Path, source_pdf: Path) -> None:
+def _stamp_figure_source_sizes(ssir_path: Path, layout: dict[str, Any]) -> None:
     """Record each figure's original layout size (pt) from the source PDF.
 
     MinerU 裁剪图常以高于原版的像素密度导出（GB_T_23132-2024 实测约 2.1-3x），
@@ -1015,7 +1058,6 @@ def _stamp_figure_source_sizes(ssir_path: Path, source_pdf: Path) -> None:
     """
     _trim_figure_caption_bands(ssir_path)
     try:
-        import fitz  # type: ignore
         from PIL import Image as PILImage  # type: ignore
     except Exception:
         return
@@ -1026,20 +1068,19 @@ def _stamp_figure_source_sizes(ssir_path: Path, source_pdf: Path) -> None:
     figures = data.get("figures") or []
     if not figures:
         return
-    try:
-        with fitz.open(source_pdf) as document:
-            # (rw, rh, page_index)；第 1 页（封面）的徽标/装饰小图
-            # （高 < 100pt）不参与匹配——封面徽标由 config/emblems/ 独立处理，
-            # 非内容图；宽高比接近的内容图误配到徽标矩形会得到错误尺寸。
-            rects: list[tuple[float, float, int]] = []
-            for page_index, page in enumerate(document):
-                for info in page.get_image_info():
-                    r = info["bbox"]
-                    rw, rh = r[2] - r[0], r[3] - r[1]
-                    if rw >= 10 and rh >= 10 and not (page_index == 0 and rh < 100):
-                        rects.append((rw, rh, page_index))
-    except Exception:
-        return
+    # 图候选矩形来自抽取阶段的读数（``layout.json.imageRects``，docs/16 §3）：
+    # (rw, rh, page_index)。第 1 页（封面）的徽标/装饰小图（高 < 100pt）已在通道侧
+    # 排除——封面徽标由 config/emblems/ 独立处理，非内容图；宽高比接近的内容图误配到
+    # 徽标矩形会得到错误尺寸。匹配判据（宽高比/密度贪心）与密度回退不变。
+    rects: list[tuple[float, float, int]] = [
+        (
+            float(item["bbox"][2]) - float(item["bbox"][0]),
+            float(item["bbox"][3]) - float(item["bbox"][1]),
+            int(item.get("page") or 1) - 1,
+        )
+        for item in (layout.get("imageRects") or [])
+        if isinstance(item, dict) and item.get("bbox")
+    ]
     if not rects:
         return
 
@@ -1141,7 +1182,7 @@ def _stamp_figure_source_sizes(ssir_path: Path, source_pdf: Path) -> None:
         stamped += 1
     if stamped:
         ssir_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        _log(f"Figure source sizes stamped from source PDF: {stamped}/{len(candidates)} images (density={density and round(density, 2)} px/pt)")
+        _log(f"Figure source sizes stamped from the layout channel: {stamped}/{len(candidates)} images (density={density and round(density, 2)} px/pt)")
 
 
 def _stamp_figure_source_sizes_from_map(ssir_path: Path, size_map: dict[str, tuple[float, float]]) -> None:
@@ -1273,7 +1314,8 @@ def _resolve_asset_ref(ssir_path: Path, ref: str) -> Path | None:
 
 
 # 并列版面几何识别的通用参数（GEN-095）：只用版心比例与行高，不依赖具体文档。
-_PART_PAGE_RANGE_RE = re.compile(r"pages-(\d+)-(\d+)")
+# 分片页范围正则与公式匹配键 ``_latex_key`` 的单一来源在 ``leleby_ssir.layout``
+# （抽取/构建两侧共用；docs/16 §3 通道不改判据）。
 
 
 _EXAMPLE_CAPTION_RE = re.compile(r"^示例\s*\d*\s*[:：]")
@@ -1289,15 +1331,6 @@ _MAX_SIDE_COLUMNS = 3      # 并列列数上限（4+ 并排的罕见版面不猜
 
 
 _REGION_GAP_LINES = 1.5    # 相邻块垂距 > 1.5×行高 → 另起并列区
-
-
-def _latex_key(latex: str) -> str:
-    """公式匹配键：去掉全部空白。
-
-    两条抽取路线的同一公式在分词/空格上不同（本地 ``v = 3.6 \\times \\frac{l}{t}``、
-    云端 ``v = 3. 6 \\times \\frac {l}{t}``），按空白归一后才是同一个键。
-    """
-    return re.sub(r"\s+", "", latex or "")
 
 
 # 并列版式匹配用的标点折叠表（GEN-095）：MinerU 的行内 span 常把全角标点写成半角
@@ -1327,32 +1360,43 @@ def _fold_match_text(text: str) -> str:
     return re.sub(r"[—–]+", "—", text)
 
 
-def _side_by_side_sources(parts_dir: Path, middle_json: Path | None = None) -> list[Path]:
-    """并列版面识别用的 ``*_middle.json`` 清单（两条来源合并，按路径去重）。
+def _side_by_side_sources(parts_dir: Path | None, middle_json: Path | None = None) -> list[Path]:
+    """（保留名）并列识别几何来源清单——实现见 ``layout.middle_geometry_sources``。
 
-    两条来源是**同一套版面几何的两种分片形态**，合并使用让两侧锚点都能参与匹配：
-
-    - 整份文档的 ``middle.json``（raw 起点路线：云端/Pipeline 的抽取产物本身就是这份数据，
-      ``page_idx`` 是 0 基绝对页号 → ``_absolute_page`` 落回 ``page_idx + 1``）；
-    - 分片目录 ``parts/``（merge 起点路线：每个分片一个 middle.json，绝对页号从目录名
-      ``pages-037-054`` 取起始页）。
-
-    合并稿这类「文本来自一侧、公式来自另一侧」的文档，两边的资产名/LaTeX 各有一部分命中，
-    只取一侧会丢掉另一半锚点；重复的锚点由内容级去重（``assigned``）挡住。
+    规则对应: docs/16 §3（并列版面的几何来源保持 middle.json 通道，并登记进
+    ``layout.json.columns``；读数由 ``leleby_ssir.layout`` 单一来源提供）。
     """
-    sources: list[Path] = []
-    if middle_json is not None and Path(middle_json).is_file():
-        sources.append(Path(middle_json))
-    if parts_dir.is_dir():
-        sources.extend(sorted(Path(parts_dir).rglob("*_middle.json")))
-    unique: dict[str, Path] = {}
-    for path in sources:
-        unique.setdefault(str(path.resolve()), path)
-    return list(unique.values())
+    return middle_geometry_sources(parts_dir, middle_json)
+
+
+def _geometry_pages_from_layout(layout: dict[str, Any] | None) -> dict[int, list[dict[str, Any]]] | None:
+    """``layout.json`` 的 ``columns`` 通道 → ``{绝对页号: [块]}``。
+
+    通道存在即用它（构建端只读 canonical + layout.json，docs/16 §1/§3）；不存在返回
+    ``None``，调用方回退到 ``parts/*_middle.json`` 通道（§3 明确保留该通道）。通道条目
+    里没有 bbox 的块直接丢掉——不猜、不补。
+    """
+    entries = (layout or {}).get("columns")
+    if not isinstance(entries, list) or not entries:
+        return None
+    pages: dict[int, list[dict[str, Any]]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        blocks = [b for b in entry.get("blocks") or [] if isinstance(b, dict) and b.get("bbox")]
+        if not blocks:
+            continue
+        try:
+            page = int(entry.get("page") or 0)
+        except (TypeError, ValueError):
+            continue
+        pages[page] = blocks
+    return pages or None
 
 
 def _stamp_side_by_side_layout(
-    ssir_path: Path, parts_dir: Path, *, middle_json: Path | None = None
+    ssir_path: Path, parts_dir: Path | None = None, *, middle_json: Path | None = None,
+    layout: dict[str, Any] | None = None,
 ) -> None:
     """Detect side-by-side (parallel) layout from MinerU geometry and mark it so the
     renderer lays the members out on one row (无边框定位容器，等价 HTML div 布局)。
@@ -1363,9 +1407,10 @@ def _stamp_side_by_side_layout(
 
     - 页键用**绝对页号**（分片目录 pages-037-054 → 起始页 37）：MinerU 分片的
       page_idx 各自从 0 起，旧实现按相对页号聚合会把不同分片的同号页混在一起；
-    - 几何来源（见 ``_side_by_side_sources``）：``parts/`` 分片目录（merge 起点）与整份文档的
-      ``middle.json``（``middle_json=``，raw 起点——云端识别产物就是这份数据）**合并**使用，
-      两侧的资产名/LaTeX 锚点都能参与匹配；
+    - 几何来源（docs/16 §3）：优先 ``layout.json`` 的 ``columns`` 通道（抽取阶段从
+      ``parts/`` 分片与整份 ``middle.json`` 读出的块几何）；该通道缺失时回退到
+      ``parts/*_middle.json``（``middle_json=`` 供 raw 起点传入整份 middle.json）——
+      两条来源合并使用，两侧的资产名/LaTeX 锚点都能参与匹配；
     - 通栏块、`示例N：` 题注块、垂距 > 1.5×行高处切分为独立「并列区」，防止把
       同页多处并列/题注混进同一组；
     - 区内先按 x 中心对**锚点块**（图/公式）做 1D 聚类得到列（≥2 列、≤3 列），
@@ -1381,75 +1426,12 @@ def _stamp_side_by_side_layout(
         data = json.loads(ssir_path.read_text(encoding="utf-8"))
     except Exception:
         return
-    middle_files = _side_by_side_sources(parts_dir, middle_json)
-    if not middle_files:
-        return
-
-    def _absolute_page(middle_path: Path, page_idx: int) -> int:
-        for parent in middle_path.parents:
-            match = _PART_PAGE_RANGE_RE.fullmatch(parent.name)
-            if match:
-                return int(match.group(1)) + int(page_idx)
-        return int(page_idx) + 1
-
-    def _block_lines(block: dict) -> list[dict]:
-        # image 块的 span 在 blocks[*].lines[*]，text/interline_equation 块直接在
-        # lines[*]（MinerU pipeline 后端的两种层级都要取）。
-        lines: list[dict] = []
-        for sub in block.get("blocks") or []:
-            lines.extend(sub.get("lines") or [])
-        lines.extend(block.get("lines") or [])
-        return lines
-
-    pages: dict[int, list[dict]] = {}
-    for middle in middle_files:
-        try:
-            raw = json.loads(middle.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        for info in raw.get("pdf_info") or []:
-            page_idx = info.get("page_idx")
-            if page_idx is None:
-                continue
-            page_no = _absolute_page(middle, page_idx)
-            blocks = pages.setdefault(page_no, [])
-            for block in info.get("preproc_blocks") or []:
-                bbox = block.get("bbox")
-                if not bbox or len(bbox) != 4:
-                    continue
-                text_parts: list[str] = []
-                spans: list[tuple[str, float, float, float, float]] = []
-                asset: str | None = None
-                latex: str | None = None
-                for line in _block_lines(block):
-                    for span in line.get("spans") or []:
-                        span_type = span.get("type")
-                        span_bbox = span.get("bbox")
-                        if span_type in ("image", "interline_equation") and span.get("image_path"):
-                            asset = Path(str(span["image_path"])).name
-                            # 公式锚点两种形态并存：本地路线用裁剪图资产、云端路线只有
-                            # LaTeX（SSIR 公式节点也只有 latex）——两个键都记，匹配时资产优先。
-                            if span_type == "interline_equation" and span.get("content"):
-                                latex = _latex_key(str(span["content"]))
-                        elif span_type == "interline_equation" and span.get("content"):
-                            latex = _latex_key(str(span["content"]))
-                        elif span_type in ("text", "inline_equation") and span.get("content"):
-                            # 行内公式 span 必须并入块文本：变量解释行「$t_i$——…」的
-                            # 变量在 inline_equation span 里，只取 text span 会丢掉它
-                            # → 与 SSIR 文本（含变量）精确匹配落空（示例5）。
-                            content = str(span["content"])
-                            text_parts.append(content)
-                            if span_bbox and len(span_bbox) == 4:
-                                spans.append((content.strip(), float(span_bbox[0]), float(span_bbox[1]),
-                                              float(span_bbox[2]), float(span_bbox[3])))
-                blocks.append({
-                    "type": block.get("type"),
-                    "bbox": [float(value) for value in bbox],
-                    "text": "".join(text_parts).strip(),
-                    "asset": asset,
-                    "latex": latex,
-                    "spans": spans,
-                })
+    pages = _geometry_pages_from_layout(layout)
+    if pages is None:
+        middle_files = _side_by_side_sources(parts_dir, middle_json)
+        if not middle_files:
+            return
+        pages = parse_middle_geometry(middle_files)
     if not pages:
         return
 
@@ -1700,24 +1682,36 @@ def _stamp_side_by_side_layout(
 
 def _post_parse_verify_render(args: argparse.Namespace, state: dict[str, Any],
                               paths: dict[str, Path], ssir: Path | None) -> None:
-    """parse 之后公共尾部：render（PDF）→ manifest；roundtrip 仅当调用方显式要求时执行。
+    """parse 之后公共尾部：render.md 投影 + render（PDF）→ manifest。
 
-    名称保留（调用方与测试沿用），但**验证已独立**：回环验证与 PDF 对比由
-    ``tools/verify_conversion.py`` 按需单独运行，构建流程默认不做任何验证
-    （``args.roundtrip`` 为 False，``compare`` 不再在此调用）。
+    回环验证（canonical↔SSIR↔render.md↔verify）已于 2026-09-22 **永久下线**（用户裁定）：
+    引擎侧 `roundtrip.py`、`ssir csm roundtrip`、`05_verify/*.roundtrip.json` 全部移除；
+    render.md 改为 SSIR 的标准 markdown 投影，不再承担往返中转。构建流程不做任何验证，
+    PDF 对比由 ``tools/verify_conversion.py`` 按需单独运行。
     """
-    if args.roundtrip and ssir:
-        roundtrip = [
-            str(Path(sys.prefix) / "bin" / "ssir"), "csm", "roundtrip",
-            "--input", str(paths["canonical"]), "--render-md-output", str(paths["render_md"]),
-            "--verify-output", str(paths["verify"]), "--report", str(paths["roundtrip"]),
-        ]
-        _log("Running SSIR round-trip verification (canonical -> SSIR -> render.md -> verify)")
-        result = subprocess.run(roundtrip, cwd=ROOT)
-        if result.returncode not in (0, 3):
-            raise RuntimeError("SSIR round-trip verification failed")
-        _log(f"Round-trip result: {result.returncode} (0 = equivalent; 3 = critical information loss)")
     if args.render and ssir:
+        # render.md = SSIR 的**标准 markdown 投影**（2026-09-22 裁定）：零 `<!-- ssir:… -->`
+        # 指令、零 HTML 注释、无 front matter；不再由回环产生，构建流程内直接投影。
+        from .csm_renderer import asset_base_for, render_csm
+        from .html_renderer import render_html
+
+        document = json.loads(paths["ssir"].read_text(encoding="utf-8"))
+        paths["render_md"].parent.mkdir(parents=True, exist_ok=True)
+        # 资产引用相对**产物所在目录**解析（GEN-127）：产物在 04_render/ 下，补 "../" 前缀。
+        paths["render_md"].write_text(
+            render_csm(document, asset_base=asset_base_for(paths["render_md"], args.output_dir)),
+            encoding="utf-8",
+            newline="\n",
+        )
+        _log(f"Markdown projection written: {paths['render_md'].relative_to(args.output_dir)}")
+        # render.html = 同一 SSIR 的**结构投影**（GEN-130，2026-09-23 用户裁定 C 方案）：
+        # markdown 表达不了示例框线/并列分栏/合并单元格，HTML 补上这一层结构。
+        paths["render_html"].write_text(
+            render_html(document, asset_base=asset_base_for(paths["render_html"], args.output_dir)),
+            encoding="utf-8",
+            newline="\n",
+        )
+        _log(f"HTML projection written: {paths['render_html'].relative_to(args.output_dir)}")
         render = [
             str(Path(sys.prefix) / "bin" / "ssir"), "pdf", "render",
             "--input", str(paths["ssir"]), "--output", str(paths["render_pdf"]),
@@ -1858,7 +1852,74 @@ def _cluster_visual_lines(spans: list[dict], tolerance: float = 5.0) -> list[lis
     return lines
 
 
-def _recover_table_note_markers(markdown: str, pdf: Path) -> tuple[str, int]:
+def _pdf_page_spans(
+    layout: dict[str, Any] | None, pdf: Path | None
+) -> tuple[dict[int, list[dict[str, Any]]], dict[int, float]]:
+    """逐页 span（``{text, size, bbox, origin}``，页序号 0 基）与页高。
+
+    规则对应: CSM-OCR-014（条文脚注回收）/ CSM-OCR-015（表角标回收）的输入读数——见
+    docs/16 §3：抽取阶段读源 PDF 后落进 ``layout.json`` 的 ``textSpans``/``pages`` 通道，
+    消费端只读通道。通道缺失（raw 起点 / 半程产物）时回退到直接读源 PDF（抽取阶段仍
+    允许读源 PDF）。**判定不在这里**：上标阈值、标记成对、锚文本唯一性留在调用方。
+    """
+    channel = (layout or {}).get("textSpans")
+    if isinstance(channel, list) and channel:
+        by_page: dict[int, list[dict[str, Any]]] = {}
+        for item in channel:
+            if not isinstance(item, dict):
+                continue
+            try:
+                page = int(item.get("page") or 0) - 1  # 通道 1 基 → 消费端 0 基
+            except (TypeError, ValueError):
+                continue
+            bbox = [float(value) for value in (item.get("bbox") or [0.0, 0.0, 0.0, 0.0])]
+            origin = item.get("origin")
+            by_page.setdefault(page, []).append(
+                {
+                    "text": str(item.get("text") or ""),
+                    "size": float(item.get("size") or 0.0),
+                    "bbox": bbox,
+                    "origin": (
+                        [float(value) for value in origin] if isinstance(origin, list) and len(origin) == 2
+                        else [bbox[0], bbox[1]]
+                    ),
+                }
+            )
+        heights: dict[int, float] = {}
+        for item in (layout or {}).get("pages") or []:
+            if not isinstance(item, dict):
+                continue
+            try:
+                heights[int(item.get("page") or 0) - 1] = float(item.get("height") or 0.0)
+            except (TypeError, ValueError):
+                continue
+        return by_page, heights
+    if pdf is None or not Path(pdf).is_file():
+        return {}, {}
+    try:
+        import pymupdf  # type: ignore
+    except ImportError:
+        return {}, {}
+    by_page_spans: dict[int, list[dict[str, Any]]] = {}
+    page_heights: dict[int, float] = {}
+    try:
+        with pymupdf.open(pdf) as document:
+            for page_index in range(len(document)):
+                page = document[page_index]
+                page_heights[page_index] = float(page.rect.height)
+                for block in page.get_text("dict")["blocks"]:
+                    for line in block.get("lines", []):
+                        for span in line["spans"]:
+                            if span["text"].strip():
+                                by_page_spans.setdefault(page_index, []).append(span)
+    except Exception:
+        return {}, {}
+    return by_page_spans, page_heights
+
+
+def _recover_table_note_markers(
+    markdown: str, pdf: Path | None = None, *, layout: dict[str, Any] | None = None
+) -> tuple[str, int]:
     """Recover trailing table-note superscript letters lost by OCR (CSM-OCR-015).
 
     现象（GB_T_20001.10-2014 表1）：源 PDF 表头第 3 列“要素所允许的表述形式”末尾
@@ -1886,11 +1947,8 @@ def _recover_table_note_markers(markdown: str, pdf: Path) -> tuple[str, int]:
     执行侧工程规则，与 GFM 脚注回收 CSM-OCR-014 同族；渲染端按显式标记还原
     上角标（pdf_renderer._table_cell_superscripts）。
     """
-    try:
-        import pymupdf
-    except ImportError:
-        return markdown, 0
-    if not pdf.is_file():
+    span_pages, _page_heights = _pdf_page_spans(layout, pdf)
+    if not span_pages:
         return markdown, 0
 
     # —— 1) md 表格行分组（连续管道行），并取各组的表注定义行字母 ——
@@ -1936,14 +1994,9 @@ def _recover_table_note_markers(markdown: str, pdf: Path) -> tuple[str, int]:
     #         行首（其前无紧邻正文 span）的上标小写字母 → 表注定义行的 (字母, 注文头) ——
     candidates: list[tuple[str, str]] = []
     note_defs: list[tuple[str, str]] = []
-    with pymupdf.open(pdf) as document:
-        for page in document:
-            spans: list[dict] = []
-            for block in page.get_text("dict")["blocks"]:
-                for line in block.get("lines", []):
-                    for span in line["spans"]:
-                        if span["text"].strip():
-                            spans.append(span)
+    # 逐页 span 来自 layout.json 的 textSpans 通道（回退：源 PDF）——判定不变。
+    for _page_index, spans in sorted(span_pages.items()):
+        if True:
             if not spans:
                 continue
             sizes = sorted(s["size"] for s in spans)
@@ -2129,7 +2182,9 @@ def _insert_table_cell_marker_at(line: str, cell_index: int, letter: str, offset
     return line[:insert_at] + f"$^{{{letter}}}$" + line[insert_at:]
 
 
-def _recover_pdf_footnotes(md_path: Path, pdf: Path) -> int:
+def _recover_pdf_footnotes(
+    md_path: Path, pdf: Path | None = None, *, layout: dict[str, Any] | None = None
+) -> int:
     """从源 PDF 文本层回收上标脚注并写入 markdown 基线（GFM 语法，CSM-OCR-014）。
 
     MinerU 文本抽取把上标标记与正文粘连（“—2003”+1)→“—20031”；“单独的标准”+2)→
@@ -2142,24 +2197,18 @@ def _recover_pdf_footnotes(md_path: Path, pdf: Path) -> int:
     幂等/自愈：已有 “[^N]: ” 定义的条目跳过；已有 “[^N]” 标记而缺定义（半途产物）
     时只补定义不改正文。只处理阿拉伯数字上标（条文脚注 GBT-X04）。返回处理条数。
     """
-    try:
-        import fitz  # type: ignore
-    except ImportError:
-        return 0
     import re as _re
+    span_pages, page_heights = _pdf_page_spans(layout, pdf)
+    if not span_pages:
+        return 0
     text = md_path.read_text(encoding="utf-8")
     markers: list[tuple[int, str, int, float]] = []  # (页, 原标记, y, x0)
     notes: list[tuple[int, str, str]] = []  # (页, 原标记, 定义文本)
-    with fitz.open(pdf) as document:
-        for page_index in range(len(document)):
-            page = document[page_index]
-            height = page.rect.height
-            spans: list[dict] = []
-            for block in page.get_text("dict")["blocks"]:
-                for line in block.get("lines", []):
-                    for span in line["spans"]:
-                        if span["text"].strip():
-                            spans.append(span)
+    # 逐页 span 来自 layout.json 的 textSpans 通道（回退：源 PDF）——判定不变。
+    for _page_index, spans in sorted(span_pages.items()):
+        if True:
+            page_index = _page_index
+            height = page_heights.get(page_index) or 0.0
             sizes = sorted(s["size"] for s in spans)
             body_median = sizes[len(sizes) // 2] if sizes else 10.0
             sup_threshold = min(body_median * 0.72, 7.8)
@@ -2222,7 +2271,7 @@ def _recover_pdf_footnotes(md_path: Path, pdf: Path) -> int:
     new_text = text
     defs: list[tuple[str, str, str]] = []  # (原标记, label, 定义)
     replaced = 0
-    with fitz.open(pdf) as document:
+    if True:  # 页内正文 span 同样取自通道（不再打开源 PDF）
         for order, (page_index, token, my, mx) in enumerate(markers, start=1):
             label = str(order)
             digits = token[:-1]
@@ -2234,13 +2283,7 @@ def _recover_pdf_footnotes(md_path: Path, pdf: Path) -> int:
                 replaced += 1
             if any_marker or f"[foot:{label}]" in new_text:
                 continue
-            page_obj = document[page_index]
-            norm = []
-            for block in page_obj.get_text("dict")["blocks"]:
-                for line in block.get("lines", []):
-                    for span in line["spans"]:
-                        if span["text"].strip() and span["size"] > 7.8:
-                            norm.append(span)
+            norm = [s for s in span_pages.get(page_index, []) if float(s.get("size") or 0.0) > 7.8]
             left = [s for s in norm if abs(s["bbox"][1] - my) <= 6 and s["bbox"][2] <= mx + 1]
             if not left:
                 continue
@@ -2335,14 +2378,14 @@ def _run_from_existing_canonical(args: argparse.Namespace, state: dict[str, Any]
 
     跳过 MinerU OCR/PDF 抽取、合并与 normalize——绝不覆盖人工编辑的 canonical
     （AGENTS.md §0.1/§2），从 parse 开始执行与 tools/reprocess_canonical.py
-    完全等同的后续阶段：parse -> SSIR →（PDF 源）版面印记恢复 → roundtrip →
-    render（PDF）→ compare → manifest。
+    完全等同的后续阶段：parse -> SSIR →（PDF 源）版面印记恢复 → render（PDF）→
+    render.md 投影 → manifest。
     规则对应：build=GEN-050/052；verify=GEN-051/090/091 + 三层合规；
     render=GEN-070—076；版面印记恢复沿用 finalize 的 stamp 逻辑。
     """
     stem = args.output_stem or args.input.stem
     paths = _stage_paths(args.output_dir, stem)
-    for stage_path in (paths["ssir"], paths["render_pdf"], paths["render_md"], paths["verify"]):
+    for stage_path in (paths["ssir"], paths["render_pdf"], paths["render_md"]):
         stage_path.parent.mkdir(parents=True, exist_ok=True)
     # provenance 保留：pipeline-state 可能缺 title/number/sha，回退旧 manifest
     old_manifest = _load_json(args.output_dir / "manifest.json", {})
@@ -2371,17 +2414,23 @@ def _run_from_existing_canonical(args: argparse.Namespace, state: dict[str, Any]
 
     # PDF 源才有的版面印记恢复（示例框样式/图源尺寸/并列版面，读源 PDF 与 parts 几何）
     side_by_side_middle = getattr(args, "side_by_side_middle", None)
-    if args.input_kind == "pdf" and args.input.is_file():
-        _stamp_example_styles(paths["ssir"], args.input)
-        _stamp_figure_source_sizes(paths["ssir"], args.input)
-        _stamp_side_by_side_layout(paths["ssir"], args.output_dir / "parts", middle_json=side_by_side_middle)
+    layout = load_stage_layout(args, state)
+    if layout:
+        # 版面几何印记只读 01_extract/<stem>.layout.json（抽取阶段产出）。
+        _stamp_example_styles(paths["ssir"], layout)
+        _stamp_figure_source_sizes(paths["ssir"], layout)
+        _stamp_side_by_side_layout(
+            paths["ssir"], args.output_dir / "parts", middle_json=side_by_side_middle, layout=layout,
+        )
     elif getattr(args, "figure_size_map", None):
         # raw 起点：图源尺寸取 middle.json 图块 bbox（GEN-098 第二来源）。
         _stamp_figure_source_sizes_from_map(paths["ssir"], args.figure_size_map)
-        _stamp_side_by_side_layout(paths["ssir"], args.output_dir / "parts", middle_json=side_by_side_middle)
+        _stamp_side_by_side_layout(
+            paths["ssir"], args.output_dir / "parts", middle_json=side_by_side_middle, layout=layout,
+        )
     else:
-        _log("No source PDF present; skipping PDF-geometry stamps (example style / figure sizes / side-by-side)")
+        _log("No layout.json present; skipping layout stamps (example style / figure sizes / side-by-side)")
 
-    # 公共尾部：roundtrip -> render（PDF）-> compare -> manifest
+    # 公共尾部：render（PDF）+ render.md 投影 -> manifest
     _post_parse_verify_render(args, state, paths, paths["ssir"])
     return 0

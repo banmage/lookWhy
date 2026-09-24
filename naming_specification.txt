@@ -35,8 +35,7 @@
 | 旧名称 | 新名称 | 新后缀 | 说明 |
 |--------|--------|--------|------|
 | SSIR1          | SSIR       | `.ssir.json` | 首次解析得到的结构化语义 |
-| SSIR2          | Verify     | `.verify.json` | 从渲染结果再解析得到的 SSIR（回环验证输入） |
-| roundtrip-report | Roundtrip | `.roundtrip.json` | 比较报告 |
+| verify-report  | Verify     | `.verify.json` | parse 合规/质量报告（独立验证程序产物） |
 | conversion-report（normalize） | Normalize Report | `.normalize-report.json` | 规范化报告 |
 | conversion-report（parse）    | Parse Report     | `.parse-report.json`     | 解析报告 |
 | extraction-report | Extract Report | `.extract-report.json` | 抽取报告 |
@@ -96,20 +95,20 @@
 
 | 表示（representation） | 扩展名 | 阶段目录 | 说明 |
 |------------------------|--------|----------|------|
-| `source`           | `.pdf` / `.docx` / `.rtf` / `.txt` / `.md` | `00_source` | 用户上传的原始文件（永不修改），附 `<ID>.checksum.sha256` |
-| `raw`              | `.md`  | `01_extract` | 原始未加工 Markdown（MinerU 合并后）；docx 输入时为 docx 导入生成的 canonical 级 CSM |
+| `source`           | `.pdf` | `00_source` | 用户上传的原始文件（永不修改），附 `<ID>.checksum.sha256`；Word 输入已永久放弃 |
+| `raw`              | `.md` / `.json` | `01_extract` | 原始未加工 Markdown（MinerU 合并后）与 MinerU middle.json |
 | `extract-report`   | `.json` | `01_extract` | 抽取报告（后端、页数、警告） |
 | `provenance`       | `.json` | `01_extract` | 来源 sidecar（源文件、SHA-256、分块锚点） |
+| `layout`           | `.json` | `01_extract` | 版面/结构附加信息（源 PDF 文本层行、框线/图矩形、页尺寸、逐页 span、MinerU 块几何）；**抽取阶段唯一读源 PDF 的落点**，下游只读它 |
 | `canonical`        | `.md`  | `02_canonical` | 经安全纠错后的权威 CSM（唯一人工可编辑版本） |
 | `normalize-report` | `.json` | `02_canonical` | 纠错报告 |
 | `ssir`             | `.json` | `03_ssir` | 从 canonical 解析得到的 SSIR 主文件 |
 | `semantic`         | `.ttl` / `.jsonld` | `03_ssir` | 从 SSIR 导出的知识图谱/本体（可选，`--format ttl`） |
 | `parse-report`     | `.json` | `03_ssir` | 解析报告 |
-| `render`           | `.pdf`（发布版）/ `.md`（中间渲染 CSM）/ `.docx`（doc_1，同 SSIR 渲染、与 PDF 技术内容等价） | `04_render` | 从 SSIR 渲染的输出；`.render.md` 是回环验证输入 |
+| `render`           | `.pdf`（发布版）/ `.md`（SSIR 的标准 markdown 投影）/ `.html`（同一 SSIR 的结构投影，承载 markdown 子集表达不了的框线/分栏/合并） | `04_render` | 从 SSIR 渲染的输出；`.render.md` 为纯 GFM、与 PDF 内容等价，不再参与任何往返；`.render.html` 与 `.render.md` 同源同判据（GEN-130） |
 | `render-report`    | `.json` | `04_render` | 渲染报告 |
 | `render-comparison` | `.json` | `04_render` | 原稿与渲染 PDF 的页数/文本量对比 |
-| `verify`           | `.json` | `05_verify` | 从 `render.md` 再解析得到的 SSIR（回环验证输入） |
-| `roundtrip`        | `.json` | `05_verify` | 比较 `ssir.json` 与 `verify.json` 的报告 |
+| `verify`           | `.json` | `05_verify` | parse 合规/质量报告（由 `tools/verify_conversion.py` 写；构建流程不写） |
 | `diff`             | `.json` | `05_verify` | 详细差异（可选） |
 
 **示例**：
@@ -120,8 +119,8 @@ GB_T_15034-2012.ssir.json
 GB_T_15034-2012.semantic.ttl
 GB_T_15034-2012.render.pdf
 GB_T_15034-2012.render.md
+GB_T_15034-2012.render.html
 GB_T_15034-2012.verify.json
-GB_T_15034-2012.roundtrip.json
 ```
 
 ---
@@ -160,6 +159,7 @@ out/mineru/{input}/                # 文档根（docroot）；--output-dir 可�
 │   ├── {STANDARD_ID}.raw.md
 │   ├── {STANDARD_ID}.extract-report.json
 │   ├── {STANDARD_ID}.provenance.json
+│   ├── {STANDARD_ID}.layout.json  # 版面/结构附加信息（--stage layout 产出；下游只读它，不再读源 PDF）
 │   └── parts/                     # MinerU 分块输出（可恢复）
 ├── 02_canonical/                  # 权威 CSM（人工可编辑）
 │   ├── {STANDARD_ID}.canonical.md
@@ -170,26 +170,21 @@ out/mineru/{input}/                # 文档根（docroot）；--output-dir 可�
 │   └── {STANDARD_ID}.parse-report.json
 ├── 04_render/                     # 渲染产物
 │   ├── {STANDARD_ID}.render.pdf
-│   ├── {STANDARD_ID}.render.docx  # doc_1：同一 SSIR 的 Word 渲染（与 PDF 技术内容等价）
-│   ├── {STANDARD_ID}.render.md     # 中间渲染 CSM（回环验证输入）
+│   ├── {STANDARD_ID}.render.md     # SSIR 的标准 markdown 投影（纯 GFM，与 PDF 内容等价）
+│   ├── {STANDARD_ID}.render.html   # 同一 SSIR 的结构投影（框线/并列分栏/合并单元格等 md 子集表达不了的形态）
 │   ├── {STANDARD_ID}.render-report.json
 │   └── {STANDARD_ID}.render-comparison.json
-├── 05_verify/                     # 回环验证
-│   ├── {STANDARD_ID}.verify.json
-│   └── {STANDARD_ID}.roundtrip.json
+├── 05_verify/                     # 验证报告（独立验证程序写；构建流程不写）
+│   └── {STANDARD_ID}.verify.json
 └── assets/                        # 文档资源库（见第 5 节）
     └── images/
 ```
 
 > **重要**：`02_canonical` 是唯一需要人工干预的文件；其余阶段均由工具自动生成。
 
-> **docx 输入闭环（2026-09）**：`04_render/{ID}.render.docx`（doc_1）放回
-> `corpus/golden/{ID}.docx` 后，流水线默认 **docx/doc 优先**输入（未找到再回退
-> PDF 做 MinerU 识别），从零重建整套阶段目录：`00_source/{ID}.source.docx` +
-> 校验和 → `01_extract/{ID}.raw.md`（docx 导入生成的 canonical 级 CSM，位图落
-> 文档根 `assets/images/`）→ normalize → parse → roundtrip → render（PDF +
-> doc_1 docx）。文件名带 `.render.docx`（如 `{ID}.render.docx`）时自动剥去
-> `.render` representation token。详见 `src/leleby_ssir/docx_importer.py`。
+> **输入只支持 PDF（2026-09-22 裁定）**：Word（docx/doc）输入与 `.render.docx`
+> 产物**永久放弃**，相关导入/渲染代码与产物已删除；抽取统一走 MinerU
+> （`00_source/{ID}.source.pdf` → `01_extract/{ID}.raw.md` + MinerU `middle.json`）。
 
 ### 4.3 多租户目标架构（未来）
 `platform/`（管理员资产：规则、内置标准、本体、模板、徽标）、
@@ -235,10 +230,9 @@ SSIR 中引用资源使用相对路径（从文档根出发）：
     "canonical": "02_canonical/Q_XKBZ_002-2026.canonical.md",
     "ssir": "03_ssir/Q_XKBZ_002-2026.ssir.json",
     "renderMd": "04_render/Q_XKBZ_002-2026.render.md",
+    "renderHtml": "04_render/Q_XKBZ_002-2026.render.html",
     "render": "04_render/Q_XKBZ_002-2026.render.pdf",
-    "renderDocx": "04_render/Q_XKBZ_002-2026.render.docx",
-    "verify": "05_verify/Q_XKBZ_002-2026.verify.json",
-    "roundtrip": "05_verify/Q_XKBZ_002-2026.roundtrip.json"
+    "verify": "05_verify/Q_XKBZ_002-2026.verify.json"
   }
 }
 ```
@@ -252,8 +246,8 @@ SSIR 中引用资源使用相对路径（从文档根出发）：
 ```
 00_source/     → 01_extract/      → 02_canonical/   → 03_ssir/      → 04_render/    → 05_verify/
 .source.pdf    → .raw.md          → .canonical.md   → .ssir.json    → .render.pdf   → .verify.json
-.checksum.sha256 → .provenance.json → .normalize-report → .parse-report → .render-report → .roundtrip.json
-                 → assets/        → (人工编辑)       → .semantic.ttl → .render.md    → (回环比较)
+.checksum.sha256 → .provenance.json → .normalize-report → .parse-report → .render-report   → (验证报告)
+                 → assets/        → (人工编辑)       → .semantic.ttl → .render.md      → (markdown 投影)
                                    → (规范化)                       → .render-comparison
 ```
 
@@ -261,8 +255,10 @@ SSIR 中引用资源使用相对路径（从文档根出发）：
 - **01_extract**：MinerU 分块抽取 → 合并为 `raw.md`，记录版面信息与来源哈希。
 - **02_canonical**：对 raw 执行安全纠错（normalize），生成 `canonical.md`。此文件可人工修改（但应保持机器可解析）。
 - **03_ssir**：解析 `canonical.md` 生成 SSIR JSON 及可选的 TTL。
-- **04_render**：从 SSIR 生成符合 GB/T 1.1 的 PDF 发布版；`.render.md` 是确定性渲染回的 CSM。
-- **05_verify**：从 `render.md` 再解析得到 `verify.json`，与 `ssir.json` 四层比较，输出 `roundtrip.json`。
+- **04_render**：从 SSIR 生成符合 GB/T 1.1 的 PDF 发布版；`.render.md` 是 SSIR 的标准 markdown 投影
+  （与 PDF 内容等价，零指令零 HTML 注释）。
+- **05_verify**：验证报告目录，由独立程序 `tools/verify_conversion.py` 写 `verify.json`
+  （parse 合规/质量报告）；**构建流程不写本目录**（回环验证已永久下线）。
 
 ---
 
@@ -271,7 +267,7 @@ SSIR 中引用资源使用相对路径（从文档根出发）：
 | 命令 | 旗标 |
 |------|------|
 | `csm normalize` | `--canonical-output` |
-| `csm roundtrip` | `--render-md-output`（可选 `--verify-output`） |
+| `csm project` | `--input`（canonical 或 SSIR）、`--output`（标准 markdown 投影） |
 
 报告默认路径（未显式给 `--report` 时）由 `report_path()` 生成：
 `<产物同目录>/<STANDARD_ID>.<表示>.json`，例如
@@ -281,7 +277,7 @@ SSIR 中引用资源使用相对路径（从文档根出发）：
 
 ## 9. 迁移与兼容性（2026-08-26 已执行）
 
-- 代码：`src/leleby_ssir/naming.py` 新增；CLI/service/extractor/roundtrip/renderer/
+- 代码：`src/leleby_ssir/naming.py` 新增；CLI/service/extractor/renderer/
   流水线工具全部切换到新命名；v2.0 旧旗标兼容别名已于 2026-09-06 移除。
 - 流水线工具 `tools/mineru_full_standard.py` 产出改为 4.2 节阶段目录；
   状态文件更名 `mineru-full-standard-state.json` → `pipeline-state.json`
@@ -295,7 +291,7 @@ SSIR 中引用资源使用相对路径（从文档根出发）：
 
 ## 10. 扩展新数据形态
 
-新增表示只需在 `naming.py` 的表示表登记一个单 token 后缀（如 `.html`、`.docx`），
+新增表示只需在 `naming.py` 的表示表登记一个单 token 后缀（如 `.html`），
 不改变目录结构、ID 规则或解析规则。
 
 ---

@@ -34,6 +34,7 @@ from typing import Any
 
 from leleby_ssir.mineru_html import convert_mineru_markup, formula_assets_index, html_table_to_csm
 from leleby_ssir.naming import standard_filename, standard_number_from_text
+from leleby_ssir.process_env import normalize_proxy_environment
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -101,6 +102,9 @@ from leleby_ssir.pipeline import (  # noqa: E402,F401
     _write_json,
     _write_manifest,
     finalize,
+    load_stage_layout,
+    resolve_stage_layout_path,
+    write_stage_layout,
 )
 
 
@@ -112,6 +116,23 @@ def _mineru_command() -> str:
     if found:
         return found
     raise RuntimeError("MinerU is not installed in the active environment. Install mineru first.")
+
+
+def _mineru_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """交给 MinerU 子进程的环境：os.environ 副本 + 代理规整（GEN-132）。
+
+    MinerU 3.x 的 CLI 先起本地 mineru-api 再用 httpx 访问它，httpx 只认
+    http/https/socks5/socks5h 四种代理方案——调用方 shell 里一个 `socks://`
+    （代理工具设「系统代理（SOCKS）」时的写法）会让整次抽取在启动阶段抛
+    ValueError。这里统一规整，并把回环地址写进 NO_PROXY（本地 API 不该走代理）。
+    os.environ 本身不改。
+    """
+    env = dict(os.environ)
+    if extra:
+        env.update(extra)
+    for note in normalize_proxy_environment(env):
+        _log(f"Proxy environment: {note}")
+    return env
 
 
 # 文本层损坏特征（2026-08-31，GB_T_43726-2024 等）：PDF 文本层是"半坏"的——
@@ -463,7 +484,7 @@ def extract(args: argparse.Namespace, state: dict[str, Any]) -> None:
         _log(f"Starting full MinerU pipeline for pages {start + 1}-{end + 1} of {total_pages}")
         _log(f"Persistent part directory: {part_dir}")
         started = time.monotonic()
-        result = subprocess.run(invocation, cwd=ROOT)
+        result = subprocess.run(invocation, cwd=ROOT, env=_mineru_env())
         elapsed = time.monotonic() - started
         if result.returncode:
             state["lastFailure"] = {"start": start, "end": end, "returnCode": result.returncode}
@@ -606,7 +627,7 @@ def _run_hybrid_table_passes(args: argparse.Namespace, state: dict[str, Any]) ->
             "--effort", "medium", "-l", "ch", "-f", "true", "-t", "true",
             "-s", str(start), "-e", str(end),
         ]
-        env = dict(os.environ)
+        env = _mineru_env()
         if getattr(args, "hf_endpoint", None):
             env["HF_ENDPOINT"] = args.hf_endpoint
         env.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
@@ -858,7 +879,9 @@ def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
         recovered_codes.update(_classification_codes(part_dir))
         if start == expected[0]:
             # Cover fields (English title, dates, issuer) come from page 1.
-            cover_meta = _cover_metadata(part_dir, parts_raw[0])
+            # 封面兜底（GEN-016 英文标题 / GEN-014 机构）只读抽取阶段写出的
+            # layout.json ``cover`` 通道（docs/16 §3；通道缺失时函数内部回退源 PDF）。
+            cover_meta = _cover_metadata(part_dir, parts_raw[0], layout=load_stage_layout(args))
             for key, value in cover_meta.items():
                 extra_front_matter.append(f"{key}: {json.dumps(value, ensure_ascii=False)}")
     for key in ("ics", "ccs"):
@@ -904,11 +927,16 @@ def merge(args: argparse.Namespace, state: dict[str, Any]) -> Path:
     lines.extend([body, ""])
     merged_text = "\n".join(lines).rstrip() + "\n"
     # 通用省略号恢复（GEN-092 后验补盲）：OCR 常丢弃纯"……"占位行与表格
-    # 单元格行结构，源 PDF 文本层完整保留——merge 阶段从文本层恢复。
-    merged_text = _restore_ellipsis_lines(merged_text, args.input)
+    # 单元格行结构，源 PDF 文本层完整保留——merge 阶段按抽取阶段写出的
+    # layout.json 文本层通道恢复（docs/16 §3：merge 不再打开源 PDF）。
+    merged_text = _restore_ellipsis_lines(merged_text, load_stage_layout(args))
     # 表注锚点上标字母回收（CSM-OCR-015）：MinerU OCR 丢表头/单元格上标字母、只留
     # 表注定义行（GB_T_20001.10-2014 表1 型）→ 从源 PDF 文本层补回单元格尾部标记。
-    merged_text, recovered_markers = _recover_table_note_markers(merged_text, args.input)
+    # 表角标回收的读数来自 layout.json 的 textSpans/pages 通道（docs/16 §3；通道缺失时
+    # 函数内部回退读源 PDF）。
+    merged_text, recovered_markers = _recover_table_note_markers(
+        merged_text, args.input, layout=load_stage_layout(args)
+    )
     if recovered_markers:
         _log(f"Recovered {recovered_markers} table note marker(s) from the source PDF text layer")
     destination.write_text(merged_text, encoding="utf-8")
@@ -938,8 +966,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="PDF extraction pipeline: PDF → MinerU recognition → merged raw CSM (add --stage all to continue to canonical/SSIR, --render for a PDF; round-trip verification is the separate tools/verify_conversion.py).")
     parser.add_argument("file", nargs="?", type=str, default=None,
                         help="standard file name resolved under corpus/golden/ (e.g. T_ZZB_2224-2021 or T_ZZB_2224-2021.pdf). "
-                             "只解析 PDF；Word（docx/doc）输入已暂时停用。 "
-                             "Shortcut mode: implies --stage all --render (round-trip verification is the separate tools/verify_conversion.py). "
+                             "只解析 PDF（Word 输入已永久放弃）。 "
+                             "Shortcut mode: implies --stage all --render (verification is the separate tools/verify_conversion.py). "
                              "若 out/mineru/<ID>/02_canonical/<ID>.canonical.md 已存在，则跳过 OCR/PDF 抽取与 "
                              "normalize，直接从 canonical 续跑（等同 tools/reprocess_canonical.py）。")
     parser.add_argument("--input", type=Path, help="input PDF of the national standard (alternative to the positional file name; full or relative path)")
@@ -954,8 +982,7 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="enable the targeted hybrid-engine table pass (GEN-094): after extraction, table pages are additionally recognized with hybrid-engine (VLM) and rebuilt from its visual rows. Off by default (the VLM pass is slow) — tables then stay exactly as the MinerU pipeline backend produced them")
     parser.add_argument("--hf-endpoint", default=None,
                         help="HuggingFace endpoint used to download the hybrid-engine (VLM) models (default: the HF_ENDPOINT environment variable, else https://hf-mirror.com)")
-    parser.add_argument("--stage", choices=("extract", "merge", "finalize", "all"), default="all")
-    parser.add_argument("--roundtrip", action="store_true", help="Run CSM canonical -> SSIR -> CSM render.md -> verify round-trip verification after parsing.")
+    parser.add_argument("--stage", choices=("extract", "layout", "merge", "finalize", "all"), default="all")
     parser.add_argument("--render", action="store_true", help="Render parsed SSIR to PDF and write a comparison report.")
     parser.add_argument("--toc-depth", default="2", help="Maximum numbered TOC level for --render (positive integer or all; default: 2).")
     return parser
@@ -990,14 +1017,12 @@ def main() -> int:
             if resolved is None:
                 parser.error(f"file not found under corpus/golden/: {args.file!r} (looked for the name, then .pdf)")
             args.input = resolved
-        # 单命令完成全部：导入/提取 + 渲染（回环验证已独立成 tools/verify_conversion.py，
-        # 需要时显式加 --roundtrip 或单独跑验证程序）。
-        args.roundtrip = False
+        # 单命令完成全部：导入/提取 + 渲染（验证已独立成 tools/verify_conversion.py，需要时单独跑）。
         args.render = True
     suffix = args.input.suffix.lower() if args.input else ""
     if not args.input or not args.input.is_file() or suffix != ".pdf":
-        # Word（.docx/.doc）输入支持已暂时停用：明确报错，不做 docx 导入。
-        hint = "（Word/.docx 输入支持已暂时停用，请提供 PDF）" if suffix in (".docx", ".doc") else ""
+        # Word（.docx/.doc）输入已永久放弃：明确报错，不做任何 Word 导入。
+        hint = "（Word 输入已永久放弃，请提供 PDF）" if suffix in (".docx", ".doc") else ""
         parser.error(f"input must be an existing PDF document{hint}: {args.input}")
     args.input_kind = "pdf"
     if args.chunk_size < 1:
@@ -1016,9 +1041,20 @@ def main() -> int:
         args.output_stem = state["outputStem"]
     _log(f"Input PDF: {args.input.resolve()}")
     _log(f"Output directory: {args.output_dir.resolve()}")
-    _log(f"Stage: {args.stage}; round-trip: {args.roundtrip}; render after parsing: {args.render}")
+    _log(f"Stage: {args.stage}; render after parsing: {args.render}")
 
     try:
+        # 版面通道（docs/16 §2.3/§3）：抽取阶段产出 01_extract/<stem>.layout.json，
+        # 下游（merge 的省略号恢复、finalize 与续跑的版面印记/脚注回收）只读它，
+        # 不再打开源 PDF。独立的 `--stage layout` 只做这一件事——可对既有文档根
+        # 单独补产出，不需要重跑 MinerU（抽取阶段是唯一可读源 PDF 的阶段）。
+        if args.stage == "layout":
+            write_stage_layout(args, state)
+            _write_manifest(args, state)
+            _log("Layout stage complete: 01_extract/<stem>.layout.json written; downstream stages read it instead of the source PDF.")
+            return 0
+        if args.stage in {"merge", "finalize", "all"}:
+            write_stage_layout(args, state)
         # 已有 curated canonical（02_canonical/<stem>.canonical.md）时，默认
         # --stage all 不再重跑 OCR/PDF 抽取/合并/normalize（防旧 raw 覆盖人工
         # 编辑基线，AGENTS.md §2），直接从 canonical 续跑下游（功能等同

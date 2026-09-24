@@ -184,6 +184,26 @@
 | 90 | GB_T_5171.1-2014 表18 中 canonical 的希腊字母 φ 是**小写** U+03C6，渲染后**看起来像大写 Φ**（2026-09-19 用户报告，同条含列宽失衡见行 89） | 不是大小写转换、也不是文本层问题（PDF 文本层确认仍是 U+03C6）：**字形**问题——Noto Serif CJK 把 U+03C6 画成「圆圈 + 贯穿竖线」的全高形（实测 y∈[-215,681]/1000 em，x 高只有 516），reportlab 内置 Symbol 的 φ 也是这一形；源版面同一格 `cos` 用正体 E-BZ、`φ` 用**斜体拉丁** E-BX（带尾的小写形） | 渲染 profile 增补拉丁（Times 度量）字形族 `fonts.greek` / `fonts.greek-italic`（Liberation Serif 正体/斜体入库 `config/rendering/fonts/`），`_markup` 收尾按位置换族：变量位置（`<i>…</i>`，GEN-116 的判定）用拉丁斜体、单位/算子位置（μ/Ω/Δ）用正体（GBT-B12）。profile 未声明该字族时不替换 | **GEN-122（新，render）** | 见 §3.73（第 4 条） |
 | 91 | 行内公式（`$…$`）里的 `\overline` 短横线**仍然不对**：GB_T_30819-2024 6.4「式中：」的参数符号短横线**很短**（约半个字母宽、偏在字母右上方）且与字母**粘连**；GB_T_5171.1-2014 A.2 的 X̄ **完全看不出短横线**（2026-09-19 用户报告：「6.4 中公式 $$ 之间的 `\overline` 表现正常，但公式下面的 $ 之间的 `\overline` 却很短或者和下面文字粘连；而 GB_T_5171.1 中 A.2 中的 `\overline` 却没有任何效果」） | 一轮修复（行 85）用**字体的组合上划线 U+0304** 画短横线，而该字形属于 CJK em 框：ink 只有 0.268em 宽（10.5pt 下 2.8pt，而被覆盖字母宽 5.2–7.4pt）、纵向固定在 0.668–0.717em（em 框顶；advance 0）——与被覆盖字母无关。于是 x 高字母（η/n）的短横线悬空且只有半个字母宽；cap 字母（P/T/X）的短横线恰好落在字母墨迹顶（X 墨迹顶 7.64pt vs 短横线 7.0–7.5pt）→ 整条埋进顶衬线，视觉上「没有效果」。源版面用的是**矢量短横线**（GB_T_30819-2024 p26 实测：0.558pt 厚、4.98pt 长 = 被覆盖字母的推进宽、位于字母墨迹上方 0.19em；GB_T_5171.1-2014 p27 的 X̄ 同高、长 0.57× 字宽并居中于字母） | `pdf_renderer`（**GEN-116 二轮修正**）：`\overline{X}`/`\bar{X}` 的输出从「内容 + U+0304」改为**区间哨兵**，`_markup` 收尾（希腊字面替换 GEN-122 **之后**）换成 reportlab 的 `<u offset=… width=…>`——一条矢量线：宽度 = 被覆盖 run 的推进宽；高度 = 被覆盖字符在**其实际字面**里的墨迹高度（`_face_ink_em`：fontTools 读 glyf 的 yMax，字面从 `<i>`/`<font name=…>` 标签读出）+ 0.19em；厚度 0.056em；偏移/宽度按字号倍数。取不到字形时 0.72em 兜底。PDF 文本层不再输出 U+0304 | **GEN-116（改）** | 见 §3.68（二轮修正） |
 | 92 | GB_T_30819-2024 表2 **折页后续表只重复一行表头**，缺第二行「润滑油润滑(O)｜润滑脂润滑(G)」（2026-09-19 用户报告：「表2的表头计算有误，导致在该表折页时续表的表头少了一行」） | **不是代码缺陷**：源 PDF p11/p12 的表头是两行（「允许最高输入转速 r/min」跨两列 + 其下润滑油/润滑脂行），抽取端 raw 的 12 张表（002–013）也写着 `header-rows="2"`，只有 **canonical 是 `header-rows="1"`**——canonical 掉了 GEN-114 的规则回放（其自带的 `ssir:table-merge` 指令本身就是证据：row=0 的最大 rowspan = 2）。下游 `parse → SSIR(isHeader) → renderer(repeatRows)` 只是照抄 canonical 的值，所以续表少一行。实测把当前 raw 重新 normalize 得到的是 2（当前 normalize 不会改回 1） | `tools/replay_table_header_rows.py --apply out/mineru/GB_T_30819-2024`（12 表 1→2，只有指令行变化、raw 侧 0 变化、复跑 0 命中）→ `tools/build_ssir.py <canonical>` 重建 SSIR+render（不改写 canonical） | GEN-114/115（无新规则；数据回放） | 见 §3.74 |
+| 93 | 从 `rawFile/<ID>.md` / MinerU `middle.json`（自带 front matter）起步时 `tools/build_ssir.py` 在 normalize 即失败：`CSM must start with YAML front matter` | 构建层约定不一致：`_split_front_matter` 返回的 FM **不含 `---` 围栏**，旧实现直接拼进 raw 文件；裸 raw 分支用的 `_build_front_matter` 自带围栏 | 新增 `_materialize_raw`：写回 raw 前统一补围栏（对已带围栏输入幂等），两分支共用 | **GEN-123（新，build）** | 见 §3.76 |
+
+| 94 | GB_T_1.1-2020 附录 E 的图下脚注定义（`a`/`b`）被登记成**别的章的表脚注**：`ownerRef` 指向 `documentBlock_0028/Block-423`（第 9 章某表），`anchorKind=tableCell`（2026-09-23 第三族尾巴回放时发现） | 标签跨节点重号：`marker_nodes` 是**全局** label→锚点表，附录 E 的图注编号只画在图内、没有文本引用点，登记时落到「文档中第一个用了 `a` 的表」上（第 9 章的表先出现） | `builder` 增 `node_markers`（node id → label → 锚点）并在**自身节点及其祖先**内查找引用点；无引用点 → 取结构上紧贴的图元素（前邻优先、回跳脚注兄弟，否则最近后邻）；都没有才回落到条款节点 | **GEN-124（新，parse）** | 见 §3.77 |
+| 95 | GB_T_1.1-2020「图 ×」（9.7.5）的图下脚注定义 `b` 在渲染稿里**整条消失**（回放该定义后出现警告「框内条文脚注占位无法在页脚绘制」） | 该图块被 `ssir:box` 框住，框在渲染端落成表格单元格，页脚钩子（`afterFlowable`）在框表内不触发 → 页脚型脚注无处落页脚、直接不画 | 渲染端：框内且非 `tableCell`/`figurePart` 的脚注定义改**就地绘制**（图表脚注同一小五号原位样式），并记警告；SSIR 不改 | **GEN-125（新，render）** | 见 §3.77 |
+| 96 | GB_T_1.1-2020 9.9.3.1 各示例里「式中：」**下面**的变量解释行在 `04_render/<ID>.render.md` 里**整块消失**（2026-09-23 用户报告：「示例中『式中：』下面的内容都丢失了」） | 投影端 `csm_renderer._render_formula` 只写公式本体与编号，**从不读** `Formula.explanationGroup.items`（该字段是 SSIR 侧结构，PDF 端早已绘制、投影端漏接）——内容不是被截断，而是从未发射 | `_render_formula` 暂存条目（`pending_explanation`），`render_content` 在「式中：」引入段后发射（判据与解析端同源 `parser.FORMULA_VAR_INTRO_RE`），引入行缺失则就地发射；文本形态复用 PDF 端唯一实现 `_formula_explanation_lines` | **GEN-126（新，render）** | 见 §3.79 |
+| 97 | 同一份 render.md 里**所有图都不显示**（2026-09-23 用户报告：「文档中的图都未显示出来（可能是路径错误）」） | 投影照抄 SSIR 的 `assetRef`（相对**文档根** `assets/…`），而产物落在 `04_render/` 子目录 → 阅读器解析成 `04_render/assets/…`（不存在）：9 份文档 48 条图链接全部失效 | `csm_renderer.asset_base_for(产物路径, 文档根)` 给出相对前缀（`"../"`），`render_csm(..., asset_base=…)` 补前缀；两个写出点（`pipeline` / `tools/verify_conversion.py`）统一使用 | **GEN-127（新，render）** | 见 §3.79 |
+| 98 | GB_T_1.1-2020 9.9.3.1 **示例 3 印出示例 4 的「式中」条目**（E/F/l），示例 4 的「式中：」下空无一物（PDF 第 46 页与 render.md 同错；投影修好后由用户可见） | 构建端无条件信任 `formula-vars formula=…` 声明：canonical 第 1707 行把示例 4 的组声明到示例 3 的公式 id（`mineru-formula-p037-003`）上，`formulas_by_directive` 命中即归属——无作用域校验、无任何记录（同一处错误已随 PDF 交付多轮） | `builder` 记录每个公式创建时的（框, 并列组）作用域；`_apply_declaration` 对声明目标做作用域校验，与「结构上紧邻其前的公式」不一致且跨作用域时按结构位置归属 + 记 `qualityAssessments.comments`（同作用域声明照旧生效，不越界覆盖） | **GEN-128（新，build）** | 见 §3.79 |
+| 99 | GB_T_1.1-2020 9.9.3.1 各示例里**公式的「式中：」印在解释条目下方**，条目句尾的 `；`／末条 `。` 全部丢失（2026-09-23 用户报告，PDF 与 render.md 同错：「公式的『式中：』被错误地显示到了被解释的变量的下方，并且解释项句尾的符号都丢失了」） | 渲染端把解释条目排在**公式之后**（条目挂在公式上），而版面上「式中：」引入行在公式之后、条目在引入行之后 → 顺序颠倒；条目行文本由 `_formula_explanation_lines` 生成时未把源文里的终结符带出 | `pdf_renderer` 三条发射路径（主序列／框内／并列分栏每列）统一「暂存 + 遇非引入单元 flush」：`_append_content(explanation_sink=…)` 暂存、`_explanation_flowables(pending, …)` 在 `_is_explanation_intro(content)` 命中的引入行**之后**发射（引入行缺失则就地发射，不丢内容）；行文本带终结符 | **GEN-129（新，render）** | 见 §3.80 |
+| 100 | 示例框／并列分栏／「只有外框线」的表格在 markdown 里表达不了（2026-09-23 用户报告示例 3/4/5 的**分栏与框线不可见**；此前提议「外框线表格 + 无框线表格」）；新增 `render.html` 后用户又报告**该 HTML 里多处 `$…$` 控制符未转换** | GFM 单元格只能装**行内**内容、表格不能嵌套、边框样式由阅读器决定（源码层无法表达「只有外框线／无框线」）；md 里内联 HTML/CSS 会破坏「CommonMark+GFM 子集、零 `ssir:` 指令、零 HTML 注释」不变量（GitHub 还会剥掉 `style`）。HTML 侧的 `$…$` 残留：首版只做了 `[foot:a]`→角标，行内数学原样输出（`<span class="formula-var">$l$…`、单元格 `<th>$l _ { 1 }$</th>`、表题 `表A.1 $C_{p}$…`），无资产公式本体还把 LaTeX 命令（`\frac`/`\overline`/`\sqrt`）直接吐进产物 | 用户裁定 **C 方案**：另出伴生产物 `04_render/<ID>.render.html`（真实 `<table>`/CSS 承载框线、并列分栏、合并单元格），`render.md` 保持纯 GFM；两者与 markdown 投影同源同判据（同一 `document`、同一 `_project_text`、同一资产前缀）。HTML 侧新增 `_html_text`（正文统一入口）：行内 `$…$` 经 PDF 端唯一实现 `_inline_math_markup` 拍平、哨兵（斜体/上下标/上划线）转 `<i>`/`<sub>`/`<sup>`/`<span class="overline">`；无资产公式本体同样拍平；覆盖段落/注例警引/列项/脚注/表题与表单位行/单元格/式中解释行/公式本体。canonical 里单个游离 `$`（3100 第 632 行、30819 第 953 行）按原样字符投影，不猜删 | **GEN-130（新，render）** | 见 §3.80 |
+| 101 | GB_T_1.1-2020 附录 F 表 F.1 的**表脚注 a)/b) 排在表格外面**、表末行之下（2026-09-23 用户报告：「表F.1的最后两行被错误地放在了表格外面」；随后指出「我是发现你在canonical.md中就把表的脚注移到表格之外了」） | 两处叠加：① canonical 把 `<!--ssir:foot:X-->…` 定义写在**表格块之外**（表末行与定义间还隔一个空行）；② 渲染/投影端把 `anchorKind=tableCell` 的脚注当普通段落排在表之后（页脚钩子路线），三端一致地落在表框外 | ① canonical 形态回放：表脚注定义行紧贴表末行（删其间空行，4 份文档 7 处；内容不变，仅行号/文件摘要派生字段随之变化）；② 渲染端并表：PDF 表末通栏行（`noteRow`、`colspan=列数`、样式同表内注行）、markdown 表末行（多注 `<br>` 相连）、HTML `<tr><td class="table-note" colspan="N">`；位置由 `notes[].anchorKind` 结构化决定 | **GEN-131（新，render）** | 见 §3.80 |
+| 102 | `tools/mineru_full_standard.py JB_T_14425-2023.pdf` 一出即失败：MinerU 子进程退出码 1，traceback 尾部 `ValueError: Unknown scheme for proxy URL URL('socks://127.0.0.1:7897/')`（2026-09-23 用户报告） | 环境层 × 引擎层：MinerU 3.4.5 的 CLI 先起本地 mineru-api 再用 httpx 访问它，而 httpx 0.28 在**构造客户端时**就解析环境里每个 `*_proxy` 变量、只接受 http/https/socks5/socks5h（`_config.py` 的 `Proxy.__init__`）→ 调用方 shell 的 `all_proxy=socks://127.0.0.1:7897/`（Clash「系统代理（SOCKS）」写法）在抽取**启动阶段**就把整次运行打断（源 PDF 与抽取质量无涉：`parts/` 为空、`pipeline-state.json` 记 `lastFailure{start:0,end:17,returnCode:1}`）；引擎侧两个 MinerU 启动点都原样继承调用方 env，无任何规整 | 新增 `src/leleby_ssir/process_env.py::normalize_proxy_environment(env)`（只改交给子进程的 env 副本）：① `socks://` → `socks5://`（curl/urllib 同义别名）；② 其余 httpx 不可用方案删除该变量并记说明；③ 回环地址写进 `NO_PROXY`。接入 `tools/mineru_full_standard.py::_mineru_env()`（extract 与 hybrid 第二遍两处）与 `src/leleby_ssir/pdf_extractor.py::_mineru_extract` | **GEN-132（新，extract）** | 见 §3.81 |
+| 103 | `JB_T_14425-2023` 的目次条目（`1 范围.... 1` … `8 交付准备...`）在 SSIR 里变成**第二套章标题**：`目次` documentBlock 没有条目、`tocEntries=0`、顶层出现 `section 1..8` 与正文的 1..8 重复，合规层报 **GBT-H03「章编号不连续」**（2026-09-23 用户报告；同一文档在 GEN-132 修好抽取之后暴露） | MinerU 把目次抽成裸段落行（点线残缺甚至全丢、页码粘连：`5 型式与基本参数2`、`6 技术要求…`），normalize 的裸条号提升（GEN-035）只认「行首条号 + 祖先链已确认」，没有把「目次区段」这一文档结构事实纳入 → 8 行条目全部被提升为章标题 | 新增**目次区段**判据（`TOC_HEADING_TEXT_RE`/`TOC_ENTRY_PREFIX_RE`/`TOC_ENTRY_STOP_PUNCT` + `_is_toc_entry_line`/`_toc_region_lines`，均不依赖导引符）：`目次`/`目录` 标题之后的条目行收进 `ssir:toc` 声明块、区段行不再参与提升；条目文本**原样保留**（不补点线、不猜页码）；规则实例回放脚本 `tools/replay_toc_sections.py` | **GEN-133（新，normalize）** | 见 §3.82 |
+| 104 | 对**含** `<!-- ssir:toc -->` 的 canonical 跑 `ssir csm normalize`：条目连同配对结束指令整块消失、只剩悬空开指令（GB_3100-2026 的 18 条、GB_T_1.1-2020 的 106 条全被吃光；本轮落地 GEN-133 时发现） | `csm_normalizer._render_block` 只输出开指令（那行由通用分支统一写），`toc`/`figure-legend`/`figure-sub`/`formula-vars` 四种声明型指令（`DECLARATION_DIRECTIVES`）的条目体**没有任何渲染分支** → 静默丢失 | `_render_block` 增加声明型指令分支：开指令 + 条目行原样 + `<!-- ssir:/{name} -->` 配对结束指令，重渲染幂等、零内容丢失 | **GEN-134（新，normalize）** | 见 §3.82 |
+| 105 | GB_T_5171.1-2014 的术语条目（`3.1 无刷直流电动机　brushless direct current motor`…）**中英文标题未加黑、不单独占行**，被当正文段落排（2026-09-23 用户报告：「术语的中文和英文条目标题未加黑显示」） | 抽取形态第三类未被覆盖：该标准第 3 章的编号被抽成**标题**（`### 3.1`，标题里只剩编号）、术语行是**段落**——既不是「标题+标题」（原有判据）也不是「段落+段落」（原有判据），两条都不命中 → 术语行留在正文（SSIR 节点 `title` 为空，`term`/`englishTerm` 虽已配对）；渲染端 `_term_entry_text` 又要求「编号 ≥3 段 + 标题是术语行」，两段编号（3.1）+ 空标题两条都不满足 → 认不出术语条目，按普通标题/正文排。同一缺陷让**两段编号**的术语条目（GB_3100-2026、GB_T_10401-2023、GB_T_30819-2024、GB_T_20001.5-2017、GB_T_20001.6-2017、GB_T_20001.10-2014、GB_T_5171.1-2014 共 7 份语料）整体漏出目次的术语条目排除判据（GB/T 1.1-2020 8.2.2「在目次中不应列出『术语和定义』中的条目编号和术语」），即 2026-09-15 的 GB_3100-2026「目次行只有条号」症状的根因 | parser `_repair_term_entry_headings` 增补「混合形态」（`标题(纯编号)` + `段落(术语行)`），判据按编号段数分档：**「术语和定义」要素内不限段数**、要素外维持 ≥3 段；渲染端 `_term_entry_text` 改用 builder 已配对的 `term`/`englishTerm`（只在要素内配对，段数不限）优先，标题形态判据作兜底 | **GEN-135（新，parser/render）** | 见 §3.83 |
+| 106 | 表注（表脚注）只有第一条注的首行空两个汉字，b) 起顶格（GB_T_5171.1-2014 表19/表20；2026-09-23 用户报告：「**所有**表注的注释项的首行都应该空两个汉字（所有表注都执行）」） | `_split_table_note_parts` 只认「注N：」边界，而表脚注用字母标记（`a) …`/`b) …`）、彼此以 `<br>` 分隔 → 整格只出一个段落，「首行缩进」只作用于段首（a)），其余条目同在该段落的行中（b) 起顶格）；源 PDF 每条注各自空两字（表20 实测 a)~h) 每条起行均在表框左 +2 字） | `_split_table_note_parts` 增补字母标记族（`_NOTE_PART_START_RE`，与「注N：」同判据）：`<br>` 之后紧跟注标记处切条、其余 `<br>` 保留为**注内换行**；每条注各成一段 → 各自「首行空两字」（复用既有表注段落机制） | **GEN-136（新，render）** | 见 §3.83 |
+| 107 | GB_T_10401-2023 表11 第30/31行（振动、冲击）的表注角标渲染成 `b)d)`、表尾注文行的标记渲染成 `c)`（2026-09-24 用户报告：「应该是上标 `b、d`，而不是 b)d)，并且在最后一行的注释中，字母也应该是上标 `c` 而不是 c)，所有的表注应该都将字符（也可能是数字上标）如此处理」） | 渲染端把「脚注标记 = 标号 + 半圆括号」当成**唯一形态**且在 `builder` / `pdf_renderer` / `csm_renderer` 三处各写一遍（`f"{label}) {text}"`、`<SUP>{label})</SUP>` 哨兵、投影 `f"{label})"`；新增的 `html_renderer` 沿用同形），注文行行首标记干脆不做上标化；而 GB/T 1.1-2020 **9.12.1**（数字族「后带半圆括号」）与 **9.12.2**（字母族「上标形式的小写拉丁字母」）本就是两套编号方案——半圆括号只属数字族 | 标记字面按**编号族**分定并**判据单源** `parser.footnote_marker_text`（数字 → `1)`、字母 → 裸 `a`）；引用点、注文行行首、定义行三处全部改用该判据；markdown 投影平印字面（`b、d`）、PDF `<super>` 哨兵 / HTML `<sup>` 绘真上标；GEN-136 的表注切条判据随之放宽到「字母 + 空白」并上移单源（`parser.TABLE_NOTE_START_RE`）；`requirements.yaml` 的 GBT-X04 转写一并更正 | **GEN-137（新，render）** | 见 §3.84 |
+| 108 | 图/表题注的「标识部分」与「文字部分」之间只有半个汉字（用户原文：「所有表,图的标识部分与文字部分的间隔应为1个汉字,而目前只有半个汉字」，2026-09-24）——实测改动前五号黑体下「表11 检验项目和顺序」的间隔只有 3.15pt = 0.30 汉字（ASCII 空格） | 渲染端用 ASCII 空格拼题注（`f"表{number} {caption}"` / `f"图{number} {caption}"`，含续表题注与分图题注），而 GB/T 1.1-2020 10.4.2.1 规定「图编号和表编号之后均应空一个汉字的间隙接排图题和表题」 | `pdf_renderer._CAPTION_LABEL_GAP`（固定字隙哨兵＝一个汉字，白字「中」）+ `_join_caption_label()` / 新增 `_table_caption_text()` / `_figure_caption_text()`（判据单源，正表题与续表题注同一判决） | GBT-B06 / GBT-B07（10.4.2.1，执行侧修正，无新码） | 单测 689 全绿（新增 tests/test_caption_label_gap.py 3 例）；跨语料 A/B 10 份：页数 10/10 不变、md/html 全 0 diff、pdf diff 全部为题注行；10 份 docroot 产物重建 |
+| 109 | GB_T_1.1-2020 与 GB_T_10401-2023 的**全部表格**渲染失效、封面 ICS/发布日期/发布机构消失、页眉标准编号变成 `GB_T_1.1-2020.canonical`（2026-09-24 用户报告） | **产物事故，非代码缺陷**：两份 docroot 的 `02_canonical/*.canonical.md` 被**管线之外**的进程在 09:27 / 09:42 整体改写（「半角标点全角化」）——全部 `,` `:` `;`（GB_T_1.1-2020 还有 `·`，GB_T_10401-2023 还有 `~`）换成全角形态，GB_T_10401-2023 那遍还把 `, ` 的空格一并吞掉（两份文件半角残留均为 0）；于是 YAML front matter 的键不再是键（`yaml.safe_load` 返回字符串 → `CSM-META-001` 警告 + `metadata={}`）、`<!--ssir:…-->` 不再是指令。现网代码从 raw 或从 canonical 重跑都不产生该形态 | `tools/restore_fullwidth_punct.py`（新，§0.4 规则实例回放）：以**健康基线的产物投影**（`04_render/*.render.md`，损坏前构建）＋同源 canonical 副本为副本源，按三个固定损坏模型（纯标点 / 逗号吞空格 / 三种标点吞空格）整行精确还原；副本无覆盖才退字符级按位还原与语法必需半角；`--apply` 前留 `.bak-punct` 备份 | 无新规则码（数据事故 + 回放工具，判据见 §3.86） | 见 §3.86 |
+| 110 | 用户裁定：「文档正文无论是全角还是半角都没有问题，但是 ssir 的控制字符只能是半角字符（这一点请保持）……但是请你默认在生成 canonical 时将文档的半角字符替换为全角字符，特别是尾部的字符，但是公式或其他需要半角字符的特别情况除外」（2026-09-24） | 源 PDF 与 MinerU 的正文标点常留半角（`变频电源供电,并可…`、`第1部分:通用技术条件`、`(SAC/TC2)归口`、`80℃,噪声`、单元格 `(交流有效值)V`），半角标点与汉字视觉间隔偏小、成品形态与标准原文及中式排版惯例不一致；此前无任何归一规则（GBT-C19 只管列表标记括号） | `parser.normalise_body_punctuation`（判据单源，normalize 与 parse 同一路径）＋ `_normalise_body_punctuation_width` 接入 read 流程末步；载体与 CSM-OCR-004 同集（块文本/列项条目/表格单元格）；回放工具 `tools/replay_body_punctuation.py`（干跑/`--apply`，四重不变量） | **GEN-138**（新，normalize；排版归一不落 warning，与 GBT-C19 同规） | 见 §3.87 |
+| 111 | 用户裁定：「表头名应该以文字为准(行优先)，在渲染时如果与属性值不一致，则告警并将属性值替换为与行标题一致，且 json 文件也以行表头填充该值」（2026-09-24） | 表/图题注与单位陈述在 canonical 里有**两份表示**：指令属性 `caption-number`/`caption`/`unit` 与可见文字行（`**表N 题名**`、单位陈述行、图题注 alt 文本）。此前解析层**行优先但静默**（属性被改写无告警；指令上方且编号不一致时静默丢弃暂存题注），加粗题注行位于指令上方时压根不折入 → 同一题注印两次（属性一次、段落一次），见 docs/12 §3.88 | `parser` 折入点统一为**可见文字优先 + 结构化告警**：`_note_caption_attr_conflict` 落 `CSM-TABLE-005`（行号/表 id/属性/两值）；加粗题注行纳入折入；编号不一致仍保守不并但告警；图题注判据单源 `parser.figure_caption_parts`；文件级对齐走 `tools/sync_table_caption_attrs.py --apply` | **GEN-139**（新）/ CSM-TABLE-005（新）；GBT-B08 注记「题注以正文可见文字为准」 | 跨语料 4 处陈旧属性按可见文字回放后告警归 0；重建两文档 render.md 折叠标点逐行一致、页数 85/33 不变；回归 11 例、全量 716 绿 |
 
 
 
@@ -3420,6 +3440,149 @@ docs/12 §2 行 71、§5.1 GEN-032 摘要、§7 历史。
 - **修复（GEN-122）**：渲染 profile 增补拉丁字形族（`fonts.greek` / `fonts.greek-italic`，Liberation Serif 正体/斜体入库 `config/rendering/fonts/`）；`pdf_renderer._wrap_greek_letters` 在 `_markup` 收尾按位置换族——`<i>…</i>`（GEN-116 的变量判定）内的希腊字母用拉丁斜体，其余（单位 μ/Ω、算子 Δ/Σ）用正体；profile 未声明该字族时原样返回（单表渲染/单测行为不变）。
 - **GEN-122 验证**：`tests/test_pdf_renderer.py::GreekLetterFaceTests`（4 例：纯文本 φ 用正体族、变量位置 φ 用斜体族、未声明时不替换、端到端 PDF 里 φ 的 span 字体 = LiberationSerif）＋ RED（去掉换族调用 → 4 例失败）。跨语料 A/B（同一批现成 SSIR，9 份文档）：**页数与警告数逐项相同**，希腊字母 span 字体由 NotoSerifCJKsc-Regular/-Oblique 变为 LiberationSerif/-Italic（GB_T_30819-2024 的 40 个斜体量符号全部落到拉丁斜体族）。546 → **550 OK**（GEN-116 既有断言按新口径更新，并给三个测试类补显式 setUp 消除对用例顺序的依赖——`_markup` 的换族依赖渲染期写入的模块槽位）。**未做**：纯文本量符号（`cosφ`）的斜体化属语义判定，另立规则。
 
+### 3.76 raw 起点断链：写回 raw 的 front matter 丢了 `---` 围栏（GEN-123，2026-09-22，重构落地时发现）
+
+- **现象**：从 `rawFile/<ID>.md`（自带 front matter）或 MinerU `middle.json` 起步时，
+  `tools/build_ssir.py <raw>` 在 normalize 阶段直接失败：`error: CSM must start with YAML front matter`
+  （`parser.py:717`）——写出的 `01_extract/<ID>.raw.md` 首行成了 `csm-version: "1.0"`，**围栏行没了**。
+  裸 raw（无 front matter）路径正常，故只在「已有 front matter 的 raw 起点」出现。
+- **根因（构建层，通用）**：`_split_front_matter` 的契约是「返回 FM **正文**、不含 `---` 围栏」，旧实现把该正文
+  直接与 body 拼接写盘；裸 raw 分支用的是 `_build_front_matter`（**自带围栏**）——两条分支约定不一致。
+- **修复（GEN-123）**：新增 `build_ssir._materialize_raw(front_matter_text, body)`，写回 raw 前统一补围栏
+  （对已带围栏的输入幂等）；两条分支共用。
+- **验证**：
+  - 夹具 `tests/test_build_ssir.py::RawMaterializationTests` 3 例（split 约定 / 围栏补回与幂等 /
+    既有 front matter 的 raw 端到端被 `normalize_csm` 接受）；
+  - 端到端：`tools/build_ssir.py rawFile/GB_T_10401-2023.md --output-dir <scratch>` 跑通全链
+    （canonical → SSIR → render.md 投影 → render.pdf 34 页），修复前在 normalize 即中断；
+  - 跨语料：canonical 起点重建 + 全量单测见 §9 计数。
+- **边界**：只修「围栏丢失」，raw 正文不重写（AGENTS.md §0.1/§0.3）。
+
+### 3.77 图下脚注定义仍是旧形态、且锚点跨节点误配、框内脚注丢内容（GEN-124 / GEN-125，2026-09-23，第三族尾巴收口）
+
+- **现象**：GB_T_1.1-2020 有 6 处图/附录下脚注**定义**仍是数学上标形态（`$^{b}$ 钉芯头的形状和尺寸由制造者确定。`、附录 E 的
+  `$^{a}$国家标准发布部门按照有关规定填写。` 等），`notes[]` 里根本没登记（总数 6 → 只有条文/表脚注）；解析后它们被当普通正文段，
+  渲染成 10.5pt 正文（GB/T 1.1 9.12.2 要求图表脚注排在表/图之下）。
+- **根因（三层）**：① **canonical 形态**：定义没按 GEN-118 写成 `<!--ssir:foot:L-->…<!--ssir:/foot-->`（parser 只认指令对与旧 GFM `[^N]:`，
+  故不登记）；② **锚点归属**：`builder.marker_nodes` 是全局 label→锚点表，标签跨章重号时（附录 E 的 `a` 与第 9 章某表的 `a`）
+  把附录 E 的图注挂到**别的章那张表**上（`anchorKind=tableCell`）；无文本引用点的定义（图注编号只画在图内）一律回落到条款节点；③ **渲染**：
+  框内（`ssir:box`）的页脚型脚注在框表里页脚钩子不触发，整条不画（实测「图 ×」的 `b` 定义消失）。
+- **修复（规则实例回放 + 两条通用规则）**：
+  - **回放**（AGENTS.md §0.4）：新增 `tools/replay_figure_foot_definitions.py`（缺省干跑、`--apply` 写回、三重断言：
+    行级不变量（标记归一后除被改写行外逐行相同）+ 内容不丢（注文原样搬运、新增指令对数 = 改写条数）+ 改写后可 parse 且 `validate_ssir` 通过；
+    判据通用：整行 `$^{L}$ 注文`、属「空行分隔块的**末尾连续**定义行」、且块内/相邻块有**图资产或图题注或 `单位为…`** 作归属证据）。
+    落 6 处（1.1-2020），复跑 0 处（幂等），其余 8 份 canonical 命中 0。
+  - **GEN-124（parse）**：`builder` 增 `node_markers`（按节点分层的 label→锚点），解析脚注定义的锚点只在**自身节点及其祖先**内查引用点；
+    无引用点则取**结构上紧贴的图元素**（`_adjacent_figure_anchor`：前邻优先、回跳连续的脚注兄弟，否则最近后邻）→ `anchorKind=figurePart`。
+  - **GEN-125（render）**：`pdf_renderer._append_marked_content` 对框内且非 `tableCell/figurePart` 的脚注定义改**就地绘制**（不丢内容），
+    并保留一条如实警告。
+- **验证**：GB_T_1.1-2020 `notes[]` 6 → 12（新增 6 条：`Annex_E/Foot-651/652/656` 族锚到图 `Block-650/652/656`，`anchorKind=figurePart`；
+  `documentBlock_0021/Foot-393` 框内就地绘制）；PDF 文本层 6/6 定义齐全（页 42/69/70/71，0 条丢失），投影 0 指令 0 注释且定义呈
+  `a) …`／`b) …` 形态；**跨语料 A/B**：9 个文档根重跑页数 25/85/38/22/22/14/33/25/37 与改动前逐项相同、1.1 警告 8 条（含 GEN-125 那条）、其余 8 份 0/3 条不变；
+  全量单测 586 → **589 全绿**（新增 `SameLabelAcrossNodesTests` 2 例、`BoxedPageFootnoteTests` 1 例）。
+- **受限边界（如实记录）**：同组还有一行 `a断裂槽应滚压成型。` 的标号 `a` 被抽取丢掉（行首裸字母、无上标标记），无法在不臆造标号的前提下判定为定义行 → **保持原样**
+  （docs/12 §0.3 口径）；GB_T_10401-2023:953 的 `$^{c} $`（内联引用点，非定义行）同样不动。
+
+### 3.78 P0-C `layout.json` 通道：源 PDF 读取点在 MinerU 之后收敛为 0（2026-09-23，重构落地，非缺陷）
+
+- **现象（重构前状态）**：docs/16 §1 的 D1 裁定「源 PDF 在 MinerU 之后不再读取」当时**不成立**——`pipeline.py` 里
+  11 个函数（`_page_count`、`_cover_metadata`、`_cover_english_from_pdf`、`_cover_issuer_from_pdf`、
+  `_text_layer_content_lines`、`_restore_ellipsis_lines`、`_stamp_example_styles`、`_stamp_figure_source_sizes`、
+  `_stamp_side_by_side_layout`、`_recover_table_note_markers`、`_recover_pdf_footnotes`）直接打开源 PDF，
+  且**构建端**（`build_ssir` / `reprocess_canonical` 的 canonical 起点）也在读：源 PDF 缺席时产物无法重建，
+  「运行时产物可整体删除重跑」被源 PDF 的存在绑住。
+- **根因**：版面读数（文本层行与坐标、框线矩形、内容图矩形、页尺寸、逐页 span、MinerU 块几何）没有落点，
+  只能即用即读；而产出时刻本应前移到**抽取阶段**（唯一允许读源 PDF 的阶段）。
+- **修复（通道迁移；判据一行未改）**：新增 `src/leleby_ssir/layout.py`（唯一读源 PDF 的模块）与
+  `01_extract/<ID>.layout.json`（`--stage layout` 可对既有文档根单独补跑）；通道 `textLines` / `ellipsisLines` /
+  `frames` / `imageRects` / `cover.pdfPage0Lines` / `pages` / `textSpans` / `columns`。消费端改为收 `layout` 字典
+  （`_stamp_example_styles(ssir, layout)`、`_restore_ellipsis_lines(body, layout)`、
+  `_recover_pdf_footnotes(md, pdf, *, layout=)` 等），判定逐字节保留；通道缺失 → 回退旧通道（整份 `middle.json`、
+  分片目录里的 PDF 副本）或按「无判据」记日志、不猜、不阻断。`_page_count` 与文本层损坏预检按设计留在抽取阶段。
+- **规则对应（无新增 GEN）**：架构级落点变更，判据未动——GEN-092（`textLines`）、GEN-016/GEN-014（`cover.pdfPage0Lines`）、
+  GEN-052/CSM-STRUCT-006（`frames`）、GEN-096/098（`imageRects`）、GEN-095（`columns`）、
+  GEN-118/CSM-OCR-014 与 GEN-119/CSM-OCR-015（`textSpans` + `pages`）。方案与全表见 docs/16 §2.3 / §3 / §14.6。
+- **验证**：
+  - 9 个文档根「通道 == 直读」逐字段相等（`textLines` / `frames` / `imageRects` / `cover.pdfPage0Lines` /
+    `textSpans`+`pages` / `columns`）；
+  - **产物零变化 A/B**：6 个文档根按 canonical 起点重建（含 2 个带 `parts/` 的），9 根的 SSIR 逐字节 sha256、
+    `render.pdf` 页数与文本层签名、render-report 警告数 **0 变化**（四轮重建累计）；
+  - **移开源 PDF 仍能构建**：`corpus/golden/GB_T_30819-2024.pdf` 与文档根 `00_source/*.source.pdf` 同时移开后
+    按 canonical 起点重建 → SSIR sha256 与 render 文本层签名逐字节不变，图源尺寸 14/14 仍从通道命中；
+  - 单测 589 → **610 全绿**（`tests/test_layout_probe.py` 15 例、`tests/test_layout_channel_consumers.py` 4 例、
+    `tests/test_ssir_columns.py` 通道优先 2 例；`test_pdf_extractor.py`、`test_mineru_table_note_markers.py`
+    等既有夹具走回退路径，无回归）。
+- **受限边界（如实记录）**：raw 起点（无源 PDF）不产出 `layout.json`，消费端走回退通道；孪生 stem
+  （`GB_T_51711-2014` / `GB_T_5171.1-2014` 型）下 `layout.json` 可能与当前 stem 不同名——同名缺失且文档根下
+  **恰有一份**时取它并记日志（静默换源被显式禁止）；`textSpans` 让 `layout.json` 体积升到 ≈2× `middle.json`
+  （最大 7.5 MB / 72 页），属 gitignored 运行时产物。
+
+### 3.79 render.md 投影丢「式中」组、图链接全失效，并牵出「式中」组跨作用域误挂（GEN-126 / GEN-127 / GEN-128，2026-09-23，用户报告）
+
+- **现象（用户报告，三条）**：
+  ① GB_T_1.1-2020 9.9.3.1 各示例「式中：」下面的变量解释行在 `04_render/<ID>.render.md` 里整块消失；
+  ② 同一份 md 里所有图都不显示（疑似路径错误）；
+  ③ 示例 3/4/5 的分栏排版与框线未显示（另议，见文末「未决」）。
+- **根因（三层区分）**：
+  ① 引擎缺陷（投影层）：投影端只写公式本体与编号，不读 `Formula.explanationGroup.items`——内容从未发射，
+     不是截断；全语料 5 份文档 56 条条目 **100% 丢失**（GB_T_1.1-2020 13 / GB_T_10401-2023 31 /
+     GB_T_5171.1-2014 9 / GB_T_20001.5-2017 3）。
+  ② 引擎缺陷（投影层）：投影照抄 SSIR 的 `assetRef`（相对文档根 `assets/…`），产物却在 `04_render/`
+     子目录 → 阅读器解析成 `04_render/assets/…`；全语料 6 份文档 48 条图链接 **0 条可解析**。
+  ③ **既存数据/构建缺陷（本轮新发现，非投影引起）**：canonical 第 1707 行（`canonical/GB_T_1.1-2020.canonical.md`
+     与文档根工作副本同）把示例 4 的组声明到示例 3 的公式 id `mineru-formula-p037-003`；构建端命中声明即归属，
+     于是示例 3 的 ρ 公式挂上示例 4 的 E/F/l，示例 4 的「式中：」下为空。**PDF 端同错**（第 46 页实测），
+     即该错位随交付产物已存在多轮，只因此前投影丢内容而未在 md 侧暴露。
+- **修复（面向问题类，判据不改）**：
+  - GEN-126：`csm_renderer` 暂存 `explanationGroup` 条目（同一公式多组累积），在 `parser.FORMULA_VAR_INTRO_RE`
+    命中的引入段之后发射；引入行缺失/顺序异常立即发射（不丢内容）；条目文本形态复用 PDF 端唯一实现
+    `pdf_renderer._formula_explanation_lines`（一处实现，两套产物同形）。
+  - GEN-127：新增 `csm_renderer.asset_base_for(产物路径, 文档根)`；写出时传 `asset_base`（pipeline 与
+    `tools/verify_conversion.py` 两个写出点统一）；`ssir csm project`（输出路径未知）保持原值。
+  - GEN-128：`builder` 记录公式的（框, 并列组）作用域；`_apply_declaration` 对 `formula-vars` 做作用域校验，
+    声明目标与「结构上紧邻其前的公式」不一致**且不在同一作用域**时按结构位置归属并记入
+    `qualityAssessments.comments`；同作用域显式声明照旧生效（不越界覆盖）。canonical 未改动（§0.1：不为个例手术；
+    第 1707 行的错误声明作为数据问题留待裁定，见「未决」）。
+- **验证**：
+  - 单测 610 → **618 全绿**：`tests/test_markdown_projection.py`（3→8：式中粘回引入行、引入行缺失仍发射、
+    资产前缀三态、链接可解析到真实文件、默认前缀保持原值）、`tests/test_declaration_directives.py`（11→14：
+    `CrossScopeExplanationTests` 3 例）。GEN-128 夹具做了**回退实验**：临时还原旧实现 → 2 例红（证明夹具判别力），
+    恢复后全绿。
+  - 跨语料投影复核（9 份）：图链接 **48/48 可解析**（1.1 18、10401 10、30819 14、39567 4、20001.6 2）；
+    式中条目 **56/56 命中**且不重不漏（每条形如 `symbol——definition` 在 md 中恰出现 1 次、紧跟其引入行）。
+  - GEN-128 跨语料 A/B（全量重建 9 份，canonical 起点）：SSIR 与 render.md **仅 GB_T_1.1-2020 变化**
+    （sha256：ssir 5d190d22→6550fd48、md 9a3f151b→407c3a76），其余 8 份逐字节不变；条目总数 13 不变、
+    PDF 页数不变（85）；PDF 第 46 页复核——示例 3 只剩「正确／不正确」与 ρ、密度公式，示例 4 的
+    「正确」公式下正确印出 E/F/l 并带「式中：」。
+  - SSIR 如实登记：`qualityAssessments.comments` 出现
+    `ssir:formula-vars formula='mineru-formula-p037-003' 指向的公式不在同一框/并列作用域，按结构位置归属到 '…/formula/fm-003'`。
+- **未决 → 已裁定（2026-09-23）**：示例框/并列组在 markdown 里的表达由用户裁定 **C 方案**——`render.md`
+  保持纯 GFM 子集不变，新增伴生产物 `04_render/<ID>.render.html`（真实 `<table>`/CSS）承载框线、并列分栏、
+  合并单元格；落地见 **GEN-130**（§3.80）。两条硬约束仍在：GFM 表格单元格只能装**行内**内容（块级公式
+  `$$…$$`、嵌套表格、多段落装不进去，须内联为 `$…$` + `<br>`）；边框样式由阅读器决定，源码层面无法表达
+  「只有外框线／无框线」（要精确控制只能写 HTML/CSS）——详见 §3.79 讨论与 docs/16 §2.2 的「CommonMark+GFM
+  子集」约定。
+
+### 3.80 式中解释行顺序与终结符、HTML 结构投影、表脚注并表（GEN-129 / GEN-130 / GEN-131，2026-09-23，用户报告）
+
+- **现象**（用户一轮报告三件事）：① GB_T_1.1-2020 9.9.3.1 各示例里公式的「式中：」印在**被解释变量下方**、解释项句尾的 `；` 与末条 `。` 全部丢失，**PDF 与 render.md 同错**；② 示例 3/4/5 的**分栏与框线不可见**（分栏方案由用户裁定 C 方案）；③ 附录 F **表 F.1 的表脚注排在表格外面**（「最后两行被错误地放在了表格外面」），随后用户补充根因观察：「我是发现你在canonical.md中就把表的脚注移到表格之外了」。
+- **根因**：
+  - **GEN-129**：`Formula.explanationGroup.items` 在结构上挂在公式上，而版面上条目排在紧随公式的「式中：」引入行**之后**；渲染端把条目紧跟公式发射 → 顺序颠倒（引入行被挤到条目下方）。条目行文本由 `_formula_explanation_lines` 生成时只取「符号——解释」，源文里的终结符 `；`/`。` 未带出。
+  - **GEN-130**：GFM 表达不了「只有外框线／无框线／并列分栏／合并单元格」（单元格只容行内内容、表格不能嵌套、边框由阅读器控制），md 内联 HTML/CSS 又会破坏「CommonMark+GFM 子集」不变量。
+  - **GEN-131**：canonical 的 `<!--ssir:foot:X-->…` 定义行写在表格块**之外**（与表末行隔一个空行），而渲染端对 `anchorKind=tableCell` 的脚注走「页脚占位/普通段落」路线 → 三端一致地把表脚注画/投影在表框之外。
+- **修复/落地**：
+  - GEN-129：`pdf_renderer` 三条发射路径（主序列 `_append_content_sequence` / 框内 sink / 并列 `_append_side_by_side` 每列）统一改为「`pending` 暂存 + 遇非引入单元 flush」，判据 `_is_explanation_intro(content)` 与解析端同源（`parser.FORMULA_VAR_INTRO_RE`）；`_append_content(explanation_sink=…)` 新增暂存出口，`_explanation_flowables(pending, styles, Paragraph)` 在引入行之后发射（**清空暂存**）；`_formula_explanation_lines` 的行文本**已含终结符**（docstring 与实现同步）。引入行缺失 → 就地发射，不丢内容。
+  - GEN-130：新增 `src/leleby_ssir/html_renderer.py`（`render_html(document, asset_base=…)`），与 markdown 投影**同源同判据**：同一 `document`、同一 `_project_text`（`[foot:a]` → 角标 `a)`）、同一资产前缀 `csm_renderer.asset_base_for`。写出点三处一致：`pipeline._post_parse_verify_render`（阶段键 `render_html`、metadata `renderHtml`）、`ssir csm project`、`tools/verify_conversion.py`；`naming.REP_RENDER` 增补 `".render.html"`。**二轮补修（用户报告「HTML 里多处 `$…$` 未转换」）**：新增 `_html_text` 作为正文唯一入口——行内 `$…$` 经 PDF 端唯一实现 `pdf_renderer._inline_math_markup` 拍平，再把哨兵换成 HTML 标签（`\x00EMI\x00`→`<i>`、`\x00SUB\x00`→`<sub>`、`\x00SUP\x00`→`<sup>`、`\x00OVL\x00`→`<span class="overline">`，CSS 内联 `.overline`/`sub,sup` 字号）；覆盖段落、注/示例/警示/引文、列项、脚注、表题与表单位行、单元格（`_cell_html`）、式中解释行、公式本体（无资产时同样拍平，不留 `\frac`/`\overline`/`\sqrt` 命令噪声）；`_esc` 退化为属性转义与 `<pre>` 原样块专用。GB_T_1.1-2020 HTML 实测：`$` 由 112 → **0**（正文），`<i>` 71、`<sub>` 24、`<sup>` 12。**已知边界（如实记录，不猜删）**：canonical 里单个游离 `$`（3100 第 632 行单元格 `…10⁻¹⁹ J$`、30819 第 953 行 `滞回损失$≤ 60''`）是抽取噪声、不是控制符对，三份投影一致地按原样字符输出。
+  - GEN-131：① canonical 形态回放（4 份文档 7 处，见下）② 渲染端——`pdf_renderer` 新增 `registries["noteText"]`/`registries["note"]`、`_iter_nodes`、`_table_footnote_lines(registries, owner_id)`；`_append_table(trailing_notes=…)` 在表末追加 `noteRow`（`colspan = 列数`，样式同表内注行：居左、首行空两格、小五号；依据 10.4.2.2 表脚注的框线属表的框线、10.4.4.1/10.4.4.2）；`kind == "footnote"` 分支改为按 `notes[].anchorKind` 分派——`tableCell` → 跳过（由所属表绘）、`figurePart` → 原位、其余 → 页脚。markdown 投影 `_render_table(table, owner_id)` 追加表末行（多注 `<br>` 相连）并在正文流跳过该脚注；HTML 投影同样 `<tr><td class="table-note" colspan="N">`。
+- **canonical 形态回放（GEN-131 ①）**：脚本 `scratch/replay_table_footnote_rows.py`——对每个「表脚注定义行紧跟表格行、中间只隔空行」的实例删除空行：GB_T_1.1-2020 3 处（删掉的是第 605 / 1591 行与表 F.1 末行下那处空行）、GB_T_10401-2023 1 处（第 957）、GB_T_20001.10-2014 1 处（第 261）、GB_T_5171.1-2014 2 处（第 1129 / 1160），共 **7 处**；删除后定义行落到（行号 = 上表数 −1）：1.1 → 605 / 1590 / 2469、10401 → 957、20001.10 → 261、5171.1 → 1129 / 1159。**内容不变量**：逆操作（插回空行）重 parse 后逐路径比对——除 `sourceFiles[].fileSize`（少 1～3 字节）、`sourceFileId`（内容摘要）、`markdownStartLine/EndLine`、`markdownNodePath`、`comments` 里的 `line N:`（行号随之左移）外，**零实质差异**。
+- **验证**：
+  - 单测：`tests/test_formula_explanation_render.py::FormulaExplanationOrderTests`（GEN-129 顺序断言）、`tests/test_markdown_projection.py`（`$v$——速度；`/`$l$——距离。`）、`tests/test_html_projection.py`（20 例：结构 13 + 数学标记 7）、`tests/test_table_footnote_placement.py`（5 例，含 **PDF 几何断言**：注文矩形必须夹在表格框线之间）。全量 `unittest discover` **639 → 646 全绿**。
+  - **回退实验（GEN-131 判别力）**：把 SSIR 临时副本里的表脚注 `anchorKind` 由 `tableCell` 改回 `page`（旧行为：不并表、按页脚占位绘制）→ 同一几何判据由 `True` 变 `False`（GB_T_1.1-2020 表 F.1 两条注文皆然），且回退态注文文本仍在文档中（不是丢内容，而是落在表框外）——证明判据不是恒真。
+  - **跨语料（9 份文档根全量重建，canonical 起点）**：PDF 页数 25/85/38/22/22/14/33/25/37 与改动前**逐项相同**；表脚注共 **19 条**（1.1 4、10401 4、20001.10 1、5171.1 10），**三种投影 19/19 全部落在表框内**（md 表末行命中、HTML `class="table-note"` 命中、PDF 几何判据命中，脚本 `scratch/verify_table_footnotes.py`）；其余 5 份文档无表脚注、行为不变。
+  - 渲染抽查（基于 PDF 内部对象，非视觉比对）：GB_T_1.1-2020 渲染第 78 页表 F.1 续页——注文 `a)`/`b)` 的 y 落点 646.9，表体横线最下一条 678.9（在注文**下方**）→ 注文在框内；同时用页面截图人工确认一次。
+  - **HTML 控制符清零（GEN-130 二轮）**：9 份文档根重建后，`render.html` **正文**（排除内嵌 CSS）剩余 `$` = **2**——两处均为 canonical 里的单个游离 `$`（3100 第 632 行的 `…10⁻¹⁹ J$`、30819 第 953 行的 `滞回损失$≤ 60''`，抽取噪声，非控制符对），LaTeX 命令残留 **0** 类；`render.md` 违规标记（`ssir:`/`<!--`）9 份均 0。GB_T_1.1-2020 单份：`$` 112 → 0、`<i>` 122、`<sub>` 30、`<sup>` 12。
+- **记账**：`rules/base/GB_T_1.1-2020/extraction-rules.yaml` GEN-129/130/131；`docs/16` §2.2/§5（HTML 伴生产物与阶段产物表）；`docs/15` §3.8（标注方案里的投影契约）；`naming_specification.txt`（`.render.html` 后缀与产物树）；`AGENTS.md` §2（产物目录）；skill 参考文件同步。
+
 ### 3.70 标题编号与标题文字缺空格导致回环两侧条款树不对称（GEN-117，2026-09-19，用户报告）
 
 - **现象**：`GB_T_20001.10-2014` 回环 `result 3`：`structure` + `C4-numericalValues` + `C7-clauseIdentifiers`。
@@ -3495,6 +3658,158 @@ docs/12 §2 行 71、§5.1 GEN-032 摘要、§7 历史。
 
 ---
 
+### 3.81 MinerU 子进程的代理环境规整（GEN-132，2026-09-23，用户报告）
+
+- **现象**：`tools/mineru_full_standard.py JB_T_14425-2023.pdf` 一出即失败——MinerU 子进程退出码 1，traceback 尾部（`mineru/cli/client.py:948` 构造 `httpx.AsyncClient` 时）：
+  `ValueError: Unknown scheme for proxy URL URL('socks://127.0.0.1:7897/')`；`out/mineru/JB_T_14425-2023/pipeline-state.json` 记 `lastFailure{start:0,end:17,returnCode:1}`、`parts/` 为空（0.1 分钟内退出）。
+- **根因（三层定位）**：源 PDF 不涉（抽取未开始）；MinerU 3.4.5 的 CLI 不直接跑推理——先起本地 mineru-api（`127.0.0.1` 随机端口）再用 httpx 与它通信，而 httpx 0.28.1 在**构造客户端时**就解析环境里每个 `*_proxy` 变量并逐个构造 `Proxy`，白名单只有 http/https/socks5/socks5h（`httpx/_config.py:214`），其余直接抛 `ValueError` → 调用方 shell 的 `socks://`（Clash 等工具设「系统代理（SOCKS）」时的写法）在启动阶段把整次运行打断；引擎侧两个 MinerU 启动点（`tools/mineru_full_standard.py` 的 extract 与 hybrid 第二遍、`src/leleby_ssir/pdf_extractor.py::_mineru_extract`）都**原样继承**调用方 env，没有任何规整。
+- **复现与对照（本机实测）**：
+  - `all_proxy=socks://127.0.0.1:7897/ .venv/bin/mineru -p corpus/golden/JB_T_14425-2023.pdf -o … -s 0 -e 0` → 与用户 traceback **逐字相同**；
+  - `ALL_PROXY=socks://…` 而 `all_proxy=socks5://…` 同时在场时**不报错**——urllib 的 `getproxies_environment` 对同名变量**小写优先**（两轮扫描，第二轮只认小写名），故大小写两种形态都要各自规整，不能只挑一个；
+  - `all_proxy=socks5://…`（本会话 shell 现状）正常跑通（同一份 PDF 的 1 页试跑成功）。
+- **修复（GEN-132）**：新增 `src/leleby_ssir/process_env.py`，对交给子进程的 env **副本**就地规整（`os.environ` 不动）：
+  - `_normalize_proxy_url`：`socks://` → `socks5://`（curl/urllib 同义的 SOCKS5 别名）；白名单内**原样**（连大小写都不动）；裸 `host:port` 原样（httpx 自补 `http://`）；其余返回 None（该变量删除）；
+  - `normalize_proxy_environment(env)`：遍历所有 `*_proxy`（含大写形态）——不可用方案 `pop` 掉并记说明（留着必然崩，删掉只是这一项代理失效；模型已在本地缓存，抽取本身不需要外网）；`NO_PROXY`（含小写形态）追加缺失的回环项 `localhost / 127.0.0.1 / ::1`（幂等）；一个 `NO_PROXY` 都没有而有代理时补上——**本地 mineru-api 的通信通道不得经过代理**；
+  - 接线：`tools/mineru_full_standard.py::_mineru_env(extra=None)`（extract 与 hybrid 两处 `subprocess.run` 改传 `env=`，并记日志 `Proxy environment: …`）、`src/leleby_ssir/pdf_extractor.py::_mineru_extract`（沿用既有 env 构建后规整）。
+- **验证**：
+  - 单测：新增 `tests/test_mineru_process_env.py` **11 例**——判据 7（`socks://` 与 `SOCKS://` 改写、`socks4://` 删除、合法方案与裸 host:port 逐字不变、NO_PROXY 幂等追加、无代理时不凭空造 NO_PROXY、缺 NO_PROXY 时创建）、**真实 httpx 构造 2**（同一份 env：规整前抛用户报的那条 `ValueError`、规整后构造成功）、工具层 2（`_mineru_env()` 不改 `os.environ`；`extract()` 传给 `subprocess.run` 的 env 里 `all_proxy` 已是 `socks5://`）。全量 `unittest discover` 646 → **657 全绿**。
+  - 端到端（真实运行、用户环境形态）：`all_proxy=socks://127.0.0.1:7897/ ALL_PROXY=socks://127.0.0.1:7897/ .venv/bin/python tools/mineru_full_standard.py JB_T_14425-2023.pdf` → 日志记两条 `Proxy environment: rewrote …`，本地 mineru-api 起于 `http://127.0.0.1:44151`，18 页进入 Layout Predict（修前同一命令 0.1 分钟内退出码 1）。
+  - 「无涉项不变」：合法方案、大写形态、裸 host:port 逐字保留（判据测试）；`os.environ` 未被改写（工具层测试）。
+- **未做（如实记录）**：① 不动用户 shell 环境与代理工具设置（`socks://` 由 Clash「系统代理（SOCKS）」写出），工具侧只保证 MinerU 子进程拿到可用 env；② `socks4://` 一律删除、不降级为 socks5（httpx 0.28 不支持 SOCKS4）；③ JB_T_14425-2023 的 merge / normalize / SSIR / render 各阶段需在本次修复后完整跑一遍，若该文档后续阶段另暴露缺陷，另立条目记录（不与本条混同）。
+
+### 3.83 两段编号术语条目的加黑与表注逐条缩进（GEN-135 / GEN-136，2026-09-23，用户报告）
+
+- **现象（GEN-135，用户报告）**：GB_T_5171.1-2014 第 3 章的术语条目渲染成「`3.1` 单独一行 + 术语行按正文排」——术语的中英文标题**不加黑**；用户要求「所有术语的中英文标题都应加黑显示」。
+- **根因**：术语行的抽取形态有三类——① 标题 + 标题、② 段落 + 段落（前两类早已覆盖）、③ **标题(纯编号) + 段落**。该标准属第三类：编号被抽成标题（`### 3.1`，标题里只剩编号）、术语行是普通段落 → parser 的两条合并判据都不命中，术语行留在正文；SSIR 节点 `title` 为空（`term`/`englishTerm` 已由 builder 配对），渲染端 `_term_entry_text` 要求「编号 ≥3 段 + 标题为术语行」，两段编号（3.1）+ 空标题都不满足 → 判非术语条目 → 按普通标题排版（不加黑、不单独占行）。同一漏判还有第二个后果：**两段编号**的术语条目绕过 `_toc_nodes` 的术语条目排除判据（GB/T 1.1-2020 8.2.2）漏进目次——这正是 2026-09-15 GB_3100-2026「目次行只有条号」症状的根因（当时的补丁是给目次行补术语名，本轮把判据对齐后该类条目**整体不入目次**，症状从根上消失；**可见变化**：7 份语料的目次不再列出 3.x 术语条目，符合 8.2.2）。
+- **修复（GEN-135）**：① parser `_repair_term_entry_headings` 增补形态③ 分支，判据按编号段数分档——「术语和定义」要素内**不限段数**（要素内 3.1/3.2 即术语条目）、要素外维持 ≥3 段（避免把普通条的「汉字 + 拉丁」标题误判）；② `pdf_renderer._term_entry_text` 改用 builder 已配对的 `term`/`englishTerm`（只在要素内配对，段数不限）优先判据，标题形态判据作兜底。归一产物与既有形态同形：`标题 = 编号 + 空格 + 术语　英文对应词`（术语行间隙 U+3000 不变），渲染端既有「编号行顶格 + 术语行空两字、同为黑体」版式随之生效。
+- **修复（GEN-136，用户报告同一批）**：表脚注只有第一条注的首行空两字、b) 起顶格。`_split_table_note_parts` 只把「注N：」当注起始标记，字母标记族（`a)`/`b）`）不在判据内 → 整格只出一个段落（`<br>` 相连的 a)~h) 同在一段），「首行缩进」只作用于段首。补字母族判据（`_NOTE_PART_START_RE`）：`<br>` 之后紧跟注标记处切条、其余 `<br>` 保留为**注内换行**；每条注各成一段 → 各自空两字（与源 PDF 一致：表20 源页每条注均在表框左 +2 字）。
+- **验证**：单测 669（含 1 例旧断言）→ **680 全绿**（新增 11 例：`test_pdf_renderer` 3 例表注切条、`test_renderer_term_entries` 4 例混合形态 parser + 3 例两段编号版式 + 1 例目次排除正/反例）。跨语料（8 份 canonical 重 parse）：术语节点识别数 14/17/13/3/5/2/15/7，其中 7 份语料的两段编号术语条目不再进目次（移除行数 14/13/3/5/2/15/7，GB_T_1.1-2020 为 0——其术语是 3 段编号，原本已被排除）；本改动**不改 canonical**（parse/render 期修复），故无需回放脚本。产物重建：GB_T_5171.1-2014（37 页 0 警告；3.1 编号 x0=85.4 + 术语行 x0=106.4 黑体；表19 第 31 页 a)/b) 与表20 第 32 页 a)~h) 全部 x0=100.6 同缩进；10 条表注定义文本在 PDF 中各出现 1 次，其中 b)/c) 因注文本身相同各 2 次）、GB_3100-2026（25 页，告警 3 类均为既有 unknown/formula 内容类；3.1「量　quantity」编号行 + 术语行黑体；目次无 3.x 行）。
+- **未做/已知边界**：其余 6 份语料的产物未重建（各自下次重跑即生效）；术语条目的 `_tocLabel`/目次标签合成代码保留（对未被识别为术语条目的空标题编号仍有效）。
+
+### 3.84 图表脚注标记被补出半圆括号（`b)d)`）、注文行标记未上标（GEN-137，2026-09-24，用户报告）
+
+- **现象（用户报告，原文）**：「GB_T_10401的表11中的第30行和31行中的表注"b、d",应该是上标"b、d",而不是b)d),并且在最后一行的注释中，字母也应该是上标"c"而不是"c)",所有的表注应该都将字符（也可能是数字上标）如此处理」——即 GB_T_10401-2023 表11 第30/31 行（振动、冲击）的角标渲染成 `b)d)`、表尾注文行的标记渲染成 `a) b) c) d)`，而源版面是**上标裸小写字母**（表内还有第 5/6/7/8/9/19/20/24/32/33/34 行同病：`a)c)`、`c)` 等）。同一缺陷在 3 份既有语料上同样存在：GB_T_1.1-2020（`规范性引用文件a)`、附录 E 图注 `a) 国家标准发布部门…`）、GB_T_20001.10-2014（`要素a)的编排`）、GB_T_5171.1-2014（表19/20 的 `a)~h)`）。
+- **根因（引擎缺陷，render 层）**：渲染端把「脚注标记 = 标号 + 半圆括号」当成**唯一形态**，且在 `builder` / `pdf_renderer` / `csm_renderer` 三处各写一遍（`f"{label}) {text}"`、`"".join(f"\x00SUP\x00{label})\x00/SUP\x00"…)`、投影 `f"{label})"`；新增的 `html_renderer` 沿用同形），注文行行首标记干脆不做上标化（`a)` 按普通表注文字排）。而 GB/T 1.1-2020 的两条脚注条款本就是**两套编号方案**：9.12.1「条文脚注编号应从『前言』开始、全文连续，**编号形式为后带半圆括号**从1开始的阿拉伯数字」；9.12.2「与条文脚注编号不同，图表脚注编号应使用从『a』开始的**上标形式的小写拉丁字母**」（源 PDF 该条实测即 `$^{a}$、$^{b}$、$^{c}$`，无括号）。半圆括号只属数字族——`requirements.yaml` GBT-X04 的旧转写「图表脚注用小写拉丁字母 a)、b) 上标」把括号错记进了字母族，是本缺陷的规则侧源头之一（已同步更正）。
+- **落地（判据单源 + 三产物同源）**：① `parser.footnote_marker_text(payload)` 成为**唯一**判据——只对**数字**编号补半圆括号（`1)`）、字母编号原样返回（`a`、`b、d`），多角标按源分隔符连排；`footnote_label_marker(label)` 同判据（注文行首、页脚注编号共用）。② 引用点（`pdf_renderer._footnote_cite_supers`，由 `_markup` 统一放在文本流水线最前，覆盖单元格/图题/示例框/注全路径）、注文行行首（新增 `pdf_renderer._note_line_marker_supers`、`csm_renderer._strip_footnote_marker_prefix`、`html_renderer._html_note_line`）、定义行（`builder` 的 `textContent`）全部改调该判据；`_draw_page_note` 的页脚注标记同族处理（数字族仍 `1)`）。③ markdown 表达不了上标 → 投影**平印字面**（`b、d`）；PDF 用上角标哨兵、HTML 用 `<sup>` 绘成真上标，三份投影同源同一 SSIR。④ **连带修复**：GEN-136 的「表注逐条缩进」判据原为 `[a-z]\s*[)）]`，字母族去掉括号后该判据会整体失效、上一规则当场回归——故放宽为「字母 + 空白（或旧形态括号）」并上移为 `parser.TABLE_NOTE_START_RE`（判据单源）。已知同形边界：注文正文若以「b 型…」这类「字母 + 空格」开头会与标记同形（语料实测 0 例，见该常量注释），如实记录、不做上下文推断。
+- **不改数据**：canonical 侧写法（`[foot:a]` 引用点 + `<!--ssir:foot:a-->…<!--ssir:/foot-->` 定义对）不变——标记字面是**渲染期**按 `footnote_marker_text` 生成的（`parser.footnote_marker_text` 依据编号族），故本次**零 canonical 改写、无需规则实例回放脚本**（§0.4 的先规则后数据在此无回放对象）。
+- **验证**：① 单测 680 → **686 全绿**（新增 `tests/test_footnote_marker_forms.py` 5 例：判据字面族 ×3、markdown 平印、HTML `<sup>`、PDF 文本层断言；改写 4 份既有夹具的旧字面断言：`test_markdown_projection`、`test_html_projection`、`test_table_footnote_placement`、`test_footnote_anchor_kinds`）。② **跨语料 A/B**（同一 canonical、改动前语义的基线仓库 vs 改动后，10 份文档三份产物逐行 diff；基线仓库由 `src/tools` 拷贝 + 逐条回退本次改动构成，构建时 `PYTHONPATH=<基线>/src` 以保证 `pipeline` 内部 `ssir` 子进程也走基线代码——否则子进程经 editable install 解析回主仓库、A/B 会假绿）：无脚注的 6 份（GB_3100-2026、GB_T_20001.5-2017、GB_T_20001.6-2017、GB_T_30819-2024、GB_T_39567-2020、JB_T_14425-2023）三份产物 **diff 全 0**；有脚注的 4 份 **页数全部不变**（36→36 / 86→86 / 22→22 / 37→37），diff 行**全部**是标记字面（pdf 34/30/10/…、md 28/32/4/24、html 28/28/4/24），逐行核对无一处非标记改动（例：`-径向间隙a)c) / +径向间隙a、c`、`-振动b)d) / +振动b、d`、`-a) 分装式电动机不检验。 / +a 分装式电动机不检验。`）。③ 产物重建：GB_T_10401-2023（36 页）表11 续表页实测 span 级证据——「振动」9.00pt + 角标 `b、d` **7.20pt**、「盐雾」9.00pt + `c` 7.20pt、表尾注文行 `a` 7.20pt + ` 分装式电动机不检验。` 9.00pt（与源版面「上标裸字母 + 一个空格」同形）；GB_T_1.1-2020 / GB_T_20001.10-2014 / GB_T_5171.1-2014 同批重建。
+- **已知边界/未做**：① `pdf_renderer._footnote_superscripts` 里「按字母 + 汉字形状猜脚注标记」的旧通道**保留**（用于脚注定义以普通段落形态到达的路径），docs/15 §6 已列为待删除项——本次只更正标记字面，不动猜测范围（越界改动不改）；② 其余 6 份语料的产物未重建（各自下次重跑即生效）；③ 仓库根 `canonical/GB_T_10401-2023.canonical.md` 第 953 行的 `$^{c} $` 与 docroot 副本的 `[foot:c]` 不同源（`tools/replay_table_foot_markers.py` 的迁移只落在 docroot 副本上），按 §0.3/§0.4 如实报告、不手改。
+
+### 3.85 图/表题注的「标识部分」与「文字部分」之间只有半个汉字（2026-09-24，用户报告；GBT-B06/B07 执行侧）
+
+- **现象（用户原文）**：「所有表,图的标识部分与文字部分的间隔应为1个汉字,而目前只有半个汉字」。实测（改动前
+  render.pdf）：GB_T_10401-2023 表11 题注「表11〔0.30 汉字〕检验项目和顺序」（3.15pt @10.5pt 五号黑体）；
+  分图题注（`a）`, `b)`）、示例题注（GB_T_1.1-2020 表F.1 的「表× 表题」）同病。
+- **标准依据**：GB/T 1.1-2020 **10.4.2.1**「图编号和表编号之后均应空一个汉字的间隙接排图题和表题」（canonical
+  `GB_T_1.1-2020` 第 1980 行原文）；附录 F 表 F.1 序号 36—40 给的是字号与居中位置口径。
+- **根因（引擎缺陷，render 层）**：题注文本由渲染端按 ASCII 空格拼接（`f"图{number} {caption}"` /
+  `f"表{number} {caption}"`，表侧两处＝正表题 + 转页续表题注；图侧两分支＝通栏图题 + 分图题注）。同族间隙在别处
+  早已按「一个汉字」实现（条首编号后＝`_clause_head_gap`、目次行／术语行），唯独题注漏了。
+- **落地（判据单源 + 机制对齐）**：`pdf_renderer._CAPTION_LABEL_GAP`（固定字隙哨兵 `\x00GAP\x00` → escape 后
+  `<font color="white">中</font>`，推进宽恒 = 当前字号 = 一个汉字，且不是空格字符、不被两端对齐的字间距 Tw 拉伸）
+  ＋ `_join_caption_label()`（有编号无题名时不留尾巴，GBT-B08）＋ 新增 `_table_caption_text()`（正表题与续表题注
+  共用）与 `_figure_caption_text()`（通栏 + 分图共用）。
+  **为什么不用 U+3000 表意空格**：题注走 `Paragraph`，reportlab 的段落解析把 U+3000 归一成 ASCII 空格（实测
+  10.5pt 字号下只剩 2.69pt）；目次行是 canvas 直绘（U+3000 实测 1.00em，不受影响），术语行的 U+3000↔拉丁
+  间隙则由 `_markup` 既有规则转成同一个 GAP 哨兵（实测 1 汉字）——故哨兵是全渲染器唯一能表达「恒一个汉字」的机制。
+- **零 canonical 改写**：语料题注分隔符三种形态混杂（109 处单空格、34 处双空格、1 处 U+3000，源自抽取原样），
+  字隙是**渲染期**按版式规则补写的（与 GBT-B02 条首编号同层）；render.md / render.html 是结构投影，不承载版式
+  字隙，仍按抽取原样印一个空格（本次 md/html 投影**零改动**，跨语料 A/B 已证）。
+- **验证**：① 单测 686 → **689 全绿**（新增 `tests/test_caption_label_gap.py`：判据常量、图/表拼接、真 PDF 几何
+  断言 1.00 汉字；改写 `tests/test_pdf_renderer.py` 两处夹具为「编号 + 白字中 + 题名」三段 span 几何断言）。
+  ② **跨语料 A/B**（同一 canonical；capbase = 仅把 `_CAPTION_LABEL_GAP` 还原成 ASCII 空格，capnew = 当前代码；
+  10 份 × 三份产物逐行 diff）：**页数 10/10 不变**（25/86/37/22/22/15/34/24/37/22），**render.md 与 render.html
+  全 0 diff**，render.pdf diff **全部**是图/表题注行（GB_3100-2026 28、GB_T_1.1-2020 52、GB_T_10401-2023 62、
+  GB_T_20001.10-2014 4、GB_T_20001.5-2017 8、GB_T_20001.6-2017 6、GB_T_30819-2024 78（含 4 条分图题注
+  `a）中Ⅰ型`）、GB_T_39567-2020 18、GB_T_5171.1-2014 2、JB_T_14425-2023 0＝该文档无带编号+题名的表/图），
+  逐行核对无一处非题注改动。③ 产物重建：10 份 docroot 的 04_render 全部重生成。
+- **未做/边界**：`_figure_ancillary_lines`（结构化字段路径 `figure.subCaptions` → `label）text`，形如
+  「a）局部剖面」）**没有间隔词**，本次不动（源字段形态即如此，改它属于另一次判定），如实记录。
+
+### 3.82 目次区段折进 `ssir:toc` 声明块 + 声明型指令块重渲染保留条目体（GEN-133 / GEN-134，2026-09-23，用户报告）
+
+- **现象**：`JB_T_14425-2023` 抽取成功后（GEN-132 解除代理阻断），产物里出现第二套章标题——SSIR 顶层依次是 `documentBlock 目 次`（**0 个条目**）、`section 1 范围.... 1`、`section 2 规范性引用文件 …1`、…、`section 8 交付准备...`，其后才是正文的 `section 1 范围`…`section 8 交付准备`；`tocEntries = 0`；合规层报 **GBT-H03「章编号不连续」**（重复 1—8），渲染出的目次行跟着错。同一形态在其它语料的 raw 上也存在（改动前 A/B：GB_T_1.1-2020 有 **22 处**、GB_T_30819-2024 有 **8 处** 目次条目被提升成标题）。
+- **根因（三层定位）**：源 PDF 不涉（目次页是扫描图，OCR 抽取到的就是这些文本行）；MinerU 侧把目次抽成**裸段落行**（无 `##`、点线残缺甚至全丢、页码与标题粘连：`1 范围.... 1`、`3 术语和定义....`、`5 型式与基本参数2`、`6 技术要求…`）；**引擎缺陷在 normalize 层的提升判据**——GEN-035 的裸条号标题提升只认「行首条号 + 祖先链已确认（父条已提升则子级跟随）」，没有把「目次区段」这一**文档结构事实**纳入，于是 8 行条目全部被当成章标题；条目一旦成为章标题，`目次` documentBlock 自然无条目、`tocEntries` 为 0，且章树出现重复编号（GBT-H03）。标准依据：GB/T 1.1-2020 10.3.2「目次：设在封面之后…由目次的标题和各条目组成」——**目次条目不是章条**，不参与章条结构。
+- **判据（关键：不依赖导引符）**：点线是 OCR 最易丢的字符（本样例 8 行里 2 行只剩一个 `…`、1 行连点线都没有、只剩粘连的页码），任何「按 `....`/`……` 认条目」的判据都会把条目漏在区段外，而漏出去的行紧接着被裸条号提升成标题（正是本缺陷）。故判据只用**三个稳定的结构信号**：① 入口 = 标题文本去空白后恰为 `目次`/`目录`（`### 8.2 目次` 这类**编号条款**标题不算入口）；② 条目行 = 前缀为条号（`1`/`3.1`/`A.1`）、`附录`、或文前/文后要素名（前言/引言/参考文献/索引/封面），且**不含句末标点**（`。！？；`——8 份 curated canonical 的 **458 条**条目实测零命中），块起始行（`#`/指令/围栏/表格/图片/引语）一律不算条目；③ 区段终止 = 第一个不像条目的行或文件尾（条目之间的空行可跳过，MinerU 有时按块分段）。
+  > **语义修订（2026-09-23，同日用户裁定）**：上条修复的 v1 形态（条目折进 `ssir:toc` 声明块、文本原样保留）**已作废**——用户裁定「目次都是根据正文内容生成，而不是根据原来的目次显示（应丢弃）」。v2：`_parse_body` 消费区段行后**不落块、不进正文**（丢弃条数写进 warnings），`目次` 标题块保留为渲染端**按章树生成目次**的插入位置；`ssir:toc` 声明块仅对 curated/手写 canonical 里的**显式**声明继续有效（GEN-134 回写）。回放脚本 `tools/replay_toc_sections.py` 同步改为「删除显式声明块或区段行」（带内容不变量与幂等断言），对 8 份 canonical 干跑命中 16 处（每份 18～106 条，共 302 行，含 `canonical/` 与 `out/mineru/<ID>/02_canonical/` 两份副本），**用户裁定（2026-09-23）：暂不处理、保持现状**（该元数据不影响可见产物——8 份的 render.md/html 均不打印原目次条目）。
+- **修复（GEN-133，normalize）**：`parser.TOC_HEADING_TEXT_RE` / `TOC_ENTRY_PREFIX_RE` / `TOC_ENTRY_STOP_PUNCT` + `_is_toc_entry_line()` / `_toc_region_lines()`（判据**单源**，normalize 与回放脚本共用），`_parse_body` 的标题分支在写完 `目次` 标题块后把区段条目收进 `Block(kind="toc")`（带 `Directive("toc")`）→ canonical 得到与 curated 形态一致的 `<!-- ssir:toc -->…<!-- ssir:/toc -->`（docs/15 §3.8），builder 据此生成 `tocEntries`。条目文本**原样保留**（不补点线、不猜页码、不改写法——OCR 损失如实留在条目里，符合 §0.3；不匹配 `TOC_ENTRY_RE` 的行按 `text` 兜底保留，`5 型式与基本参数2` 即此类）。区段行被块消费后**不再进入提升分支**（缺陷根因就地消除，未新增特判开关）。
+- **修复（GEN-134，normalize，落地 GEN-133 时发现的前置缺陷）**：对**含** `<!-- ssir:toc -->` 的 canonical 跑 `ssir csm normalize`，条目连同结束指令整块消失、只剩悬空开指令（GB_3100-2026 的 18 条、GB_T_1.1-2020 的 106 条被吃光）——`csm_normalizer._render_block` 只写开指令（通用分支），`toc`/`figure-legend`/`figure-sub`/`formula-vars` 四种声明型指令（`DECLARATION_DIRECTIVES`）的条目体没有渲染分支。GEN-133 正要产出这类块，故必须同时修：`_render_block` 增加声明型指令分支（开指令 + 条目行原样 + `<!-- ssir:/{name} -->` 配对结束指令），重渲染幂等、零内容丢失。
+- **验证**：
+  - 单测：新增 `tests/test_toc_section.py` **12 例**（判据层 4：点线残缺/丢失仍算条目、句末标点与块起始行不算、区段遇下一标题终止、遇正文段终止；normalize 层 6：条目折进声明块且文本原样、**不再出现任何提升**（`document.warnings` 零 `promoted to a heading`）、curated 声明块重跑 normalize 条目逐条仍在 + 区段二次 normalize 逐字节相同、目次标题后的正文段不被吞、无条目时不产生空声明块、`8.2 目次` 不当入口；解析层 2：SSIR 章树只有一套 `1`/`2`、`目次` documentBlock 唯一、`tocEntries` 计数与首条 `{number:1, sourcePageLabel:1, title:范围}`、`verify_compliance` 的 **GBT-H03 零命中**）。全量 `unittest discover` 657 → **669 全绿**。
+  - 跨语料 A/B（判据：同轮代码 vs「本轮改动确定性逆向后」的对照树，**同一份 raw** 各跑一遍 normalize）：10 份 raw 中 **7 份发生变化**，每份的差异都恰好是——新增 `<!-- ssir:toc -->` 与 `<!-- ssir:/toc -->` 两行 + 区段条目行去掉 `## ` 提升标记（逐行分类校验「残留删除 0、残留新增 0」；非空非指令行**多重集逐份一致**：GB_T_1.1-2020 1987=1987、GB_T_30819-2024 857=857、JB_T_14425-2023 515=515）；折进条目数：GB_T_1.1-2020 **81**、GB_T_30819-2024 **43**、GB_T_5171.1-2014 **33**、GB_T_20001.5-2017 **18**、GB_T_20001.6-2017 **16**、GB_T_10401-2023 **13**、JB_T_14425-2023 **10**；提升命中归零：GB_T_1.1-2020 22→**0**、GB_T_30819-2024 8→**0**、JB_T_14425-2023 11→**3**（剩 3 处是正文里的真提升 6.1.9 / 7.2.9.3 / 7.2.9.4，非目次行）；另 3 份（GB_T_20001.10-2014 / GB_T_39567-2020 / GB_3100-2026）输出逐字节不变。
+  - 规则实例回放（§0.4）：新增 `tools/replay_toc_sections.py`（`[--apply] [文件…]`），对已存在产物的 canonical 做该规则的**确定性应用**，带内容不变量（非空行多重集不变、只允许新增指令对与去掉提升标记）与幂等断言（回放后该规则命中必须为 0），并顺带断言「回放后重跑 normalize 不再产生提升」。
+- **未做（如实记录）**：① 目次条目的 OCR 噪声（`2 规范性引用文件 …1` 的游离 `…1`、`附录 C(资料性） 产品试验记录14` 的半角括号）**原样保留**，不猜改——渲染端目次行由结构树生成（`pdf_renderer._toc_nodes`），条目文本只进 `tocEntries` 元数据；② `5 型式与基本参数2`（页码与标题粘连、无导引符）不拆页码，按 `text` 兜底保留；③ em-dash 列项被空行打断时首轮按段落、次轮合并为列表块（两轮不完全逐字节相同）——**既有**行为，最小夹具可复现（无目次、无声明块同样如此），与本轮两条规则无关，未做；④ 其它 6 份语料的**产物 canonical 未回放**（只有 raw 侧的 A/B 证明改动安全）——回放脚本已就绪，是否动那些产物等用户裁定。
+
+### 3.86 两份 canonical 被管线外进程「半角标点全角化」→ 表格/框线/脚注/目次全失效、封面字段丢失、页眉编号多出 `.canonical`（2026-09-24，用户报告；产物事故 + 回放工具，无新规则码）
+
+**现象（用户原文）**：「自从你的上次修改后，所有的表的渲染都不起作用了，封面的渲染也出了问题（如 GB_T_1.1 封面的 ics 和发布日期、发布机构都不见了），页眉的标准编号也多出了 `.canonical` 几个字符」。
+
+**取证（逐条可复现）**：
+1. 两份 docroot 的 `02_canonical/*.canonical.md` 在 2026-09-24 **09:27:36**（GB_T_10401-2023）与 **09:42:21**（GB_T_1.1-2020）被整体改写：文件里半角 `,` `:` `;` 计数**均为 0**（同源健康副本分别是 227/155/14 与 313/198/8），另有 `·`→`‧`(U+2027) 3 处、`~`→`～` 4 处；GB_T_10401-2023 还少了 50 个空格（与其 `, ` 出现 42 次同量级 → `, `→`，` 把空格一起吞掉；GB_T_1.1-2020 那遍不吞空格，两遍行为不同）。
+2. 该形态**不是本管线产生的**：`ssir csm normalize`（以 canonical 为起点）与 `tools/build_ssir.py`（以 raw、以 canonical 为起点）重跑，标点逐字符保持原样、canonical 文件的 md5 不变；全仓（`src/`、`tools/`、`tests/`、`rules/`、`config/`、`docs/`、`.git/hooks`、`.pre-commit-config.yaml`）没有把半角标点转全角的映射（`pipeline._MATCH_PUNCT_TABLE` 是**反方向**，且只用于配对判据）；`~/.hermes/logs/agent.log` 在 09:2x–09:4x 无任何会话行（该时段无 Hermes 会话运行），无 crontab、无 systemd user timer、无后台构建任务。判定：**管线之外**的进程对这两份文件做了整体改写。
+3. 失效链：front matter 的键变成 `csm-version：`… → `yaml.safe_load` 返回字符串 → `CSM-META-001` **告警** + `metadata={}` → `_normalise_metadata` 用文件名 stem 兜底（`GB_T_1.1-2020.canonical`）→ 页眉印出 `.canonical`，封面 ICS/发布日期/发布机构（`metadata.standard`/`common`）整体消失；`<!-- ssir:…-->` 行不再是指令（`ssir：table`）→ 21 张（1.1）/17 张（10401）表的题注·表头行数·合并指令与框线、脚注、目次全部退化为普通段落。
+4. **为何未当场暴露**：`CSM-META-001` 只是 warning，构建继续 → 静默产出「能看但全错」的 PDF（GB_T_1.1-2020 当时 90 页）。加固建议见「未做」。
+
+**判据与修复（§0.4 先规则后数据）**：新增 `tools/restore_fullwidth_punct.py`（缺省干跑、`--apply` 写回、写前留 `<name>.bak-punct` 备份）：
+- **损坏模型固定为三个**（纯标点 / `, `→`，` 吞空格 / 逗号·冒号·分号都吞空格），对副本行施加模型后与目标行**逐字符相等**才整行还原——模型的正确性由「相等」这一事实自证，不做逐字猜测；
+- **副本优先级**：健康基线的产物投影 `04_render/*.render.md`（同一文档**损坏前**的构建）> 同源 canonical 快照（仓库根 `canonical/`、`canonical_backup_20260922/`）。实测快照标点会落后于基线（10401 的 `[foot:c]` vs `$^{c} $`、`～` vs `~`），故基线在前；
+- 副本无覆盖才退化：字符级按位还原（含把被吞掉的空格补回）→ **语法必需半角**（`ssir:`、`[foot:L]`、front matter 键，CSM 文法自证）；
+- 保证：行数不变、改动只落在五个配对 `：→:` `，→,` `；→;` `‧→·` `～→~`（折叠 + 去空格后逐位相同，越界即拒绝写入）、幂等、还原后可 `parse_csm` 且 front matter 是映射。
+
+**回放与验证**：
+- 回放量：GB_T_1.1-2020 **304 行**（按位 1 + 模型 303）、GB_T_10401-2023 **250 行**（按位 11 + 模型 218/21 + 语法 1）；两份「无对位证据 0 行」；复跑 0 处改动（幂等）。
+- 产物比对（判据 = 与**损坏前的健康产物**逐字节比）：重建两份 docroot 后 `render.md` 与健康基线 **0 行 diff**；GB_T_10401-2023 与损坏前 docroot 产物（已先快照留证）**页数 35=35、警告 3=3** 一致；GB_T_1.1-2020 重建 85 页 / 15 警告（该文档的损坏前 docroot 产物已被 09:42 那次损坏后构建覆盖，无基线可比；90 页即静默错版）。
+- 用户报告的三处症状在 `render.pdf` 内逐项复核：封面 `ICS 01.120`、`2020-03-31 发布`、`2020-10-01 实施`、`国家市场监督管理总局` 均在；页眉 `GB/T 1.1-2020`（前 60 页 `.canonical` 出现 0 次）；表格题注（表1/表2）与框线绘制页各 8 页。
+- 跨语料：10 份 docroot + 仓库根 7 份 canonical 全扫「误全角化指纹」（front matter 键用全角冒号 / `ssir：` / `foot：` / 半角 `,` `:` `;` 计数为 0）——**仅这两份**命中（`GB_T_5171.1-2014` 第 1249 行 `k：偏移系数 k = 2ε / T;` 是正文真值，两份副本一致，非事故）。
+- 单测：新增 `tests/test_restore_fullwidth_punct.py` **6 例**（模型精确还原 / 吞空格补回 / 无副本时语法还原 / 只改标点且行数不变 / 幂等 / 配对表固定）；全量 `unittest discover` 689 → **695 全绿**。
+
+**未做（如实记录，等裁定）**：① `CSM-META-001`（front matter 非映射）仍只是 warning——现状会静默继续并产出全错 PDF，建议升为**致命错误**（需同步 `rules/`、compliance 报告语义与既有单测，属规则变更，未擅自改）；② `parser._normalise_metadata` 的文件名 stem 兜底未剔除产物后缀（`.canonical`/`.csm`/`.raw`）——仅在采纳 ① 时作为更清楚的报错信息补充；③ 改写这两份文件的**进程未定位**（时间戳 + 映射完全性 + 代码侧不可复现三条证据指向管线之外），如实记录、不归因猜测；④ 其余 8 份语料产物未重建（未受事故影响，未动）。
+
+### 3.87 正文半角标点 → 全角（GEN-138，2026-09-24 用户裁定）
+
+**用户原文**：「文档正文无论是全角还是半角都没有问题，但是 ssir 的控制字符只能是半角字符（这一点请保持），我以后不再全局手工替换字符（但是请你默认在生成 canonical 时将文档的半角字符替换为全角字符，特别是尾部的字符，但是公式或其他需要半角字符的特别情况除外）」。
+
+**根因（通用性确认）**：§3.86 事故之后确认了「标点分两层」——正文标点是**内容**（全/半角都可读，引擎比对时还用 `_MATCH_PUNCT_TABLE` 折叠），front matter 与 `<!-- ssir:…-->` 是**语法**（必须 ASCII）。用户要求把内容层按中式排版惯例统一为全角；此前引擎无任何此类归一（GBT-C19 只管列表标记的半角括号 `a)`，docs/07 只规定渲染端输出形态），因此源 PDF 与 MinerU 留在正文里的半角（本语料实测 653 个 `(`、589 个 `)`、400 个 `,`、139 个 `:`、37 个 `;`）一路直通成品 PDF，与汉字混排时视觉间隔偏小。
+
+**判据单源**：`parser.normalise_body_punctuation(text) -> (新文本, 替换数)`（模块级函数，normalize 与 parse 同一条判据）：
+- 转换集 `, ; : ? !`、成对 `( )`、句末 `.` → `，；：？！（）`、`。`；
+- **语境判据**：`, ; : ? !` 只要左右**任一**紧邻汉字/中文（全角）标点即转（`变频电源供电,并…` → `，`；`第1部分:通用技术条件` → `：`；`试验 A:低温` → `：`）；数字/字母包围的（`1,000`、`GB/T 1.1:2020`、`50 Hz.`）不动；
+- **括号成对**（栈配对）：只有当左括号左邻与右括号右邻中至少一侧为中文语境、且外侧不是「ASCII 字母/数字」时才成对转（`委员会(SAC/TC2)归口` → `（）`；`foo (bar) baz`、`abc(def)ghi` 不动）；括号内容含汉字也认（表格单元格 `(交流有效值或直流值)V` → `（…）V`）；`(资料性）`（半角开+全角闭）与 `（A)`（全角开+半角闭）这类**混配**统一为全角（与 GBT-C19 同源判据）；
+- **句末句号只认行尾**（其后至行末仅空白）且左邻中文：行中点号可能是引用文件/参考文献条目的分隔点号（GB/T 7714；实测 GB_3100-2026 `国际计量局.国际单位制（SI）…`），局部判据无法与句号区分 → 宁漏不误改；目次点线 `….`、小数 `1.5`、拉丁缩写 `Hz.` 一律不动；
+- **链式语境迭代到不动点**（≤3 轮）：`(见8.4);` 先换括号、`）` 成为 `;` 的中文邻居后第二轮再换分号 —— 单遍实现会漏掉这类「标点紧随括号」的形态（本轮 40 处）；
+- **一律不动**（判据与 §3.86 一致）：front matter、`<!-- ssir:…-->` 指令行与 `[foot:L]` 标记、公式（`$$` 块 + 行内 `$…$` 掩码）、`unknown` 块与围栏块（GEN-052 保留原文）、列表标记（GBT-C19 判据）。掩码用 `_body_masked_positions`（`$$…$$` / `$…$` / `<!--…-->`）。
+
+**载体**（与 CSM-OCR-004 同集）：块文本（段落/标题/图题/注/示例/警告/引用/声明型指令条目）、列项条目文本、表格单元格文本。接入点：`CSMParser.read` 的修复链**末步**（`_demote_index_letter_headings` 之后、`_classify_body_errors` 之前）——所有结构识别判据先看到原文，本规则只改最终文本，避免影响任何既有判据（实测 9 个既有夹具的期望值只有标点宽度变化，语义判据零变化）。
+
+**为何不落 warning**：与 GBT-C19 同规（排版归一不产生 issue），否则一份文档会有上百条 warning 淹没真实告警；命中数由回放工具统计。
+
+**回放与验证**：
+- 跨语料 A/B（同一 canonical、新旧判据对比、逐载体比文本）：10 份 canonical 共 **750 个载体 / 1900 个字符**差异；替换对 = `(`→`（` 653、`)`→`）` 589、`,`→`，` 400、`:`→`：` 139、`;`→`；` 37 ＋ 链式 41；
+- **改动只落在标点**：GB_T_10401-2023 重建后 `render.md` 与损坏前健康基线**折叠全/半角后 0 行差异**（1064 行 = 1064 行）；半角 `,` 227→104、`:` 29→2、`;` 14→2、`(`/`)` 92→26，全角相应上升 —— 残留半角均在 ASCII/数字语境（`T-25`、`8.5`、`GB/T`）；
+- 产物：GB_T_10401-2023 页数 **35=35**、警告 **3=3**；GB_T_1.1-2020 页数 **85=85**、警告 **8=8**（标点宽度不改变断行）；
+- 回放工具干跑（文件级）：10 份 canonical 共 **802 行 / 1922 处**，与解析层差值为「解析层会折叠进其它载体的行」；
+- 单测：新增 `tests/test_body_punctuation_width.py` **10 例**（含语境/守卫/掩码/载体/幂等/混配括号/引用条目点号反例）；既有 9 处夹具期望值仅标点宽度变化；全量 **695 → 705 绿**。
+
+**未做/边界（如实记录）**：① 行中点号（可能是参考文献条目分隔点号）**不转**——若用户要求也转，需要按「参考文献/引用文件」要素锚定后再放开；② 未覆盖的剩余形态：单侧未闭合的括号（OCR 丢对，如 `《…条件)。`）、ASCII 引号 `"…"`（配对需按对替换，本语料 0 处中文邻接）、`%`/`°`/`-`/`~` 等非标点符号不做宽度归一；③ 既有 10 份 canonical **文件本身**尚未回放（用户偏好：不改写人工 curation 基线；`tools/replay_body_punctuation.py` 干跑已列出逐文件命中，等裁定）；④ 其余 8 份 docroot 产物未重建（本规则对 parse 路径全局生效，需重跑才与代码一致）。
+
+### 3.88 表/图题注与单位陈述：可见文字优先 + 一致性告警（GEN-139 / CSM-TABLE-005，2026-09-24 用户裁定）
+
+**用户提问与裁定**：「表的定义参数中有 caption 字段，但是下面还有 `**` 号包括的表编号和表头名称，这不是重复了并且容易造成不一致吗？而且有时候我发现表头被显示了两次，这个问题最后如何确定?」→「表头名应该以文字为准（行优先），在渲染时如果与属性值不一致，则告警并将属性值替换为与行标题一致，且 json 文件也以行表头填充该值」；（a）落点按解析阶段、（b）A（解析层即时）+ B（文件回放工具）、（c）单位与图题注一并统一。
+
+**现象与根因（通用性确认）**
+- 表/图题注与单位陈述在 canonical 里有**两份表示**：指令属性（`caption-number`/`caption`/`unit`，机器形态）与可见文字行（`**表N 题名**`、`**表N**`、单位陈述行、图题注 alt 文本 `![图 1 …](…)`）。两份并存时由解析层折入统一，但此前**静默**：属性被可见文字改写无任何告警；指令上方且编号不一致的暂存题注被静默丢弃；而**加粗**题注行位于指令**上方**时压根不折入（旧判据 `TABLE_HEADING_CAPTION_RE` 只认行首为「表」的非加粗形态）→ 题注既作属性印一次、又作段落印一次，即用户看到的「表头显示两次」。渲染端 2026-09-22 起**零文本推断**（P0-E，只认 `presentationType`），不会抑制「像题注」的残留段落，故该形态必然双印。
+- 全语料度量（11 份 canonical 重 parse）：并存 97 处**全部一致**；4 处陈旧属性此前全程静默——GB_T_1.1-2020 §9.8.2 示例表占位编号 `×` 在文件里写成 `1`；GB_T_30819-2024 `mineru-table-raw-006` 编号 7↔6、`mineru-table-raw-009` 编号 10↔9 且题名 HS-Ⅱ↔HS-Ⅰ（题注属性整体错位一格）；SSIR 里残留「题注形段落」0 处。
+
+**修复（面向问题类，落解析层）** `parser._note_caption_attr_conflict` + 折入点改造：
+- 题注行（紧贴表行、或位于指令上方，含加粗形态）→ 折入并**行优先**；与属性不一致时落 `CSM-TABLE-005`（severity warning、`repaired=True`，消息带行号/表 id/属性名/属性值/可见值）。
+- 编号不一致的暂存题注仍**保守不并**（防误并正文「见 表5 …」），但改为落 `CSM-TABLE-005` 告警（不再静默丢弃）。
+- 单位陈述行同样行优先 + 告警（表与图同判据）；图题注判据单源 `parser.figure_caption_parts`（从 builder 移入，2026-09-24）。
+- **渲染端不动**（零推断、纯投影）；文件级对齐另设回放工具 `tools/sync_table_caption_attrs.py [--apply]`（备份 `.bak-caption-attr`；行数不变 / 只改三个键 / 幂等 / 改后 0 告警四重断言；只替换既有值不新增键）。
+
+**验证**：回归夹具 `tests/test_caption_visible_text_wins.py` 11 例；跨语料回放 8 处（4 文件，含仓库根 canonical 副本）→ `CSM-TABLE-005` 归 0；重建 GB_T_1.1-2020、GB_T_30819-2024：render.md 折叠标点**逐行一致**、canonicalText 折叠后 0 差异、页数 85/33 不变、SSIR 表/图/目次（除锚点 id）一致、PDF 文本层题注仍只出现一次（`表4　安装配合面的同轴度` 第 4 页 1 次）；全量单测 705 → **716 绿**。
+
+**未做（等裁定）**：其余 8 份 docroot 产物未重建（本次规则对既有产物取值无影响，重建只为让处理记录含新告警）。
+
 ## 5. 规则 ID 速查（本知识库涉及）
 
 ### 5.1 通用规则（extraction-rules.yaml，GEN-*）
@@ -3546,6 +3861,24 @@ docs/12 §2 行 71、§5.1 GEN-032 摘要、§7 历史。
 | GEN-120 | render | must | 横排判据② = **可行性**：`列数 × 列下界（2×边距 + 一个汉字宽）≤ 横排可用宽`；Σ软需求只作列宽分配目标。多行表头（表头行数据实识别）不得把宽表从横排顶回竖排 |
 | GEN-121 | render | must | 列宽起点 = ``max(列下界, 该列数据需求 = 80% 分位 + 8pt)``（Σ起点 ≤ 版心时），富余仍按折行代价买入；表头底线不作起点。防「加宽省不下行数」的列被饿到不必要折行、余量堆到别列 |
 | GEN-122 | render | must | 希腊字母从**拉丁字形族**取形（CJK 字族的 U+03C6 是全高「Φ 形」，小写读作大写）：`_markup` 收尾按位置换族，变量位置（`<i>`）用拉丁斜体、单位/算子（μ/Ω/Δ）用正体；profile 未声明时不替换 |
+| GEN-123 | build | must | 写回 `01_extract/*.raw.md` 的 front matter **必须带 `---` 围栏**：`_split_front_matter` 返回的是不含围栏的 FM 正文，裸拼会让下游 normalize/parse 以 「CSM must start with YAML front matter」拒收（raw/middle.json 起点整条断掉）。落地 `build_ssir._materialize_raw`（对已带围栏的输入幂等） |
+
+| GEN-124 | parse | must | 脚注定义锚点按结构配准：引用点只在**自身节点及祖先**内查（跨章重号不误配）；无引用点 → 紧贴的图元素（`anchorKind=figurePart`）；否则条款节点（`page`）；落地 `_footnote_anchor`/`_adjacent_figure_anchor` |
+| GEN-125 | render | must | 框内（`ssir:box`）且非 `tableCell/figurePart` 的脚注定义**就地绘制**（页脚钩子在框表内不触发），不得丢内容 |
+| GEN-126 | render | must | 「式中」解释组必须投影（`explanationGroup.items`，不得整组静默消失）且**粘回「式中：」引入行之后**；引入行缺失就地发射；行文本复用 PDF 端唯一实现 |
+| GEN-127 | render | must | 投影产物的资产引用按**产物所在目录**解析（`asset_base_for`），图链接必须能在阅读器打开（跨语料 48/48） |
+| GEN-128 | build | must | 「式中」组的 `formula=` 声明不得跨（框, 并列组）作用域归属；越界时按结构位置归属并记 `qualityAssessments.comments` |
+| GEN-129 | render | must | 解释行必须排在引入行**之后**（暂存 + 遇非引入单元 flush，三条发射路径同判据），且行文本**带终结符** `；`/`。` |
+| GEN-130 | render | must | markdown 子集表达不了的结构（外框线／无框线／并列分栏／合并单元格）不得降级：另出 `04_render/<ID>.render.html`（真实 `<table>`/CSS），`render.md` 保持零 `ssir:` 指令、零 HTML 注释 |
+| GEN-131 | render | must | **表脚注排在表框内**（表末通栏行）：canonical 表脚注定义行紧贴表末行；PDF 并表通栏行、markdown 表末行、HTML `<td class="table-note">`，位置由 `notes[].anchorKind == tableCell` 结构化决定 |
+| GEN-132 | extract | must | MinerU 子进程的 env **必须做代理规整**，不得原样继承调用方环境：httpx（MinerU CLI 用它访问本地 mineru-api）只认 http/https/socks5/socks5h，`socks://` → `socks5://`、其余不可用方案删该变量、回环地址写进 `NO_PROXY`；只改子进程 env 副本（`os.environ` 不动），两个启动点同规 |
+| GEN-133 | normalize | must | 目次区段（`目次`/`目录` 标题之后的条目行）**必须被消费掉、不带进产物**（2026-09-23 用户裁定：目次由正文生成、原目次显示应丢弃；v1 的「折进 `ssir:toc` 并原样保留」同日作废），区段行不得参与裸条号提升：判据不依赖导引符（OCR 会丢点线）——条目前缀（条号/附录/文前文后要素名）+ 无句末标点（`。！？；`）+ 遇不像条目的行终止；条目文本原样保留（不补点线、不猜页码）；依据 GB/T 1.1-2020 10.3.2（目次条目不是章条） |
+| GEN-134 | normalize | must | 声明型指令块（`toc`/`figure-legend`/`figure-sub`/`formula-vars`）的**条目体在重渲染时必须原样回写**，不得丢弃：开指令 + 条目行 + `<!-- ssir:/{name} -->` 配对结束指令，重渲染幂等、零内容丢失 |
+| GEN-135 | parser/render | must | 术语条目的术语行有三类抽取形态（标题+标题 / 段落+段落 / **标题(纯编号)+段落**），**都必须归一为「编号标题 = 编号 + 术语　英文对应词」**，并在渲染端按「编号行顶格 / 术语行空两个汉字、同为黑体」排版；「术语和定义」要素内编号段数不限（3.1/3.2 亦为术语条目），要素外维持 ≥3 段；渲染判据优先用 builder 配对的 `term`/`englishTerm`（只在要素内配对） |
+| GEN-136 | render | must | 表注（含表脚注）**每条注各成一段**、各自「首行空两个汉字」：字母标记（`a)`/`b）`）与「注N：」同为注起始标记，`<br>` 之后紧跟标记处切条、其余 `<br>` 为该条注的注内换行 |
+| GEN-137 | render | must | 脚注标记字面按**编号族**分定（GB/T 1.1-2020 9.12.1 / 9.12.2）：条文脚注（数字编号）→ 上标 `N)`；图表脚注（字母编号）→ 上标**裸小写拉丁字母** `a`（**不得补半圆括号**），一格多角标按源分隔符连排（`[foot:b、d]` → 上标 `b、d`）；判据单源 `parser.footnote_marker_text`，markdown 投影平印、PDF/HTML 绘真上标 |
+| GEN-138 | normalize | must | 正文**中文语境**的半角标点 → 全角（2026-09-24 用户裁定；判据单源 `parser.normalise_body_punctuation`）：`, ; : ? !` 与句末 `.` 在左右任一紧邻汉字/中文标点时转 `，；：？！` / `。`；括号栈配对成对转换（`(资料性）`、`（A)` 混配统一为全角）；句号只认**行尾**（行中点号可能是 GB/T 7714 引用条目分隔点号，宁漏不误改；目次点线/小数/拉丁缩写不动）；链式语境（`(见8.4);`）迭代到不动点（≤3 轮）。**不动**：front matter、`<!-- ssir:…-->` 指令与 `[foot:L]` 标记、公式（`$$` 块与行内 `$…$` 掩码）、未知/围栏块（GEN-052）、数字字母单位千分位小数与列表标记（GBT-C19）。载体同 CSM-OCR-004（块文本/列项条目/表格单元格）；排版归一不落 warning；回放 `tools/replay_body_punctuation.py`；详见 §3.87 |
+| GEN-139 | parse | must | 表/图题注与单位陈述：**可见文字优先**（`**表N 题名**`/`**表N**`/单位行/图题注 alt 文本 > 指令属性），不一致落 `CSM-TABLE-005`；加粗题注行（指令上方）纳入折入（防双题注）；编号不一致保守不并但告警；判据单源 `parser._note_caption_attr_conflict` / `parser.figure_caption_parts`；渲染端不回写；文件级对齐 `tools/sync_table_caption_attrs.py --apply` |
 
 ### 5.2 需求规则（requirements.yaml，GBT-*）
 
@@ -3594,6 +3927,7 @@ docs/12 §2 行 71、§5.1 GEN-032 摘要、§7 历史。
 | CSM-OCR-016 | 冒号引导完整列项组缺失 marker：OCR 只保留条目组中个别 marker（破折号/间隔号/a）/1)），丢 marker 条目沦为普通段落（6.7.1.1 末条「形成标准的单独部分。」、6.4.3 首末条、A.1 首条），6.4.4 型首条与引导句粘连；前言型长清单还会被组中偶发「。」（GB_T_5171.1-2014 源文第 7 条）或条目末「；」被 OCR 读成「：」截断 | parser `_repair_colon_led_lists`（完整性机制）：引导句「：」收尾 + 条目「；」序列 + 末条「。」收尾 → 整组判型；**组尾判定＝标记列表块末条「。」且其后不再有强条目（以「；」收尾的标记列表块/无标记段落）**——组中偶发「。」只在源文真如此时出现，续接强条目即继续吸收，整组一次重建；无标记段落以「：」收尾且其后仍是强条目 → 按条目吸收并把终止符归一为「；」，否则截断不猜；组内 ≥1 幸存 marker 定族（dash/dot/letter/number 全支持），缺 marker 条目补同族（符号型取幸存多数派形态，字母/数字按组序重排），粘连首条按末个「：」拆出，整组收敛单 list 块并重跑 CSM-OCR-001 符号统一；无幸存 marker/族不一致/条目<2/非「。」末条/中途遇编号条文或注示例表图起始均不猜 | 用户确立的列表完整性判型（GBT-H06/C12 列表层次执行侧；与 CSM-OCR-005 互补；016 先于 005 调用） | 20001.10 六处（6.7.1.1/6.4.3/6.4.4/A.1 等）渲染补全破折号；GB_T_5171.1-2014 前言 33 条整组重建（16 条补 marker + 2 条「：」→「；」），重 parse 016/005 命中 0；跨语料 GB_T_1.1-2020 与 5 份 csm 夹具逐字节不变、命中 0；回归测试 12 例（4 正型+粘连+字母族+组中「。」+「：」正反例+4 反例） |
 | CSM-STRUCT-006 | ssir:box 显式文档框声明配对/嵌套错误：关标记无开（`<!-- ssir:/box -->` 裸关）、开标记嵌套、开标记未闭合到文档尾 | parser `_parse_body` 行级事件块（BOX_MARKER_RE，先于通用 ssir 指令分支）：维护 box_open_line 配对状态，嵌套开/裸关/未闭合 → 本码记录（宽容模式不阻断，确定性继续：未闭合开延伸到文档尾、裸关/嵌套开忽略；strict 模式照常 raise）；builder 同语义推进（嵌套开不新开框） | 工程规则（docs/07 §6.8 ssir:box 语法；2026-09-08） | 回归测试 4 例（配对正常零命中 / 裸关 / 嵌套开 / 未闭合开）；无标记文档（corpus/golden/csm）零命中 |
 | CSM-TABLE-004 | 表单元格内已转义竖线被写侧二次转义（normalize/roundtrip 幂等破坏；含 LaTeX 绝对值/范数竖线的表，GB_T_755-2025 表12/13/15 报 "row has 6 cells; expected 4"） | 写侧转义与读侧同规且幂等：`parser.escape_table_cell` 只给偶数反斜杠前缀的竖线补反斜杠、已转义（奇数前缀）保持原样；csm_normalizer（raw→canonical）/csm_renderer（SSIR→render.md）/mineru_html/docx_importer 四处写侧统一（docx_importer 原实现源码 4 反斜杠更过冲一并修正） |
+| CSM-TABLE-005 | 表/图**题注**与**单位陈述**的可见文字与指令属性不一致（属性被静默改写、或加粗题注行在指令上方不折入导致同一题注印两次） | 可见文字优先并落结构化告警：`parser._note_caption_attr_conflict`（**GEN-139**）；折入形态含加粗题注行；编号不一致保守不并（告警）；图题注判据单源 `parser.figure_caption_parts`；既有文件回放 `tools/sync_table_caption_attrs.py --apply` |
 | CSM-OCR-017 | 公式编号从未进入 SSIR：MinerU 把整条公式行识别为一个 equation 块，引导线连编号写进 LaTeX `\tag{…}`（常缺右花括号 `\tag{……………………(1}`）；另有编号行非「式(N)」形态的噪声 | `parser._repair_formula_numbers`：从 `\tag{}` 提取编号（括号可缺）并清掉残留；「式（1）/式(1)」归一为纯编号标签（解析动作不记 issue，噪声形态才记修复）；**全文档编号管理**——正文自引言起 1..n、附录内 `<字母>.1..n`，抽取值与序列位不符即报出（保留抽取值、不重排、不填补；9.9.2 缺号即保持无编号）；`csm_renderer`/`csm_normalizer` 写回「式(N)」 |
 | CSM-OCR-018 | 「式中：」变量解释项形态被 OCR 读坏：破折号族长度变体（-、—、——）或整段丢失、缺终止符、终止符被读成「：」 | `parser._repair_formula_variable_lines`：以独占一行的「式中：」为锚、其后连续段落块按「短变量头 + 破折号族或缺失 + 汉字解释」判型（组内 ≥2 项），归一只碰破折号族与终止符（统一「——」、缺失补回、补「；」，末项「。」）；已有「。」不强制改「；」（示例边界）；渲染端 PDF 固定字隙、docx 半角空格补四分之一汉字字隙 |
 | CSM-STRUCT-008 | `ssir:columns` 显式并列声明配对/嵌套错误：`ssir:column`/`ssir:/columns` 无开（裸列/裸关）、`ssir:columns` 嵌套开、开标记未闭合到文档尾 | parser `_parse_body` 行级事件块（COLUMNS_MARKER_RE，先于通用 ssir 指令分支）：维护 columns_open_line/列序号，嵌套开/裸列/裸关/未闭合 → 本码记录（宽容模式不阻断，确定性继续：未闭合开延伸到文档尾、错位事件忽略；strict 模式照常 raise）；builder 同语义推进（嵌套开不新开组）。列宽比 widths 非法时告警并等分 | 工程规则（docs/07 §6.9 ssir:columns 语法；2026-09-11） | 回归测试 4 例（事件正常零命中 / 裸列+裸关 / 嵌套开 / 未闭合开）；无标记文档零命中 |
@@ -3926,3 +4260,72 @@ PY
 - 2026-09-19 追加（九）：§2 表 91、§3.68 二轮修正、§5.1/§5.2 **GEN-116（改）**——行内公式的上划线从「字体的组合上划线 U+0304」改为**矢量短横线**（reportlab `<u offset=…>`：宽度 = 被覆盖 run 的推进宽、高度 = 该字符在其实际字面里的墨迹高度 + 0.19em）；用户报告「6.4 公式 `$$` 之间的 `\overline` 正常，但下面 `$` 之间的很短或与文字粘连；5171.1 A.2 的 `\overline` 没有任何效果」（U+0304 属 CJK em 框：0.268em 宽、固定在 em 框顶——x 高字母悬空半字宽、cap 字母埋进顶衬线）。同一批 SSIR 的跨语料 A/B：9 个 SSIR（8 份文档）**页数全等**，文本只在 `\overline` 行变化（U+0304 计数 7/2/2/1 → 0），短矢量线只在这 12 处新增；`InlineMathVariableStyleTests` 7 例
 
 - 2026-09-19 追加（十）：§2 表 92、§3.74——GB_T_30819-2024 表2 续表的表头少一行：**产物/数据问题（非代码缺陷）**——canonical 的 12 张表丢了 GEN-114 回放的 `header-rows="2"`（raw 与源版面都是 2，重新 normalize 实测也写出 2），下游照抄 canonical 故续表只重复一行；已按 `tools/replay_table_header_rows.py --apply` 回放并重建（只有指令行变化、raw 侧 0 变化、复跑 0 命中），续表两行表头齐全、33→33 页、roundtrip passed
+
+- 2026-09-22 追加（十一）：§2 表 93、§3.76、§5.1 **GEN-123（新）**——raw 起点（`rawFile/*.md` 与 MinerU `middle.json`，两者都自带 front matter）写回 `01_extract/*.raw.md` 时丢了 `---` 围栏，normalize 以「CSM must start with YAML front matter」整条拒收；改为统一经 `build_ssir._materialize_raw` 补围栏（对已带围栏的输入幂等），夹具 `tests/test_build_ssir.py::RawMaterializationTests` 3 例。同日 P0-F 落地：docx 与回环验证**永久下线**（引擎/CLI/工具/产物/测试），render.md 改为 SSIR 的标准 markdown 投影，见 docs/16
+
+- 2026-09-23 追加（十二）：§2 表 94/95、§3.77、§5.1 **GEN-124 / GEN-125（新）**——第三族尾巴收口：GB_T_1.1-2020 的 6 处图/附录下脚注**定义**仍是 `$^{L}$ 注文` 旧形态（未按 GEN-118 写指令对 → `notes[]` 未登记、被当正文渲染）；
+  回放工具 `tools/replay_figure_foot_definitions.py`（干跑 + `--apply` + 行级不变量 + 内容不丢 + 可 parse/validate + 幂等）落地 6 处；
+  同时修两条通用缺陷：**GEN-124**（锚点跨节点误配：附录 E 的图注被挂到第 9 章某表 → 按节点分层查引用点、无引用点取紧贴的图元素）、**GEN-125**（框内页脚型脚注整条不画 → 就地绘制）。
+  跨语料 9 根页数逐项不变、1.1 的 6 条定义 6/6 绘出；单测 586 → 589 全绿。
+
+- 2026-09-23 追加（十三）：§3.78——**P0-C `layout.json` 通道落地（架构级，非缺陷，无新增 GEN）**：`src/leleby_ssir/layout.py`
+  成为唯一读源 PDF 的模块，`01_extract/<ID>.layout.json` 承载 `textLines`/`ellipsisLines`/`frames`/`imageRects`/
+  `cover.pdfPage0Lines`/`pages`/`textSpans`/`columns`；11 个读取点的判定一行未改，只换通道（缺通道回退旧路或按「无判据」记日志）。
+  跨语料证据：9 根「通道 == 直读」逐字段相等；6 根四轮重建的 SSIR sha256 / 页数 / 文本层签名 / 警告数 0 变化；
+  移开 `corpus/golden/GB_T_30819-2024.pdf` 与 `00_source` 副本后按 canonical 起点重建，产物逐字节不变；
+  单测 589 → **610 全绿**。方案与全表见 docs/16 §2.3 / §3 / §14.6。
+
+
+- 2026-09-23 追加（十四）：§2 表 96～98、§3.79 **GEN-126（新，render）**「式中」解释组必须投影且粘回
+  引入行、**GEN-127（新，render）** 资产引用按产物目录解析、**GEN-128（新，build）**「式中」组的 `formula=`
+  声明不得跨（框, 并列组）作用域。用户报告 md 投影丢式中内容 / 图不显示；GEN-128 为本轮由投影修复牵出的
+  **既存**错位（PDF 同错，canonical 第 1707 行声明指向别处公式）。单测 610 → 618 全绿；跨语料 48/48 图链接、
+  56/56 式中条目；全量重建仅 GB_T_1.1-2020 的 SSIR/render.md 变化。
+- 2026-09-23 追加（十五）：§2 表 99～101、§3.80、§5.1 **GEN-129 / GEN-130 / GEN-131（新）**——用户一轮报告三件事：
+  ① 9.9.3.1「式中：」印在解释变量下方、条目句尾 `；`/`。` 丢失（PDF 与 md 同错）→ **GEN-129**（三条发射路径统一
+  「暂存 + 遇非引入单元 flush」，行文本带终结符）；② 示例框/并列分栏/框线在 md 里表达不了 → 用户裁定 **C 方案**，
+  **GEN-130**（新增伴生产物 `04_render/<ID>.render.html`，`render.md` 保持纯 GFM，两者同源同判据）；③ 表 F.1 的
+  表脚注排在表格外面 → **GEN-131**（canonical 表脚注定义行紧贴表末行，4 份文档 7 处形态回放、内容逐路径比对零实质
+  差异；PDF 表末通栏行 / md 表末行 / HTML `<td class="table-note">`）。验证：单测 618 → **639 全绿**；跨语料 9 份重建
+  PDF 页数逐项不变、表脚注 **19/19** 三种投影全部落在表框内；GEN-131 做**回退实验**（anchorKind 临时改回 `page`
+  → 几何判据红）证明判据判别力。**二轮补修**：用户报 `render.html` 残留 `$…$` 控制符 → GEN-130 加 `_html_text`（统一正文入口，走 PDF 同判据拍平 + 哨兵转标签），9 份重建后正文 `$` = 2（两处均为 canonical 单个游离 `$` 的抽取噪声）、LaTeX 残留 0、md 违规 0；单测 639 → **646 全绿**。
+- 2026-09-23 追加（十六）：§2 表 102、§3.81、§5.1 **GEN-132（新，extract）**——用户报告 `.venv/bin/python tools/mineru_full_standard.py JB_T_14425-2023.pdf` 出错：
+  MinerU 子进程启动即退出码 1，`ValueError: Unknown scheme for proxy URL URL('socks://127.0.0.1:7897/')`（httpx 0.28 在构造客户端时只认 http/https/socks5/socks5h，
+  而调用方 shell 的 Clash「系统代理（SOCKS）」写的是 `socks://`）。修复为**子进程 env 代理规整**（新增 `src/leleby_ssir/process_env.py`）：
+  `socks://` → `socks5://`、其余 httpx 不可用方案删该变量、回环地址写进 `NO_PROXY`；只改 env 副本（`os.environ` 不动）；
+  两个 MinerU 启动点（`tools/mineru_full_standard.py::_mineru_env()`、`src/leleby_ssir/pdf_extractor.py::_mineru_extract`）同规。
+  验证：单测 646 → **657 全绿**（新夹具 11 例，含真实 httpx 构造的抛错/不抛错对照与「env 副本不改 os.environ」断言）；
+  同一 `socks://` env 下端到端跑通 JB_T_14425-2023 抽取（修前 0.1 分钟内失败、`parts/` 为空）。未做：不改用户 shell/代理工具设置；`socks4://` 不降级（httpx 不支持）。
+- 2026-09-23 追加（十七）：§2 表 103～104、§3.82、§5.1 **GEN-133 / GEN-134（新，normalize）**——JB_T_14425-2023 抽取跑通后暴露：
+  ① 目次条目被裸条号提升（GEN-035）当成章标题 → SSIR 出现第二套 `1..8`、`目次` documentBlock 空、`tocEntries=0`、合规报
+  **GBT-H03**（用户报告）。修复 **GEN-133**：新增目次区段判据（`目次`/`目录` 标题 + 条目前缀 + 无句末标点，**不依赖导引符**，因为 OCR 会丢点线），
+  区段条目收进 `ssir:toc` 声明块、区段行不再参与提升，条目文本原样保留（§0.3）。② 落地 GEN-133 时发现前置缺陷：含 `<!-- ssir:toc -->` 的 canonical
+  重跑 `ssir csm normalize` 会把条目连同结束指令整块丢掉（四种声明型指令都如此）→ **GEN-134**（`_render_block` 增加声明型指令分支，重渲染幂等、零丢失）。
+  验证：单测 657 → **669 全绿**（新夹具 12 例）；跨语料 A/B（同轮代码 vs 本轮改动的确定性逆向后对照树、同一份 raw）10 份中 7 份变化，差异**只有**新增指令对两行 +
+  条目行去掉 `##` 提升标记（逐行分类「残留删除 0/残留新增 0」，非空非指令行多重集逐份一致），目次条目折进数 81/43/33/18/16/13/10，提升命中 GB_T_1.1-2020 22→0、
+  GB_T_30819-2024 8→0、JB_T_14425-2023 11→3（余 3 处为正文真提升）；新增规则实例回放脚本 `tools/replay_toc_sections.py`（内容不变量 + 规则命中归零的幂等断言）。
+  未做：目次条目 OCR 噪声（游离 `…1`、半角括号、粘连页码）原样保留、不猜改；其它 6 份语料的产物 canonical 未回放（等裁定）；em-dash 列项两轮渲染不一致是**既有**行为，未做。
+- 2026-09-23 追加（十八）：§2 表 105～106、§3.83、§5.1 **GEN-135 / GEN-136（新）**——用户报告同一批两个版式问题：
+  ① GB_T_5171.1-2014 的术语条目「中英文标题未加黑」（术语行被抽成段落、编号是标题，第三类抽取形态两条既有判据都不命中；且渲染端还要「编号 ≥3 段」，两段编号整体漏判）→ **GEN-135**（parser 增补混合形态 + 判据按要素分档；渲染端改用 builder 配对的 `term`/`englishTerm` 优先）；
+  ② 表注只有第一条注首行空两字（表脚注用字母标记 `<br>` 相连，旧判据只认「注N：」）→ **GEN-136**（注起始标记补字母族、每条注各成一段）。
+  副产物：两段编号的术语条目原先绕过目次排除判据（GB/T 1.1-2020 8.2.2），7 份语料的目次因此少列 3.x 术语条目——这是 2026-09-15「目次行只有条号」症状的根因消除（当时补的是标签，本轮补的是判据）；GB_T_1.1-2020 不受影响（术语为 3 段编号）。
+  验证：单测 669 → **680 全绿**；8 份 canonical 重 parse 的术语识别/目次移除数如 §3.83；产物重建 GB_T_5171.1-2014（37 页 0 警告，术语行与表注缩进逐条实测）与 GB_3100-2026（25 页）。未做：其余 6 份语料产物未重建；canonical 未改（parse/render 期修复，无需回放）。
+- 2026-09-23 追加（十九）：§2 表 103 / §3.82 / §5.1 **GEN-133 语义修订（v1 折进 → v2 丢弃）**——用户裁定「目次都是根据正文内容生成，而不是根据原来的目次显示（应丢弃）」：normalize 消费目次区段行后**不落块、不进正文**（原样保留策略作废），`目次` 标题保留为渲染端按章树生成目次的插入位置；`ssir:toc` 显式声明仍受支持（GEN-134）。回放脚本 `tools/replay_toc_sections.py` 改为「删除显式声明块/区段行」并保留内容不变量与幂等断言，干跑命中 8 份 canonical 共 16 处（302 行，含两份副本）。**用户裁定：暂不处理、保持现状**（仅 SSIR 的 `tocEntries` 元数据承载原目次，可见产物不受影响）。另：JB 的 canonical 缺 `## 目 次` 标题 → 生成目次页消失，用户裁定自行补回，代码侧不动。验证：`tests/test_toc_section.py` 12 例改写后全绿（原「折进」断言改为「丢弃」断言，新增「目次标题保留 + 无 `ssir:toc` + 条目行不在 canonical」）。
+- 2026-09-24 追加（二十）：§2 表 107、§3.84、§5.1 **GEN-137（新，render）**——用户报告 GB_T_10401-2023 表11 第30/31 行「表注 b、d 应该是上标 b、d，而不是 b)d)，最后一行的注释字母也应该是上标 c 而不是 c)，所有的表注都应如此处理」：
+  渲染端把「脚注标记 = 标号 + 半圆括号」当唯一形态（builder / pdf_renderer / csm_renderer 三处各写一遍），而 GB/T 1.1-2020 9.12.1（数字族「后带半圆括号」）与 9.12.2（字母族「上标形式的小写拉丁字母」）是两套编号方案 → **GEN-137**（判据单源 `parser.footnote_marker_text`：数字 → `1)`、字母 → 裸 `a`；引用点 / 注文行首 / 定义行三处全部改判据；md 平印、PDF/HTML 真上标；随带把 GEN-136 的切条判据放宽到「字母 + 空白」并单源化为 `parser.TABLE_NOTE_START_RE`，否则上一规则当场回归）。同时更正 `requirements.yaml` GBT-X04 的字母族转写（旧文误写 `a)、b)`，源标准 9.12.2 无括号）。
+  验证：单测 680 → **686 全绿**；跨语料 A/B（同 canonical、改动前语义基线仓库 vs 改动后、10 份 × 三份产物逐行 diff）无脚注的 6 份 diff 全 0、有脚注的 4 份页数不变且 diff 全是标记字面；4 份产物重建（GB_T_10401-2023 表11 续表实测角标 span 7.20pt vs 正文 9.00pt）。**零 canonical 改写**（标记字面在渲染期生成，无回放对象）。已知边界：字母 + 空格同形的注文正文不做上下文推断（语料 0 例）；`_footnote_superscripts` 的旧字母猜测通道保留待删；仓库根 `canonical/` 副本第 953 行的 `$^{c} $` 与 docroot 副本 `[foot:c]` 不同源，如实报告、不手改。
+- 2026-09-24 追加（二十一）：§2 表 108、§3.85（**GBT-B06/B07 执行侧修正，无新码**）——用户报告「所有表,图的标识部分与文字部分的间隔应为1个汉字,而目前只有半个汉字」：渲染端按 ASCII 空格拼题注（0.30 汉字），而 GB/T 1.1-2020 10.4.2.1 规定编号与题名之间空一个汉字 → 判据单源 `pdf_renderer._CAPTION_LABEL_GAP`（固定字隙哨兵，白字「中」，推进宽恒 = 字号）＋ 新增 `_table_caption_text()`（正表题/续表题注同判）与 `_join_caption_label()`；**不能**用 U+3000（reportlab 段落解析会归一成 ASCII 空格，实测只剩 0.26 汉字）。验证：单测 689 全绿；跨语料 A/B 10 份页数不变、render.md/html 零 diff、render.pdf diff 全为题注行；10 份 docroot 重建。canonical 零改写。
+- 2026-09-24 追加（二十二）：§2 表 109、§3.86（**产物事故 + 回放工具，无新规则码**）——用户报告「自从你的上次修改后，所有的表的渲染都不起作用了，封面的渲染也出了问题（如 GB_T_1.1 封面的 ics 和发布日期、发布机构都不见了），页眉的标准编号也多出了 `.canonical` 几个字符」：
+  取证结论：**不是代码缺陷**——GB_T_1.1-2020 与 GB_T_10401-2023 两份 docroot canonical 在 09:27/09:42 被**管线之外**的进程整体「半角标点全角化」（半角 `,` `:` `;` 残留 0、`·`→`‧`、`~`→`～`，GB_T_10401-2023 那遍另吞 50 个空格）；现网代码从 raw 或从 canonical 重跑都不产生该形态（md5 不变），全仓无反向映射，该时段无会话/定时任务记录。
+  失效链：front matter 键失效 → `yaml.safe_load` 非映射 → `CSM-META-001`（**仅告警**）+ `metadata={}` → 文件 stem 兜底成 `GB_T_1.1-2020.canonical`（页眉）+ 封面 ICS/日期/机构消失；`<!-- ssir:…-->` 失效 → 全部表格/框线/脚注/目次退化为段落（静默产出 90 页错版 PDF）。
+  处置（§0.4 先规则后数据）：新增 `tools/restore_fullwidth_punct.py`——三个固定损坏模型整行精确还原 + 副本优先级（健康基线投影 > canonical 快照）+ 字符级/语法必需半角兜底 + `.bak-punct` 备份 + 行数/配对/幂等/可 parse 四重断言；对两份 canonical 回放 **304 / 250 行**后重建 docroot。
+  验证：重建产物与损坏前健康基线逐字节比对——render.md 两份 **0 行 diff**、GB_T_10401-2023 页数/警告 **35/3=35/3**；`render.pdf` 内三处症状逐项复核（封面 ICS 01.120/2020-03-31 发布/国家市场监督管理总局、页眉无 `.canonical`、表格题注与框线页各 8 页）；跨语料指纹扫描 17 份 canonical **仅这两份**命中；单测 689 → **695 全绿**。
+  未做：`CSM-META-001` 是否升为致命错误（建议，属规则变更，等裁定）；文件名 stem 兜底是否剔除产物后缀（同上）；改写文件的进程未定位（如实记录，不归因猜测）。
+- 2026-09-24 追加（二十三）：§2 表 110、§3.87、§5.1 **GEN-138（新，normalize）**——用户裁定「文档正文无论是全角还是半角都没有问题，但是 ssir 的控制字符只能是半角字符（这一点请保持），我以后不再全局手工替换字符（但是请你默认在生成 canonical 时将文档的半角字符替换为全角字符，特别是尾部的字符，但是公式或其他需要半角字符的特别情况除外）」：
+  落地：判据单源 `parser.normalise_body_punctuation`（`, ; : ? !` 与句末 `.`；左右任一紧邻汉字/中文标点才转；括号栈配对成对转换、混配统一全角；句号只认行尾——行中点号可能是 GB/T 7714 引用条目分隔点号；链式语境 `(见8.4);` 迭代到不动点）+ `CSMParser._normalise_body_punctuation_width` 接入 read 修复链**末步**（结构识别判据先看原文）；一律不动 front matter / `<!-- ssir:…-->` 指令 / `[foot:L]` / 公式（`$$` 与行内 `$…$` 掩码）/ 未知与围栏块 / 列表标记；与 GBT-C19 同规不落 warning；回放工具 `tools/replay_body_punctuation.py`（干跑/`--apply`，行数·只改标点·幂等·残留四重断言）。
+  验证：跨语料 A/B 10 份 canonical **750 个载体 / 1900 个字符**差异（`(`→`（` 653、`)`→`）` 589、`,`→`，` 400、`:`→`：` 139、`;`→`；` 37 ＋ 链式 41），折叠全半角后**0 行**内容差异；GB_T_10401-2023 重建后页数 35=35、警告 3=3、投影 1064 行不变；GB_T_1.1-2020 页数 85=85、警告 8=8；回放工具干跑（文件级）10 份共 802 行 / 1922 处；新增 `tests/test_body_punctuation_width.py` 10 例、既有 9 处夹具期望值仅标点宽度变化、全量单测 **695 → 705 绿**；GEN-138 已写入 `rules/base/GB_T_1.1-2020/extraction-rules.yaml`（YAML 可解析）。
+  未做（等裁定）：① 行中点号（可能是参考文献条目分隔点号）不转；② 既有 10 份 canonical **文件本身**未回放（用户偏好不改写 curation 基线，回放工具干跑已列出逐文件命中）；③ 其余 8 份 docroot 产物未重建（规则对 parse 路径全局生效，需重跑才与代码一致）。
+- 2026-09-24 追加（二十四）：§2 表 111、§3.88、§5.1 **GEN-139（新，parse）**、§5.3 **CSM-TABLE-005（新）**——用户追问「表的定义参数中有 caption 字段，但下面还有 `**` 号包括的表编号和表头名称，这不是重复了并且容易造成不一致吗？而且有时候我发现表头被显示了两次，这个问题最后如何确定?」，并裁定「表头名应该以文字为准（行优先）……告警并将属性值替换为与行标题一致，且 json 文件也以行表头填充该值」（(a) 落点在解析阶段、(b) 解析层即时 + 文件回放工具、(c) 单位与图题注一并统一）：
+  落地：`parser._note_caption_attr_conflict`（`CSM-TABLE-005`，带行号/表 id/属性名/两值）；题注折入含**加粗形态**（指令上方，此前不折＝同一题注印两次）；行优先取值 + 不一致告警；编号不一致仍保守不并但告警；单位陈述行同判据；图题注判据单源 `parser.figure_caption_parts`（自 builder 移入）；渲染端保持零推断不回写；文件级对齐工具 `tools/sync_table_caption_attrs.py [--apply]`（四重断言 + `.bak-caption-attr`）。
+  验证：跨语料 11 份 canonical 重 parse 命中 4 处陈旧属性（1.1 示例表占位编号、30819 两表题注属性错位一格）→ 回放 8 处（含仓库根副本）后告警归 0；重建 1.1/30819：render.md 折叠标点逐行一致、canonicalText 折叠后 0 差异、页数 85/33 不变、SSIR 表图目次（除锚点 id）一致；新增 `tests/test_caption_visible_text_wins.py` 11 例、全量单测 **705 → 716 绿**。
+  未做（等裁定）：其余 8 份 docroot 产物未重建（取值无变化，重建只为处理记录含新告警）。
