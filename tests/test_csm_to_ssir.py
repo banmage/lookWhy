@@ -1825,6 +1825,96 @@ class TableHeaderRowsAndMergeRowsTests(unittest.TestCase):
         self.assertEqual(data_cells[0]["text"], "注")
         self.assertEqual(data_cells[1]["text"], "说明文字")
 
+    def test_stale_merge_rows_from_edited_table_are_realigned(self) -> None:
+        # GEN-147：canonical 的表格行被编辑过（去掉跨页重复表头行等）后，抽取端写下的
+        # `ssir:table-merge` 绝对行号即失效——锚点落到空白续行上，带内的真实文字会被并合掉
+        # （GB_T_20001.5-2017 表1 实测：`规范性一般要素`/`规范性技术要素` 在渲染产物里整体
+        # 消失、后续行的第一列错位）。修正是确定性的：带上移到有文字的组标签行、下界收窄到
+        # 下一个有文字的行之前（绝不把别的组标签并进来）。
+        csm = (
+            "---\n"
+            'csm-version: "1.0"\n'
+            "document-type: standard\n"
+            'document-identifier: "GB/T 10001—2024"\n'
+            'standard-number: "GB/T 10001—2024"\n'
+            'title: "合并行号陈旧"\n'
+            "language: zh-CN\n"
+            "source: {mode: mineru, provenance: none}\n"
+            "extensions: {}\n"
+            "---\n\n"
+            "# 合并行号陈旧\n\n"
+            "## 5 结构\n\n"
+            '<!-- ssir:table id="t1" header-rows="1" caption-number="1" -->\n'
+            "**表1 要素的典型编排**\n"
+            "| 要素类型 | 要素 | 表述形式 |\n"
+            "| --- | --- | --- |\n"
+            "| 甲组 | 一 | 文字 |\n"
+            "|  | 二 | 文字 |\n"
+            "| 乙组 | 三 | 文字 |\n"
+            "|  | 四 | 文字 |\n"
+            "|  | 五 | 文字 |\n"
+            "| 注：表中顺序即位置。 |  |  |\n"
+            '<!-- ssir:table-merge table="t1" row="4" column="1" rowspan="3" colspan="1" -->\n'
+            '<!-- ssir:table-merge table="t1" row="6" column="1" rowspan="1" colspan="3" -->\n'
+            '<!-- ssir:table-merge table="t1" row="7" column="1" rowspan="1" colspan="3" -->\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "t.canonical.md"
+            path.write_text(csm, encoding="utf-8")
+            ssir, _ = parse_csm_with_report(path)
+        table = ssir["tables"][0]
+        rows = sorted(table["rows"], key=lambda row: row["rowIndex"])
+        # 组标签行 3 承接合并（directive 说的第 4 行是空白续行），文字留下、续行不并进来
+        self.assertEqual(rows[3]["cells"][0]["text"], "乙组")
+        self.assertEqual(rows[3]["cells"][0]["rowspan"], 3)
+        self.assertEqual([rows[i]["cells"][0]["rowspan"] for i in (4, 5)], [1, 1])
+        self.assertEqual(rows[6]["cells"][0]["colspan"], 3)
+        # 越界指令（row=7，表只有 0..6 行）如实降级为 partiallyPreserved
+        self.assertEqual(table["preservationStatus"], "partiallyPreserved")
+        comments = ssir["qualityAssessments"][0].get("comments", "")
+        self.assertIn("Realigned table merge directives", comments)
+        self.assertIn("rowspan realigned to row 3", comments)
+        self.assertIn("is out of range", comments)
+
+    def test_consistent_merge_rows_are_left_untouched(self) -> None:
+        # 反例（干净夹具命中为 0）：行号与表格一致时不重锚、不登记 —— 同一张表，指令写对。
+        csm = (
+            "---\n"
+            'csm-version: "1.0"\n'
+            "document-type: standard\n"
+            'document-identifier: "GB/T 10002—2024"\n'
+            'standard-number: "GB/T 10002—2024"\n'
+            'title: "合并行号一致"\n'
+            "language: zh-CN\n"
+            "source: {mode: mineru, provenance: none}\n"
+            "extensions: {}\n"
+            "---\n\n"
+            "# 合并行号一致\n\n"
+            "## 5 结构\n\n"
+            '<!-- ssir:table id="t1" header-rows="1" caption-number="1" -->\n'
+            "**表1 要素的典型编排**\n"
+            "| 要素类型 | 要素 | 表述形式 |\n"
+            "| --- | --- | --- |\n"
+            "| 甲组 | 一 | 文字 |\n"
+            "|  | 二 | 文字 |\n"
+            "| 乙组 | 三 | 文字 |\n"
+            "|  | 四 | 文字 |\n"
+            "|  | 五 | 文字 |\n"
+            "| 注：表中顺序即位置。 |  |  |\n"
+            '<!-- ssir:table-merge table="t1" row="3" column="1" rowspan="3" colspan="1" -->\n'
+            '<!-- ssir:table-merge table="t1" row="6" column="1" rowspan="1" colspan="3" -->\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "t.canonical.md"
+            path.write_text(csm, encoding="utf-8")
+            ssir, _ = parse_csm_with_report(path)
+        rows = sorted(ssir["tables"][0]["rows"], key=lambda row: row["rowIndex"])
+        self.assertEqual(rows[3]["cells"][0]["rowspan"], 3)
+        self.assertEqual(rows[6]["cells"][0]["colspan"], 3)
+        self.assertEqual(ssir["tables"][0]["preservationStatus"], "preserved")
+        comments = ssir["qualityAssessments"][0].get("comments", "")
+        self.assertNotIn("Realigned table merge directives", comments)
+
 
 class GluedHeadingNumberTests(unittest.TestCase):
     """GEN-117：标题编号与标题文字之间缺空格时，解析结果必须与有空格时一致。

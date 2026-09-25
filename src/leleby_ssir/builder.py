@@ -428,6 +428,10 @@ class _BuilderState:
         self.figures_by_directive: dict[str, dict[str, Any]] = {}
         self.formulas_by_directive: dict[str, dict[str, Any]] = {}
         self.declaration_issues: list[str] = []
+        # 表合并指令重锚（GEN-147）：`ssir:table-merge` 用**绝对行号**，canonical 的表格行
+        # 被编辑过（如去掉跨页重复表头行）后行号即失效；锚点落到空白续行时会把带内真实
+        # 文字并合掉（`规范性一般要素` 整体消失）。重锚后如实登记，供人工复核。
+        self.table_merge_repairs: list[str] = []
         # 目次条目（docs/15 §3.9；TDRS 命名：`{文档标识}#Contents_N`）：声明型指令产出，
         # 不落文本流，故与内容元素分开登记。
         self.toc_entries: list[dict[str, Any]] = []
@@ -1338,6 +1342,7 @@ class SSIRBuilder:
                     }
                 )
             table["rows"].append(row_data)
+        claimed: dict[int, list[tuple[int, int]]] = {}
         for merge in block.data.get("merges", []):
             try:
                 # merge 的 row/column 是**绝对** 0-based 表格坐标（row=0 即第一行——
@@ -1347,12 +1352,79 @@ class SSIRBuilder:
                 # 一旦表头不止一行（GEN-114）就会把合并整体下移一行。
                 data_row = int(merge["row"])
                 column = int(merge["column"]) - 1
+                rowspan = int(merge.get("rowspan", "1"))
+                colspan = int(merge.get("colspan", "1"))
                 cell = table["rows"][data_row]["cells"][column]
-                cell["rowspan"] = int(merge.get("rowspan", "1"))
-                cell["colspan"] = int(merge.get("colspan", "1"))
             except (IndexError, KeyError, ValueError):
                 table["preservationStatus"] = "partiallyPreserved"
+                state.table_merge_repairs.append(
+                    f"{table.get('number') or table['id']} merge directive "
+                    f"row={merge.get('row')} col={merge.get('column')} is out of range; ignored"
+                )
+                continue
+            if rowspan > 1 and not str(cell.get("text") or "").strip():
+                # GEN-147（锚点陈旧重锚）：表格行被编辑过（如去掉跨页重复表头行）后，
+                # 绝对行号失效——锚点落到**空白续行**上，带内的真实文字会被并合掉
+                # （GB_T_20001.5 表1 实测：`规范性一般要素` 在渲染产物里整体消失）。
+                repaired = self._realign_vertical_merge(table, data_row, column, rowspan, header_rows)
+                if repaired is not None:
+                    new_row, new_span = repaired
+                    band = (new_row, new_row + new_span)
+                    if any(band[0] < other[1] and other[0] < band[1] for other in claimed.get(column, [])):
+                        # 两条指令重锚后重叠：不猜，保持原样并如实登记（人工复核）。
+                        state.table_merge_repairs.append(
+                            f"{table.get('number') or table['id']} merge directives overlap "
+                            f"at row {new_row} col {column + 1}; left unchanged"
+                        )
+                        table["preservationStatus"] = "partiallyPreserved"
+                    else:
+                        data_row, rowspan = new_row, new_span
+                        cell = table["rows"][data_row]["cells"][column]
+                        claimed.setdefault(column, []).append(band)
+                        state.table_merge_repairs.append(
+                            f"{table.get('number') or table['id']} rowspan realigned to "
+                            f"row {data_row} (x{rowspan}) col {column + 1}, directive said row {merge['row']}"
+                        )
+            elif colspan > 1 and not str(cell.get("text") or "").strip():
+                # 通栏行（`注：`/`a …`）：锚点必须是有文字的那一行；空锚点同样按陈旧行号处理，
+                # 但要落在「本行非空」的行上（colspan 单元的文字就在自己行内）。
+                state.table_merge_repairs.append(
+                    f"{table.get('number') or table['id']} colspan directive on empty cell "
+                    f"row {data_row} col {column + 1}; left unchanged"
+                )
+            cell["rowspan"] = rowspan
+            cell["colspan"] = colspan
         return table
+
+    @staticmethod
+    def _realign_vertical_merge(
+        table: dict[str, Any], anchor: int, column: int, rowspan: int, header_rows: int
+    ) -> tuple[int, int] | None:
+        """GEN-147：把竖直合并带重锚到「带内有文字」的那一行上（陈旧绝对行号的确定性修正）。
+
+        判据：锚点行同列为空、且 `[anchor, anchor + rowspan)` 内同列存在有文字的单元。
+        修正：① 带的行范围整体**上移**到最近一个同列有文字的组标签行（表头区不参与）；
+        ② 下界**收窄**到下一个同列有文字的行之前（绝不把别的组标签并进来）。
+        带内同列没有任何文字（真正的空合并单元）、或上移后落到表头区 → 返回 None（保持原样）。
+        """
+        rows = table["rows"]
+
+        def text_at(row_index: int) -> str:
+            if 0 <= row_index < len(rows) and column < len(rows[row_index]["cells"]):
+                return str(rows[row_index]["cells"][column].get("text") or "").strip()
+            return ""
+
+        if not any(text_at(i) for i in range(anchor, anchor + rowspan)):
+            return None
+        start = anchor
+        while start > header_rows and not text_at(start):
+            start -= 1
+        if not text_at(start):
+            return None
+        end = start
+        while end + 1 < len(rows) and not text_at(end + 1):
+            end += 1
+        return start, end - start + 1
 
     def _figure(self, state: _BuilderState, block: Block) -> dict[str, Any]:
         directive_id = block.directive.attrs.get("id") if block.directive else None
@@ -1458,6 +1530,10 @@ class SSIRBuilder:
         if state.declaration_issues:
             # 声明型指令无法归属（不猜、不丢）：如实登记，供人工复核。
             comments.append("Unresolved declarations: " + "; ".join(state.declaration_issues))
+        if state.table_merge_repairs:
+            # 表合并指令锚点陈旧（表格行被编辑过，绝对行号失效）：按 GEN-147 重锚后登记，
+            # 供人工复核（必要时同步修正 canonical 的 `ssir:table-merge` 行号）。
+            comments.append("Realigned table merge directives: " + "; ".join(state.table_merge_repairs))
         if state.ids.collisions:
             # 元素标识重号（源文件编号重复/抽取合并）：已按 -2/-3 去重，此处如实登记
             # （TDRS 标识唯一性要求；不静默改号、不丢元素，供人工复核）。
