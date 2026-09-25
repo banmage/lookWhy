@@ -9,7 +9,31 @@ import yaml
 # GBT-B12 数值-单位固定字隙（正文五号 10.5pt 的 1/4 汉字）：_markup 输出的白字哨兵。
 _UNIT_GAP = '<font size="2.625" color="white">中</font>'
 
-from leleby_ssir.pdf_renderer import _TABLE_NOTE_CELL_RE, _BODY_MEASURE, _EXAMPLE_FRAME_WIDTH, _FORMULA_IMAGE_DPI, _FORMULA_IMAGE_EM_PT, _append_nodes, _cell_text_natural_width, _clause_head_gap, _clause_leading_number, _node_clause_number, _display_style_latex, _example_box, _example_box_inner_width, _formula_image, _formula_image_scale, _footnote_superscripts, _heading_depth, _heading_parts, _label_markup, _latex_has_cjk, _latex_to_text, _list_marker, _list_marker_gap, _mark_note_example_labels, _markup, _note_example_label, _note_example_label_span, _ocr_l_one, _split_table_note_parts, _starts_new_page, _strip_pagebreaks, _table_cell_superscripts, _table_column_widths, _toc_label
+from leleby_ssir.pdf_renderer import _TABLE_NOTE_CELL_RE, _BODY_MEASURE, _EXAMPLE_FRAME_WIDTH, _FORMULA_IMAGE_DPI, _FORMULA_IMAGE_EM_PT, _append_nodes, _cell_text_natural_width, _clause_head_gap, _clause_leading_number, _node_clause_number, _display_style_latex, _example_box, _example_box_inner_width, _formula_image, _formula_image_scale, _footnote_superscripts, _heading_depth, _heading_parts, _label_markup, _latex_has_cjk, _latex_to_text, _list_marker, _list_marker_gap, _mark_note_example_labels, _markup, _note_example_label, _note_example_label_span, _ocr_l_one, _script_gap_html, _split_table_note_parts, _starts_new_page, _strip_pagebreaks, _table_cell_superscripts, _table_column_widths, _toc_label
+
+
+def _script_gap(em: float = 10.5, overhang: float = 0.0) -> str:
+    """角标字隙（GEN-140）的期望形态：em ×（\\scriptspace 0.05em + 基字符超伸）。
+
+    基字符在该角标垂直带内的墨迹超伸（em）在用例里写成常量（实测值，见
+    `test_renderer_script_gap`）；未登记字面 / 无超伸时只剩固定部分，正文号
+    10.5pt → 0.525pt。
+    """
+    return _script_gap_html(em * (0.05 + max(0.0, overhang)))
+
+
+_SCRIPT_GAP_105 = _script_gap()      # 正文号下的固定字隙（无超伸）
+
+
+def _pin_math_faces(test: unittest.TestCase, body: str = "", italic: str = "") -> None:
+    """固定渲染期的 math 字面（GEN-140 的字隙含**字形度量**，用例不得依赖执行顺序）。"""
+    from leleby_ssir import pdf_renderer as _renderer
+
+    previous = (_renderer._MATH_BODY_FACE, _renderer._MATH_ITALIC_FACE)
+    _renderer._MATH_BODY_FACE, _renderer._MATH_ITALIC_FACE = body, italic
+    test.addCleanup(setattr, _renderer, "_MATH_BODY_FACE", previous[0])
+    test.addCleanup(setattr, _renderer, "_MATH_ITALIC_FACE", previous[1])
+
 
 TABLE_FIXTURE = {
     "id": "t1", "number": "1", "caption": "系统性能要求",
@@ -66,6 +90,10 @@ class PdfRendererHeadingTests(unittest.TestCase):
 
 
 class LatexToTextTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # 角标字隙（GEN-140）的字形度量随字面全局变化：清空字面 → 只留固定部分。
+        _pin_math_faces(self)
+
     def test_mathrm_wrapper_is_unwrapped(self):
         self.assertEqual(_latex_to_text(r"\mathrm{~T~}"), "T")
         self.assertEqual(_latex_to_text(r"$\mathrm{kPa}$".strip("$")), "kPa")
@@ -73,10 +101,12 @@ class LatexToTextTests(unittest.TestCase):
 
     def test_subscript_and_fraction_flatten(self):
         # _latex_to_text 对 _/^ 输出 reportlab 哨兵（\x00SUB\x00/\x00SUP\x00），
-        # 由 _markup 恢复为 <sub>/<super> 标签（2026-09-02，GB_3100-2026）。
+        # 由 _markup 恢复为 <sub>/<super> 标签（2026-09-02，GB_3100-2026）；
+        # 每个角标前有角标字隙（GEN-140：基字符超伸 + \scriptspace）。
+        gap = _SCRIPT_GAP_105
         self.assertEqual(
             _markup(_latex_to_text(r"K _ { \mathrm { T } } = \frac { T _ { \mathrm { L } } } { I _ { \mathrm { L } } }")),
-            "K<sub>T</sub> = (T<sub>L</sub>)/(I<sub>L</sub>)",
+            f"K{gap}<sub>T</sub> = (T{gap}<sub>L</sub>)/(I{gap}<sub>L</sub>)",
         )
 
     def test_operators_map_to_unicode(self):
@@ -96,8 +126,11 @@ class LatexToTextTests(unittest.TestCase):
         self.assertEqual(_latex_to_text(r"\frac{1}{5}"), "(1)/(5)")
         self.assertEqual(_latex_to_text(r"\frac{10}{20}"), "(10)/(20)")
         self.assertEqual(_latex_to_text(r"\frac{V}{\mathrm{km/h}}"), "(V)/(km/h)")
-        self.assertEqual(_latex_to_text(r"\frac{\frac{1}{2}}{3}"), "(½)/(3)")
-        self.assertEqual(_markup(_latex_to_text(r"\mathrm { m ^ { 3 } / h }")), "m<super>3</super>/h")
+        self.assertEqual(_markup(_latex_to_text(r"\frac{\frac{1}{2}}{3}")), "(½)/(3)")
+        self.assertEqual(
+            _markup(_latex_to_text(r"\mathrm { m ^ { 3 } / h }")),
+            f"m{_SCRIPT_GAP_105}<super>3</super>/h",
+        )
 
 
 class MarkupNormalisationTests(unittest.TestCase):
@@ -110,13 +143,15 @@ class MarkupNormalisationTests(unittest.TestCase):
         _renderer._GREEK_FONT, _renderer._GREEK_ITALIC_FONT = "LiberationSerif", "LiberationSerif-Italic"
         self.addCleanup(setattr, _renderer, "_GREEK_FONT", previous[0])
         self.addCleanup(setattr, _renderer, "_GREEK_ITALIC_FONT", previous[1])
+        # 角标字隙（GEN-140）：字面清空 → 只留固定字隙，断言不随执行顺序变化。
+        _pin_math_faces(self)
 
     def test_markup_flattens_inline_math(self):
         text = "式中： $K _ { \\mathrm { ~ T ~ } }$ 堵转转矩灵敏度，单位为牛米每安培 $( \\mathrm { N } \\cdot \\mathrm { m } / \\mathrm { A } )$"
         out = _markup(text)
         self.assertNotIn("mathrm", out)
         self.assertNotIn("$", out)
-        self.assertIn("<i>K</i><sub>T</sub>", out)   # K 是量符号 → 斜体（GEN-116）
+        self.assertIn(f"<i>K</i>{_SCRIPT_GAP_105}<sub>T</sub>", out)   # K 是量符号 → 斜体（GEN-116）+ 角标字隙（GEN-140）
         self.assertIn("N·m/A", out)
 
     def test_markup_normalises_untitled_clause_number_spacing(self):
@@ -151,7 +186,7 @@ class MarkupNormalisationTests(unittest.TestCase):
         gap = '<font size="2.625" color="white">中</font>'
         self.assertEqual(_markup(r"$\Delta t$——绕组温升，单位为开尔文(K)；"), f'<font name="LiberationSerif">Δ</font><i>t</i>{gap}——{gap}绕组温升，单位为开尔文(K)；')
         self.assertEqual(_markup(r"$R _ { 2 }$——试验结束时的绕组电阻，单位为欧姆(Ω)；"),
-                         f"<i>R</i><sub>2</sub>{gap}——{gap}试验结束时的绕组电阻，单位为欧姆(<font name=\"LiberationSerif\">Ω</font>)；")
+                         f"<i>R</i>{_SCRIPT_GAP_105}<sub>2</sub>{gap}——{gap}试验结束时的绕组电阻，单位为欧姆(<font name=\"LiberationSerif\">Ω</font>)；")
         self.assertEqual(_markup("k ——常数，对铜绕组为234.5；"), f"k{gap}——{gap}常数，对铜绕组为234.5；")
         # 列项 marker「——」不是变量解释项；无破折号的正文段落不受影响。
         self.assertEqual(_markup("——增加了第3章“术语和定义”；"), "——增加了第3章“术语和定义”；")
@@ -184,9 +219,9 @@ class MarkupNormalisationTests(unittest.TestCase):
         self.assertEqual(_markup("见附录表B.1a"), "见附录表B.1a")
         # 幂次数量值（"10³ m"）与紧贴形态（"10³m"）同样归一为固定字隙；上下标内的记号
         # （"D_{1max}"）不是量值-单位，不插字隙。
-        self.assertEqual(_markup("l = 2.5×10<sup>3</sup> m"), f"l = 2.5×10<super>3</super>{gap}m")
-        self.assertEqual(_markup("10<sup>3</sup>m"), f"10<super>3</super>{gap}m")
-        self.assertEqual(_markup(_latex_to_text(r"$D _ { \mathrm { 1 m a x } }$")), "<i>D</i><sub>1max</sub>")
+        self.assertEqual(_markup("l = 2.5×10<sup>3</sup> m"), f"l = 2.5×10{_SCRIPT_GAP_105}<super>3</super>{gap}m")
+        self.assertEqual(_markup("10<sup>3</sup>m"), f"10{_SCRIPT_GAP_105}<super>3</super>{gap}m")
+        self.assertEqual(_markup(_latex_to_text(r"$D _ { \mathrm { 1 m a x } }$")), f"<i>D</i>{_SCRIPT_GAP_105}<sub>1max</sub>")
         # 间隙随容器字号（四分之一汉字，非固定点数）。
         self.assertEqual(_markup("1000 m", em_size=9), '1000<font size="2.25" color="white">中</font>m')
 
@@ -824,6 +859,10 @@ class ListMarkerGapTests(unittest.TestCase):
 class UntitledClauseFlushTests(unittest.TestCase):
     """Bare paragraphs starting with a clause number render flush left."""
 
+    def setUp(self) -> None:
+        # 角标字隙（GEN-140）：字面清空 → 只留固定字隙，断言不随执行顺序变化。
+        _pin_math_faces(self)
+
     def test_bare_clause_paragraphs_are_detected(self):
         self.assertEqual(_clause_leading_number("5.5.2承压零件应做静水压试验。"), "5.5.2")
         self.assertEqual(_clause_leading_number("5.3.1 泵应选用与介质适宜的轴封。"), "5.3.1")
@@ -899,12 +938,13 @@ class UntitledClauseFlushTests(unittest.TestCase):
         def rendered(text: str) -> str:
             return _markup(_table_cell_superscripts(text))
 
-        # 引用点：词中（20001.10 表1 表头型）与词尾
-        self.assertEqual(rendered("要素$^{a}$的编排"), "要素<super>a</super>的编排")
-        self.assertEqual(rendered("表述形式$^{a}$"), "表述形式<super>a</super>")
+        # 引用点：词中（20001.10 表1 表头型）与词尾；角标前是角标字隙（GEN-140）
+        gap = _SCRIPT_GAP_105
+        self.assertEqual(rendered("要素$^{a}$的编排"), f"要素{gap}<super>a</super>的编排")
+        self.assertEqual(rendered("表述形式$^{a}$"), f"表述形式{gap}<super>a</super>")
         self.assertEqual(
             rendered("程序指示$^{b}$\x00BR\x00追溯/证实方法$^{c}$"),
-            "程序指示<super>b</super>\x00BR\x00追溯/证实方法<super>c</super>",
+            f"程序指示{gap}<super>b</super>\x00BR\x00追溯/证实方法{gap}<super>c</super>",
         )
         # 注文行的行首标记：canonical 写 a）注文，渲染端只做上标还原
         self.assertEqual(rendered("a）黑体表示“必备的”。"), "a）黑体表示“必备的”。")
@@ -913,12 +953,12 @@ class UntitledClauseFlushTests(unittest.TestCase):
             "a）黑体表示“必备的”。\x00BR\x00b）“程序指示”中的指示型条款…。",
         )
         # 多字符角标（1)、†、a) 等）与下标
-        self.assertEqual(rendered("匝间绝缘$^{a)}$"), "匝间绝缘<super>a)</super>")
-        self.assertEqual(rendered("注解$_{2}$"), "注解<sub>2</sub>")
+        self.assertEqual(rendered("匝间绝缘$^{a)}$"), f"匝间绝缘{gap}<super>a)</super>")
+        self.assertEqual(rendered("注解$_{2}$"), f"注解{gap}<sub>2</sub>")
         # 退役写法不再有特殊语义（按普通文本渲染，不产生角标）
         self.assertNotIn("<super>", rendered("[:sup:a]注文[:/sup]"))
         # 条文脚注引用（表内）：[foot:N] → “N)”
-        self.assertEqual(rendered("见注[foot:1]"), "见注<super>1)</super>")
+        self.assertEqual(rendered("见注[foot:1]"), f"见注{gap}<super>1)</super>")
 
     def test_table_cell_superscripts_plain_letters_stay_plain(self) -> None:
         # 2026-09-07 移除“汉字后小写字母=上标”字形猜测（词尾/词中/行首解释
@@ -942,7 +982,7 @@ class UntitledClauseFlushTests(unittest.TestCase):
         self.assertEqual(rendered("B相"), "B相")
         self.assertEqual(rendered("编写a)中所述"), "编写a)中所述")
         # 词尾引用点经显式标记还原（20001.10/20001.5 表1 表头型）
-        self.assertEqual(rendered("要素所允许的表述形式$^{a}$"), "要素所允许的表述形式<super>a</super>")
+        self.assertEqual(rendered("要素所允许的表述形式$^{a}$"), f"要素所允许的表述形式{_SCRIPT_GAP_105}<super>a</super>")
 
 
     def test_body_footnote_explanation_marker_superscript(self) -> None:
@@ -1270,6 +1310,8 @@ class Gb3100SuperscriptTableNoteTests(unittest.TestCase):
         _renderer._GREEK_FONT, _renderer._GREEK_ITALIC_FONT = "LiberationSerif", "LiberationSerif-Italic"
         self.addCleanup(setattr, _renderer, "_GREEK_FONT", previous[0])
         self.addCleanup(setattr, _renderer, "_GREEK_ITALIC_FONT", previous[1])
+        # 角标字隙（GEN-140）：字面清空 → 只留固定字隙，断言不随执行顺序变化。
+        _pin_math_faces(self)
 
     """GB_3100-2026 六项排版修复回归（2026-09-02）。
 
@@ -1279,24 +1321,27 @@ class Gb3100SuperscriptTableNoteTests(unittest.TestCase):
     """
 
     def test_html_sup_sub_map_to_reportlab_tags(self) -> None:
-        # Fix C：MinerU 数学幂/原子下标标签 → 真上标/下标（sentinel 恢复）。
-        self.assertEqual(_markup("10<sup>27</sup>"), "10<super>27</super>")
-        self.assertEqual(_markup("N<sub>A</sub>为"), "N<sub>A</sub>为")
+        # Fix C：MinerU 数学幂/原子下标标签 → 真上标/下标（sentinel 恢复）；
+        # 角标前是角标字隙（GEN-140）。
+        gap = _SCRIPT_GAP_105
+        self.assertEqual(_markup("10<sup>27</sup>"), f"10{gap}<super>27</super>")
+        self.assertEqual(_markup("N<sub>A</sub>为"), f"N{gap}<sub>A</sub>为")
 
     def test_missing_glyph_unicode_superscripts_become_super(self) -> None:
         # Fix D：正文宋体缺 ⁰⁵⁶⁷⁸⁹⁻⁺ 字形，直接渲染成 .notdef 方框；
         # 归一为 <super> 内普通字符，相邻上标合并为一个 run。
-        self.assertEqual(_markup("10⁻⁸ s 可写成"), "10<super>−8</super> s 可写成")
-        self.assertEqual(_markup("10⁸称为亿"), "10<super>8</super>称为亿")
-        self.assertEqual(_markup("米·秒⁻¹"), "米·秒<super>−</super>¹")
+        gap = _SCRIPT_GAP_105
+        self.assertEqual(_markup("10⁻⁸ s 可写成"), f"10{gap}<super>−8</super> s 可写成")
+        self.assertEqual(_markup("10⁸称为亿"), f"10{gap}<super>8</super>称为亿")
+        self.assertEqual(_markup("米·秒⁻¹"), f"米·秒{gap}<super>−</super>¹")
 
     def test_table_cell_flat_exponents_recovered(self) -> None:
         # Fix E：GB_3100-2026 表2/表3/附录B 拍平上标还原（s−1→s⁻¹、N/m2→N/m²、
         # 10-2→10⁻²、10²4→10²⁴）——只保留抽取里带证据的分支（GEN-104）。
-        self.assertEqual(_markup(_table_cell_superscripts("10-2")), "10<super>−2</super>")
-        self.assertEqual(_markup(_table_cell_superscripts("10²4")), "10<super>24</super>")
-        self.assertEqual(_markup(_table_cell_superscripts("1 Hz = 1 s−1")), f"1{_UNIT_GAP}Hz = 1{_UNIT_GAP}s<super>−1</super>")
-        self.assertEqual(_markup(_table_cell_superscripts("1 Pa = 1 N/m2")), f"1{_UNIT_GAP}Pa = 1{_UNIT_GAP}N/m<super>2</super>")
+        self.assertEqual(_markup(_table_cell_superscripts("10-2")), f"10{_SCRIPT_GAP_105}<super>−2</super>")
+        self.assertEqual(_markup(_table_cell_superscripts("10²4")), f"10{_SCRIPT_GAP_105}<super>24</super>")
+        self.assertEqual(_markup(_table_cell_superscripts("1 Hz = 1 s−1")), f"1{_UNIT_GAP}Hz = 1{_UNIT_GAP}s{_SCRIPT_GAP_105}<super>−1</super>")
+        self.assertEqual(_markup(_table_cell_superscripts("1 Pa = 1 N/m2")), f"1{_UNIT_GAP}Pa = 1{_UNIT_GAP}N/m{_SCRIPT_GAP_105}<super>2</super>")
         self.assertEqual(_markup(_table_cell_superscripts("100")), "100")
         self.assertEqual(_markup(_table_cell_superscripts("centi")), "centi")
 
@@ -1319,10 +1364,10 @@ class Gb3100SuperscriptTableNoteTests(unittest.TestCase):
         # GBT-B12：量值以幂次收尾时（10⁻³⁴ J）单位前同样是固定字隙。
         self.assertEqual(
             _markup("$6 . 6 2 6 0 7 0 1 5 \\times 1 0 ^ { - 3 4 } \\mathrm { J } \\mathrm { s } ;$"),
-            f"6.62607015×10<super>−34</super>{_UNIT_GAP}J s ;",
+            f"6.62607015×10{_SCRIPT_GAP_105}<super>−34</super>{_UNIT_GAP}J s ;",
         )
-        self.assertEqual(_markup("$\\cdot \\Delta V _ { \\mathrm { c s } }$"), '·<font name="LiberationSerif">Δ</font><i>V</i><sub>cs</sub>')
-        self.assertEqual(_markup("$K _ { \\mathrm { c d } }$"), "<i>K</i><sub>cd</sub>")
+        self.assertEqual(_markup("$\\cdot \\Delta V _ { \\mathrm { c s } }$"), f'·<font name="LiberationSerif">Δ</font><i>V</i>{_SCRIPT_GAP_105}<sub>cs</sub>')
+        self.assertEqual(_markup("$K _ { \\mathrm { c d } }$"), f"<i>K</i>{_SCRIPT_GAP_105}<sub>cd</sub>")
 
     def test_table_note_cell_split_into_per_note_parts(self) -> None:
         # Fix H：表注行（注1：…注2：… 连排）拆成每条注独立文本；行内 <br>
@@ -1896,6 +1941,147 @@ class SideBySideColumnWidthPdfTests(unittest.TestCase):
             x0, x1, text = long_lines[0]
             self.assertEqual(text, "dim (能量) = dim (力)×dim (长度)")
             self.assertAlmostEqual(x1 - x0, 166.4, delta=3.0, msg=text)
+
+
+class SideBySideHeightFitTests(unittest.TestCase):
+    """并列组竖向整组保护（GEN-144 执行侧）：整组放不进版心时**不得**中断渲染。
+
+    现象（2026-09-25，SJ_T_11859-2022 附录 A）：一列里竖向堆两张图，列高 792pt >
+    版心 688pt；并列组是**单行**表格，reportlab 不能切分，推向新页仍放不下 →
+    `LayoutError: Flowable <Table …> too large on page …` —— **整份渲染中断**。
+    修复后按几何同比例缩小整组的图（跨列同比例，保持并列对照的相对大小），
+    非图内容不缩放；极端到连最小比例都放不下时退化为上下排布。
+    """
+
+    ROOT = Path(__file__).resolve().parents[1]
+
+    def _render(self, canonical_text: str, directory: Path) -> tuple[Any, Any]:
+        import json
+
+        from leleby_ssir.builder import SSIRBuilder
+        from leleby_ssir.parser import CSMParser
+        from leleby_ssir.pdf_renderer import render_pdf_file
+
+        source = directory / "t.canonical.md"
+        source.write_text(canonical_text, encoding="utf-8")
+        document = SSIRBuilder().build(CSMParser().read(str(source)))
+        ssir = directory / "t.ssir.json"
+        ssir.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+        target = directory / "t.pdf"
+        report = render_pdf_file(str(ssir), str(target), toc_depth=None)
+        return report, target
+
+    def test_over_tall_group_is_scaled_to_the_frame(self) -> None:
+        try:
+            import pymupdf
+        except ImportError:  # pragma: no cover
+            self.skipTest("pymupdf unavailable")
+        from PIL import Image as PILImage
+
+        font = self.ROOT / "config" / "rendering" / "fonts" / "NotoSerifCJKsc-Regular.ttf"
+        if not font.is_file():
+            self.skipTest("body font asset missing")
+        directory = Path(tempfile.mkdtemp())
+        assets = {}
+        for name in ("a", "b", "c"):
+            asset = directory / f"{name}.png"
+            # 300x700px：图按源尺寸不可得 → 固有尺寸只缩小不放大、高度上限 520pt。
+            PILImage.new("RGB", (300, 700), (255, 255, 255)).save(asset)
+            assets[name] = asset
+        canon = (
+            "---\n"
+            "csm-version: 1.0\n"
+            "document-type: standard\n"
+            "document-identifier: T_FIT_001-2026\n"
+            "standard-number: T/FIT 001—2026\n"
+            "title: 并列组竖向容纳夹具\n"
+            "language: zh-CN\n"
+            "---\n\n"
+            "# 并列组竖向容纳夹具\n\n"
+            "## 1 范围\n\n"
+            "本夹具规定并列组竖向容纳的渲染结果。\n\n"
+            "<!-- ssir:columns -->\n\n"
+            f"![图 a） 甲]({assets['a']})\n\n"
+            f"![图 c） 丙]({assets['c']})\n\n"
+            "<!-- ssir:column -->\n\n"
+            f"![图 b) 乙]({assets['b']})\n\n"
+            "<!-- ssir:/columns -->\n"
+        )
+        report, target = self._render(canon, directory)
+
+        self.assertTrue(
+            any("scaled by" in warning for warning in report.warnings),
+            f"整组缩放未记录 warning：{report.warnings!r}",
+        )
+        rendered = pymupdf.open(str(target))
+        frame_height = 688.1574803149607   # 版心高（A4 − 上下边距 − Frame 内衬）
+        pages = [
+            [
+                (info["bbox"][0], info["bbox"][3] - info["bbox"][1])
+                for info in page.get_image_info()
+            ]
+            for page in rendered
+        ]
+        # 三张图同页（并列组整组同页）；同列图 x 起点相同（列内居中）→ 按 x 分列。
+        group = [items for items in pages if len(items) == 3]
+        self.assertEqual(len(group), 1, f"并列组未落在同一页：{pages!r}")
+        columns: list[list[float]] = []
+        for x0, height in group[0]:
+            for column in columns:
+                if abs(column[1] - x0) < 1.0:
+                    column[0] += height
+                    break
+            else:
+                columns.append([height, x0])
+        self.assertEqual(len(columns), 2, f"并列组未分成两列：{group[0]!r}")
+        # 每列竖向总高 ≤ 版心（修复前第二列那张不会被推下去，第一列 1040pt 直接抛异常）。
+        for total, _x0 in columns:
+            self.assertLessEqual(total, frame_height, f"整组仍超版心：{group[0]!r}")
+        for _x0, height in group[0]:
+            self.assertLess(height, 519.0, f"图未被缩放：{group[0]!r}")
+
+    def test_group_that_cannot_fit_falls_back_to_stacked_columns(self) -> None:
+        """列内非图内容本身就超版心 → 最小比例也放不下 → 上下排布，不抛 LayoutError。"""
+        from leleby_ssir import pdf_renderer as renderer
+
+        class _FakeImage:
+            def __init__(self, height: float) -> None:
+                self.drawWidth = 100.0
+                self.drawHeight = height
+
+            def wrap(self, availWidth: float, availHeight: float) -> tuple[float, float]:
+                return self.drawWidth, self.drawHeight
+
+        class _FakeText:
+            def __init__(self, height: float) -> None:
+                self._height = height
+
+            def wrap(self, availWidth: float, availHeight: float) -> tuple[float, float]:
+                return availWidth, self._height
+
+        previous = renderer._ROTATED_TABLE_MEASURE
+        renderer._ROTATED_TABLE_MEASURE = 688.0
+        self.addCleanup(setattr, renderer, "_ROTATED_TABLE_MEASURE", previous)
+
+        class _Report:
+            def __init__(self) -> None:
+                self.warnings: list[str] = []
+
+        report = _Report()
+        # 一列：图 600pt + 文字 600pt（文字远非图内容，缩图也放不下）。
+        over = [[_FakeImage(600.0), _FakeText(600.0)], [_FakeImage(100.0)]]
+        self.assertFalse(
+            renderer._fit_side_by_side_to_frame(over, [200.0, 200.0], report, _FakeImage)
+        )
+        self.assertTrue(any("one above another" in warning for warning in report.warnings))
+        # 放得下时不动任何图、也不记 warning。
+        fits = [[_FakeImage(300.0)], [_FakeImage(200.0)]]
+        fits_report = _Report()
+        self.assertTrue(
+            renderer._fit_side_by_side_to_frame(fits, [200.0, 200.0], fits_report, _FakeImage)
+        )
+        self.assertEqual(fits_report.warnings, [])
+        self.assertEqual(fits[0][0].drawHeight, 300.0)
 
 
 class ExampleBoxWidthTests(unittest.TestCase):
@@ -3184,25 +3370,45 @@ class InlineMathVariableStyleTests(unittest.TestCase):
         self.assertIsNone(_renderer._face_ink_em("NoSuchFace", "X"))   # 取不到 → 调用方兜底
 
     def test_variables_italic_scripts_upright(self) -> None:
-        self.assertEqual(_markup(r"$K_{T}$"), "<i>K</i><sub>T</sub>")
-        self.assertEqual(_markup(r"$P_{N}$"), "<i>P</i><sub>N</sub>")
+        # 角标字隙（GEN-140）：K 在机斜字面的下带墨迹超伸 0.009em（即内下勾），
+        # 其余字母下带无超伸 → 只留固定 \scriptspace。
+        self.assertEqual(_markup(r"$K_{T}$"), f'<i>K</i>{_script_gap(overhang=0.009)}<sub>T</sub>')
+        self.assertEqual(_markup(r"$P_{N}$"), f"<i>P</i>{_SCRIPT_GAP_105}<sub>N</sub>")
         # 上划线只压基字：下标留在 `<u>` 之外
-        self.assertEqual(_markup(r"$ \overline{P}_{1}$"), '<u offset="0.918*f" width="0.056*f"><i>P</i></u><sub>1</sub>')
-        self.assertEqual(_markup(r"$\Phi d_{1}$"), '<i><font name="LiberationSerif-Italic">Φ</font>d</i><sub>1</sub>')
+        self.assertEqual(_markup(r"$ \overline{P}_{1}$"), f'<u offset="0.918*f" width="0.056*f"><i>P</i></u>{_SCRIPT_GAP_105}<sub>1</sub>')
+        self.assertEqual(_markup(r"$\Phi d_{1}$"), f'<i><font name="LiberationSerif-Italic">Φ</font>d</i>{_SCRIPT_GAP_105}<sub>1</sub>')
         self.assertEqual(_markup(r"$i$ ─ 传动比。"), "<i>i</i> ─ 传动比。")
 
     def test_units_operators_and_footnote_markers_stay_upright(self) -> None:
+        gap = _SCRIPT_GAP_105
         self.assertEqual(_markup(r"$\mathrm{kPa}$"), "kPa")
         self.assertEqual(_markup(r"$100\mathrm{M}\Omega$"), '100<font size="2.625" color="white">中</font>M<font name="LiberationSerif">Ω</font>')
-        self.assertEqual(_markup(r"$m^{2}$"), "m<super>2</super>")          # 单位幂：基字正体
-        self.assertEqual(_markup(r"$10^{-3}$"), "10<super>−3</super>")
+        self.assertEqual(_markup(r"$m^{2}$"), f"m{gap}<super>2</super>")          # 单位幂：基字正体
+        self.assertEqual(_markup(r"$10^{-3}$"), f"10{gap}<super>−3</super>")
         self.assertEqual(_markup(r"$\Delta t$"), '<font name="LiberationSerif">Δ</font><i>t</i>')                # 算子正体、变量斜体
-        self.assertEqual(_markup(r"$^{a}$"), "<super>a</super>")             # 表脚注标记：无基字
-        self.assertEqual(_markup(r"$T _ { \mathrm { n } } / 2$"), "<i>T</i><sub>n</sub>/2")
+        self.assertEqual(_markup(r"$^{a}$"), "<super>a</super>")             # 表脚注标记：无基字 → 不打字隙
+        self.assertEqual(_markup(r"$T _ { \mathrm { n } } / 2$"), f"<i>T</i>{gap}<sub>n</sub>/2")
         # 不带花括号的单字符下标（MinerU 表格单元格常见写法）：旧码把 `_` 当普通字符
         # 保留（拍出 "T_P"），下标语义丢失、字母连成一段被整体当量符号。
-        self.assertEqual(_markup(r"$T_P$"), "<i>T</i><sub>P</sub>")
-        self.assertEqual(_markup(r"$2U_N$"), "2<i>U</i><sub>N</sub>")
+        self.assertEqual(_markup(r"$T_P$"), f"<i>T</i>{gap}<sub>P</sub>")
+        self.assertEqual(_markup(r"$2U_N$"), f"2<i>U</i>{gap}<sub>N</sub>")
+
+    def test_prime_command_keeps_the_apostrophe(self) -> None:
+        """GEN-141：`^{\\prime}`（MinerU 拍出的数学撇号）拍平后不得丢字，且基字仍斜体。
+
+        GB/T 10401-2023 的 K′_Ti、T′_i 在 raw 里就是 `$K_{Ti}^{\\prime}$`；旧码把
+        `\\prime` 当未知命令删掉 → 上标组为空、渲染端印不出撇号（canonical 里人工写成
+        `K'` 才绕开）。撇号不是幂：GEN-116 的「单字母基字紧跟上标 → 正体」例外不适用。
+        """
+        packed = _latex_to_text(r"K_{Ti}^{\prime}")
+        self.assertNotIn("prime", packed)
+        # 走真实行内 math 通道（`$…$`）：量符号 K 斜体，撇号是上标组内的 ′。
+        self.assertEqual(
+            _markup(r"$K_{Ti}^{\prime}$"),
+            f'<i>K</i>{_script_gap(overhang=0.009)}<sub>Ti</sub>{_SCRIPT_GAP_105}<super>′</super>',
+        )
+        # 幂次与单位不受影响
+        self.assertEqual(_markup(_latex_to_text(r"m^{2}")), f"m{_SCRIPT_GAP_105}<super>2</super>")
 
     def test_real_pdf_symbols_are_italic_with_the_bar(self) -> None:
         try:
@@ -3525,3 +3731,142 @@ class AnnexHeadingBlockTests(unittest.TestCase):
         # ④ 三行居中：水平中心一致
         centers = [round((box[0] + box[2]) / 2, 1) for box in (letter_box, status_box, title_box)]
         self.assertLess(max(centers) - min(centers), 1.0, centers)
+
+
+class ScriptGapTests(unittest.TestCase):
+    """角标字隙（GEN-140，docs/12 §3.89）：上标/下标/数学撇号与基字符之间的字隙。
+
+    现象（2026-09-24 用户报告，GB_T_10401-2023 5.24.2 公式(7) 的参数解释）：「K′ 的右上
+    角标渲染时离 K 太近，几乎贴到 K 的右上角与之重合」。根因：角标自基字符的**推进宽**
+    起点起画，而机斜字面的拉丁字形墨迹越过推进宽（K 0.177em、I 0.152em、k 0.117em），
+    「K′」两处墨迹实测重叠 0.124em（10.5pt 下 1.3pt）。正体字面同位置超伸≈0（K +0.001em），
+    所以缺陷只出现在**斜体变量**之后。
+
+    判据：字隙 = max(0, 基字符在角标垂直带内的墨迹超伸) + TeX \\scriptspace（0.05em）。
+    """
+
+    BODY_FACE = "NotoSerifCJKsc-Regular"
+    ITALIC_FACE = "NotoSerifCJKsc-Oblique"
+    ROOT = Path(__file__).resolve().parents[1]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+
+        for name, filename in (
+            (cls.BODY_FACE, "NotoSerifCJKsc-Regular.ttf"),
+            (cls.ITALIC_FACE, "NotoSerifCJKsc-Oblique.ttf"),
+        ):
+            path = cls.ROOT / "config" / "rendering" / "fonts" / filename
+            if not path.is_file():
+                raise unittest.SkipTest(f"font asset missing: {path}")
+            if name not in pdfmetrics.getRegisteredFontNames():
+                pdfmetrics.registerFont(TTFont(name, str(path), subfontIndex=0))
+
+    def setUp(self) -> None:
+        _pin_math_faces(self, body=self.BODY_FACE, italic=self.ITALIC_FACE)
+
+    def test_overhang_metric_counts_only_ink_beyond_the_advance(self) -> None:
+        """超伸量 = 字形墨迹在垂直带内的最大 x 减推进宽（取不到 → None，调用方按 0）。"""
+        from leleby_ssir import pdf_renderer as _renderer
+
+        raised, lowered = _renderer._SCRIPT_RAISED_BAND, _renderer._SCRIPT_LOWERED_BAND
+        # 机斜字面（量符号）：上带（撇号/上标所在）普遍超伸——这就是「贴住」的来源
+        self.assertAlmostEqual(_renderer._face_band_overhang_em(self.ITALIC_FACE, "K", raised), 0.177, places=3)
+        self.assertAlmostEqual(_renderer._face_band_overhang_em(self.ITALIC_FACE, "I", raised), 0.152, places=3)
+        self.assertAlmostEqual(_renderer._face_band_overhang_em(self.ITALIC_FACE, "k", raised), 0.117, places=3)
+        # 下带（下标所在）：只有 K 的内下勾超伸，其余字母为负 → 取 0
+        self.assertAlmostEqual(_renderer._face_band_overhang_em(self.ITALIC_FACE, "K", lowered), 0.009, places=3)
+        self.assertLess(_renderer._face_band_overhang_em(self.ITALIC_FACE, "T", lowered), 0.0)
+        # 正体字面：同位置≈0（数字、CJK 均不出界）——所以「10³」「要素ᵃ」不因重叠而需要它
+        self.assertLess(_renderer._face_band_overhang_em(self.BODY_FACE, "K", raised), 0.0)
+        self.assertLess(_renderer._face_band_overhang_em(self.BODY_FACE, "0", raised), 0.0)
+        self.assertLess(_renderer._face_band_overhang_em(self.BODY_FACE, "中", raised), 0.0)
+        # 取不到字面 / 字形 → None（只留固定字隙，不猜）
+        self.assertIsNone(_renderer._face_band_overhang_em("NoSuchFace", "K", raised))
+
+    def test_gap_is_scriptspace_plus_overhang(self) -> None:
+        gap = _SCRIPT_GAP_105
+        # 撇号作角标：0.05em 定长 + 基字符（斜体量符号）上带超伸
+        self.assertEqual(_markup(r"$K'$"), f"<i>K</i>{_script_gap(overhang=0.177)}&#x27;")
+        self.assertEqual(_markup(r"$T'$"), f"<i>T</i>{_script_gap(overhang=0.027)}&#x27;")
+        # 下标紧跟斜体 T：T 的下带无超伸 → 只剩 \scriptspace
+        self.assertEqual(_markup(r"$T_{i}$"), f"<i>T</i>{gap}<sub>i</sub>")
+        # CJK 基字符（正体、无超伸）同样有定长字隙（「稍微分开一点点」按类生效）
+        self.assertEqual(_markup("要素$^{a}$"), f"要素{gap}<super>a</super>")
+        # 单位幂：基字按 GEN-116 走正体 → 无超伸，只有定长字隙；源的 m² 本就不贴
+        self.assertEqual(_markup(r"$K^{2}$"), f"K{gap}<super>2</super>")
+        self.assertEqual(_markup(r"$m^{2}$"), f"m{gap}<super>2</super>")
+
+    def test_no_gap_without_a_base_character(self) -> None:
+        gap = _SCRIPT_GAP_105
+        self.assertEqual(_markup(r"$^{a}$"), "<super>a</super>")                 # 行首
+        self.assertEqual(_markup(r"x$^{a}$"), f"x{gap}<super>a</super>")          # 有基字符
+        self.assertEqual(_markup("x\x00BR\x00$^{a}$"), "x\x00BR\x00<super>a</super>")   # 硬换行 = 行首
+        # 空角标（抽取丢字的 `^{}`）不打字隙：否则留下一段没有角标的空白
+        self.assertEqual(_markup(r"$x^{}$"), "x<super></super>")
+        self.assertEqual(_markup(r"$^{}$"), "<super></super>")
+
+    def test_gap_scales_with_the_container_font_size(self) -> None:
+        # 字隙随容器字号（\scriptspace 是 em 单位），不是固定点数
+        self.assertEqual(
+            _markup("要素$^{a}$", em_size=21),
+            '要素<font size="1.05" color="white">中</font><super>a</super>',
+        )
+
+    def test_rendered_prime_clears_the_italic_base(self) -> None:
+        """GB/T 10401-2023 5.24.2 的 `K′_Ti`：渲染稿里撇号前面真的多出整段字隙。"""
+        try:
+            import pymupdf
+        except ImportError:  # pragma: no cover - 环境缺 pymupdf 时跳过
+            self.skipTest("pymupdf unavailable")
+        import json
+
+        from leleby_ssir.builder import SSIRBuilder
+        from leleby_ssir.parser import CSMParser
+        from leleby_ssir.pdf_renderer import render_pdf_file
+
+        canon = (
+            "---\n"
+            "csm-version: 1.0\n"
+            "document-type: standard\n"
+            "document-identifier: GB_T_10401-2023\n"
+            "standard-number: GB/T 10401—2023\n"
+            "title: 谐波齿轮传动装置\n"
+            "language: zh-CN\n"
+            "---\n\n"
+            "# 谐波齿轮传动装置\n\n"
+            "## 5 试验方法\n\n"
+            "### 5.24 堵转转矩\n\n"
+            "#### 5.24.2 试验程序\n\n"
+            "式中：\n\n"
+            "$K'_{Ti}$ ——堵转转矩灵敏度拟合值，单位为牛米每安培(N·m/A)；\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "t.canonical.md"
+            source.write_text(canon, encoding="utf-8")
+            ssir_path = Path(directory) / "t.ssir.json"
+            ssir_path.write_text(
+                json.dumps(SSIRBuilder().build(CSMParser().read(str(source))), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            target = Path(directory) / "t.pdf"
+            render_pdf_file(str(ssir_path), str(target), toc_depth=None)
+            document = pymupdf.open(str(target))
+            rows = [
+                line["spans"]
+                for page in document
+                for block in page.get_text("dict")["blocks"]
+                for line in block.get("lines", [])
+                if "".join(span["text"] for span in line["spans"]).startswith("K")
+            ]
+            document.close()
+        self.assertTrue(rows, "未找到 K′_Ti 参数行")
+        spans = rows[0]
+        self.assertEqual([span["text"] for span in spans[:3]], ["K", "中", "'"])
+        expected = 10.5 * (0.05 + 0.177)          # 定长 + K 上带超伸
+        self.assertEqual(spans[1]["color"], 0xFFFFFF)                       # 字隙是白色占位字
+        self.assertAlmostEqual(spans[1]["bbox"][2] - spans[1]["bbox"][0], expected, delta=0.02)
+        # 撇号起点 = K 推进宽终点 + 整段字隙（修复前两者相等 → 墨迹重叠 0.124em）
+        self.assertAlmostEqual(spans[2]["bbox"][0] - spans[0]["bbox"][2], expected, delta=0.02)

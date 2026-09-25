@@ -55,6 +55,42 @@ language: zh-CN
 """
 
 
+CANON_SCOPED = """---
+csm-version: 1.0
+document-type: standard
+document-identifier: T_BOX_002-2026
+standard-number: T/BOX 002-2026
+title: 框作用域测试文档
+language: zh-CN
+---
+# 框作用域测试文档
+## 附录 A（资料性） 规范标准编写示例
+本附录以标准文本形式给出示例。
+### A.1 产品规范标准编写示例
+引导段一。
+#### 示例 1:
+<!-- ssir:box -->
+## 1000kV变电站监控系统  技术规范
+……
+## 5 系统结构
+5.1 变电站监控系统由站控层、间隔层两部分组成。
+## 6 系统功能
+## 6.1 数据采集处理
+6.1.1 系统应通过测控单元实时采集模拟量、开关量。
+<!-- ssir:/box -->
+引导段二。
+#### 示例 2:
+<!-- ssir:box -->
+## 手持式金属探测器 通用技术规范
+## 4 技术要求
+## 4.1 探测性能
+4.1.1 灵敏度范围。
+<!-- ssir:/box -->
+### A.2 过程规范标准编写示例
+引导段三。
+"""
+
+
 def _all_nodes(root: dict) -> list[dict]:
     out: list[dict] = []
     for node in root.get("children", []) or []:
@@ -198,6 +234,108 @@ class BuilderBoxTests(unittest.TestCase):
         self.assertFalse(any(t == "CE:paragraph" and "框外段尾" in title for t, title, box, _ in marks), marks)
         # 框外节点/内容不带 box 字段
         self.assertFalse(any("条款甲" in title for t, title, box, _ in marks), marks)
+
+
+class BuilderBoxScopeTests(unittest.TestCase):
+    """GEN-145：显式 ssir:box 是**自包含文档框**——框内标题不参与外层层级竞逐，
+    按框内自身层级归位并整体挂在框外题注（锚点）之下。
+
+    现象（2026-09-25，用户报告「GB_T_20001.5 渲染后的示例很多没有正确显示」）：附录
+    A 的六个示例文档自带「5 系统结构」「6.1 数据采集处理」这类与外层章号同形的标题，
+    按层级栈全部弹到文档根 → 题注「示例 1：」孤零零留在附录条里、六个示例内容被排到
+    附录正文之后（题注与线框脱节）。
+    """
+
+    def _ssir(self) -> dict:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "t.canonical.md"
+            path.write_text(CANON_SCOPED, encoding="utf-8")
+            return SSIRBuilder().build(CSMParser().read(str(path)))
+
+    @staticmethod
+    def _annex(ssir: dict) -> dict:
+        return next(node for node in ssir["structuralRoot"]["children"] if node.get("nodeType") == "annex")
+
+    def test_box_content_nests_under_its_label_in_document_order(self) -> None:
+        a1, a2 = self._annex(self._ssir())["children"]
+        self.assertEqual([node["number"] for node in (a1, a2)], ["A.1", "A.2"])
+        label1, label2 = a1["children"]
+        self.assertEqual([label1["title"], label2["title"]], ["示例 1:", "示例 2:"])
+        # 框内节点按文档顺序、作为题注的子节点（不再逃逸到文档根）
+        self.assertEqual(
+            [node["title"] for node in label1["children"]],
+            ["1000kV变电站监控系统  技术规范", "系统结构", "系统功能"],
+        )
+        self.assertEqual([node["title"] for node in label2["children"]],
+                         ["手持式金属探测器 通用技术规范", "技术要求"])
+        # 框内自身层级照旧：6.1 挂在 6 之下
+        self.assertEqual([node["title"] for node in label1["children"][2]["children"]], ["数据采集处理"])
+        # 顶层不再出现示例文档章节
+        self.assertNotIn("系统结构", [node["title"] for node in self._ssir()["structuralRoot"]["children"]])
+
+    def test_box_nodes_carry_box_id_and_example_marker(self) -> None:
+        a1 = self._annex(self._ssir())["children"][0]
+        label1, label2 = a1["children"]
+        for node in label1["children"]:
+            self.assertEqual(node["box"], 1, node)
+            self.assertTrue(node["exampleContent"], node)
+        for node in label2["children"]:
+            self.assertEqual(node["box"], 2, node)
+            self.assertTrue(node["exampleContent"], node)
+        # 题注本身在框外（无 box），仍是示例内容块
+        self.assertIsNone(label1.get("box"))
+        self.assertTrue(label1["exampleContent"])
+
+    def test_trailer_paragraph_after_box_keeps_box_tail_position(self) -> None:
+        """框后引导段依附框内最后节点：文档顺序 = 框内容 → 引导段 → 下一题注。"""
+        a1 = self._annex(self._ssir())["children"][0]
+        label1 = a1["children"][0]
+        tail = label1["children"][2]["children"][0]  # 6 系统功能 → 6.1 数据采集处理
+        texts = [str(ce.get("textContent") or "") for ce in tail.get("contentElements") or []]
+        self.assertTrue(any("引导段二" in text for text in texts), texts)
+        # 框外引导段自身不得带框（否则会被画进线框内）
+        trailers = [ce for ce in tail.get("contentElements") or [] if "引导段二" in str(ce.get("textContent") or "")]
+        self.assertTrue(trailers and all(ce.get("box") is None for ce in trailers), trailers)
+
+    def test_number_glued_to_latin_letters_is_not_a_clause_number(self) -> None:
+        """GEN-146：数字紧贴拉丁字母（「1000kV」＝一千伏）是名称，不是条号。"""
+        a1 = self._annex(self._ssir())["children"][0]
+        first = a1["children"][0]["children"][0]
+        self.assertIsNone(first.get("number"))
+        self.assertEqual(first["nodeType"], "documentBlock")
+        # 紧贴汉字/括号的编号（抽取丢间隔）照旧拆出编号（GEN-117）
+        self.assertIn("5", [node.get("number") for node in a1["children"][0]["children"]])
+
+
+class ScopedBoxRenderOrderTests(unittest.TestCase):
+    """GEN-145 执行侧：题注与其线框在 PDF 里保持文档顺序（题注→框→引导段→下一题注）。"""
+
+    def test_render_keeps_label_adjacent_to_its_box(self) -> None:
+        import json
+        import re
+
+        import fitz  # type: ignore
+
+        from leleby_ssir.pdf_renderer import render_pdf_file
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "t.canonical.md"
+            path.write_text(CANON_SCOPED, encoding="utf-8")
+            ssir = SSIRBuilder().build(CSMParser().read(str(path)))
+            ssir_path = Path(directory) / "t.ssir.json"
+            ssir_path.write_text(json.dumps(ssir, ensure_ascii=False, indent=2), encoding="utf-8")
+            pdf_out = Path(directory) / "out.pdf"
+            render_pdf_file(str(ssir_path), str(pdf_out), toc_depth=None)
+            pdf = fitz.open(str(pdf_out))
+            try:
+                text = "\n".join(page.get_text() for page in pdf)
+            finally:
+                pdf.close()
+        compact = re.sub(r"\s+", "", text).replace("中", "")
+        needles = ["示例1:", "1000kV变电站监控系统", "5系统结构",
+                   "引导段二", "示例2:", "手持式金属探测器通用技术规范", "4技术要求"]
+        positions = [compact.index(needle) for needle in needles]
+        self.assertEqual(positions, sorted(positions), compact[:600])
 
 
 class RoundTripBoxTests(unittest.TestCase):

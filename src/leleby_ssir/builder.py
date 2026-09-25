@@ -304,6 +304,30 @@ def _is_annex_heading(text: str) -> bool:
 # 声明型指令的条目**结构化**（判据单源在 parser：DECLARATION_ITEM_RES；此处只做字段切分）：
 # 图例 `1——气隙；`、分图题注 `a）局部图`、式中解释 `$η$——传动效率；`。不匹配判据的行
 # 整行保留在 text 字段（不猜、不丢，供人工复核）。
+def _unmatched_declaration_item(kind: str, line: str) -> dict[str, Any]:
+    """声明体中不匹配条目判据的行 → 条目（字段名按类别；不猜、不丢）。
+
+    `text` 回退只对 schema 允许 `text` 的类别合法。`formula-vars` 的 ExplanationItem
+    只接受 symbol/definition/unit/terminator（无 `text`），而「括起式」声明体按
+    docs/15 §2.2① **不截断、不丢行**——含有显式结束指令时，续行/取值行
+    （`I类使用目的系数： C_{A}=1;`、`$c_{I}$ = 3;`）必然进到条目列里。旧实现一律落
+    `{"text": …}`，schema 校验即整体失败、构建中断（GB/T 20001.5-2017 附录A 示例1
+    实测 6 行）。此处按**无符号的解释行**登记：`symbol` 置空、整行进 `definition`、
+    句末标点进 `terminator`——渲染端 `symbol or definition` 分支原样绘出该行
+    （行序与文字零丢失），且不把任何内容塞进 schema 不允许的字段。
+    """
+    if kind != "formula-vars":
+        return {"text": line}
+    body = line
+    terminator = ""
+    if body and body[-1] in "；;。":
+        terminator, body = body[-1], body[:-1].rstrip()
+    item: dict[str, Any] = {"symbol": "", "definition": body}
+    if terminator:
+        item["terminator"] = terminator
+    return item
+
+
 def _declaration_items(kind: str, text: str) -> list[dict[str, Any]]:
     pattern = DECLARATION_ITEM_RES[kind]
     items: list[dict[str, Any]] = []
@@ -313,7 +337,7 @@ def _declaration_items(kind: str, text: str) -> list[dict[str, Any]]:
             continue
         match = pattern.match(line)
         if not match:
-            items.append({"text": line})
+            items.append(_unmatched_declaration_item(kind, line))
             continue
         item: dict[str, Any] = {key: value for key, value in match.groupdict().items() if value}
         if kind == "formula-vars" and item.get("definition"):
@@ -496,6 +520,11 @@ class SSIRBuilder:
         # 嵌套开（parser 已报 CSM-STRUCT-006）在此忽略，与宽容解析语义一致。
         active_box: int | None = None
         active_box_style: str = "frame"
+        # 框作用域（GEN-145）：显式 ssir:box 是**自包含文档框**——框内标题不参与外层层级
+        # 竞逐（示例文档自带的「1」「5」「6.1」章标题与外层章号同形同层，按层级会把整块
+        # 内容弹到文档根，与框外的「示例N：」题注、引导段脱节）；框内标题按**框内自身层级**
+        # 归位，整块挂在框开标记处的最近节点（锚点，通常是题注节点）之下。
+        box_scope: dict[str, Any] | None = None
         # 附录作用域（2026-09-12）：当前附录节点 + 其内附录条链（点数, 节点），
         # 供附录条按字母归位（不依赖层级栈，见 heading 分支）。
         current_annex: dict[str, Any] | None = None
@@ -528,9 +557,22 @@ class SSIRBuilder:
                     active_box = (state.counters["box"] + 1)
                     state.counters["box"] = active_box
                     active_box_style = str(block.data.get("style") or "frame")
+                    # 框内容根 = 框开标记处的最近结构节点（题注/所在条款）：框内标题
+                    # 一律挂它之下，不再与外层层级栈互动（GEN-145）。
+                    box_scope = {
+                        "anchor": stack[-1][1] if stack else root,
+                        "depth": stack[-1][0] if stack else 0,
+                        "stack": [],
+                    }
                 elif block.data.get("event") == "close":
                     active_box = None
                     active_box_style = "frame"
+                    if box_scope is not None:
+                        # 框后正文（示例间引导段等）依附于框内最后一个节点——与框内
+                        # 位置一致：框内节点不在外层层级栈上，正是它决定其后正文归属。
+                        if box_scope["stack"]:
+                            stack.append(box_scope["stack"][-1])
+                        box_scope = None
                 state.canonical_parts.append(block.text)
                 continue
             if block.kind == "heading":
@@ -554,7 +596,15 @@ class SSIRBuilder:
                 depth = max((block.level or 2) - 1, 1)
                 node_type = node.get("nodeType")
                 node_number = str(node.get("number") or "")
-                if node_type == "documentBlock" and not node_number and str(node.get("title") or "").replace(" ", "") in {
+                if box_scope is not None:
+                    # 框内标题（GEN-145）：只与框内栈比层级，锚点是框内容的根；
+                    # 也不推进附录作用域（框是自包含文档，其内部章号不属外层附录）。
+                    inner_stack: list[tuple[int, dict[str, Any]]] = box_scope["stack"]
+                    while inner_stack and inner_stack[-1][0] >= depth:
+                        inner_stack.pop()
+                    parent = inner_stack[-1][1] if inner_stack else box_scope["anchor"]
+                    inner_stack.append((depth, node))
+                elif node_type == "documentBlock" and not node_number and str(node.get("title") or "").replace(" ", "") in {
                     "参考文献", "索引", "前言", "引言", "目次", "封面"
                 }:
                     # 文后/前置要素：退出附录作用域，其后同名编号不再归入上一个附录。
@@ -639,7 +689,11 @@ class SSIRBuilder:
                     pending_def = None
                 continue
 
-            parent = stack[-1][1] if stack else root
+            if box_scope is not None and box_scope["stack"]:
+                # 框内正文依附框内当前节点；框内尚无标题时落在框锚点（GEN-145）。
+                parent = box_scope["stack"][-1][1]
+            else:
+                parent = stack[-1][1] if stack else root
             parent_id = parent["id"]
             if self._apply_declaration(state, block, box=active_box, columns=active_columns):
                 # 声明型指令（图例/分图题注/式中解释组）不产生内容元素，只补目标元素字段。
@@ -862,7 +916,13 @@ class SSIRBuilder:
         pure_numbered = re.match(r"^(\d+(?:\.\d+)*)$", title)
         # 编号后必须接汉字/字母/括号，不能接数字："1 000 kV 变电站监控系统 技术规范"
         # 的 "1 000" 是名称本身（一千伏），不是章号 "1"（GEN-031 层次编号规范化）。
-        numbered = re.match(r"^(\d+(?:\.\d+)*)(?:\s+)?(?=[\u4e00-\u9fffA-Za-z（(])(.+)$", title)
+        # 数字**紧贴**拉丁字母（无间隔）同理不是条号：「1000kV」「5mm」是量值+单位或
+        # 标识形式（条号与标题之间按 GB/T 1.1 空一个间隔）；紧贴汉字/括号的「5要求」
+        # 是抽取丢间隔，仍认作编号（GEN-146）。
+        numbered = re.match(
+            r"^(\d+(?:\.\d+)*)(?:\s+(?=[\u4e00-\u9fffA-Za-z（(])|(?=[\u4e00-\u9fff（(]))(.+)$",
+            title,
+        )
         # 附录条（`B.1`/`B.6.1`，GB/T 1.1-2020 9.6.2/10.4.1）：附录大写字母 + 点分
         # 数字链。段数决定层级（parser CSM-OCR-006 已按其提升 heading 级别），
         # 节点类型为数据模型定义的 annexSection（附录内的章/条）。缺此分支时标题

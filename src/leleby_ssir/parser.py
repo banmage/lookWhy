@@ -699,11 +699,19 @@ CLOSING_DIRECTIVE_RE = re.compile(r"^<!--\s*ssir:/\s*[A-Za-z][\w-]*\s*-->\s*$")
 # 图例 index/text、分图题注 label/text、式中解释 symbol/definition/terminator。
 LEGEND_ITEM_RE = re.compile(r"^(?P<index>[0-9]+|[A-Za-z])\s*[—–-]{1,2}\s*(?P<text>.+?)[；;。]?$")
 SUB_CAPTION_ITEM_RE = re.compile(r"^(?P<label>[A-Za-z0-9])\s*[)）]\s*(?P<text>.+)$")
+# 符号单元（单个符号，供并列符号重复使用）：`$…$` 数学式，或 ≤8 字符且**不以标记字符
+# 开头**的符号（`(?![<!#|>`\[\-])` 挡住 `<!-- ssir:/box -->` 这类指令/标记行被当成条目——
+#   否则声明体会把紧随其后的指令行吞进组内）。
+_EXPLANATION_SYMBOL_UNIT = r"(?:\$[^$]+\$|(?![<!#|>`\[\-])[^—–\-,、，]{1,8}?)"
 EXPLANATION_ITEM_RE = re.compile(
-    # 符号位：`$…$` 数学式，或 ≤8 字符且**不以标记字符开头**的符号
-    # （`(?![<!#|>`\[\-])` 挡住 `<!-- ssir:/box -->` 这类指令/标记行被当成条目——
-    #   否则声明体会把紧随其后的指令行吞进组内）。
-    r"^(?P<symbol>\$[^$]+\$|(?![<!#|>`\[\-])[^—–-]{1,8}?)"
+    # 符号位：单符号，或**并列符号**——多个符号共用一条解释、源版面同排一行
+    # （GB/T 20001.5-2017 附录A 示例1 实测 `$D_{I}$ 、 $D_{II}$ ——…`、
+    #   `$c_{I}$ 、 $c_{II}$  ——…`；单符号位的 ≤8 字符上界曾使这类行整行落到
+    #   「不匹配」回退里）。单元以 、/，/, 连接，整体进 symbol 字段；单元自身不含
+    #   这些连接符，切分确定（无回溯歧义）。
+    r"^(?P<symbol>"
+    + _EXPLANATION_SYMBOL_UNIT
+    + r"(?:\s*[、，,]\s*" + _EXPLANATION_SYMBOL_UNIT + r")*)"
     r"\s*[—–-]{1,3}\s*(?P<definition>.+?)(?P<terminator>[；;。]?)$"
 )
 DECLARATION_ITEM_RES = {

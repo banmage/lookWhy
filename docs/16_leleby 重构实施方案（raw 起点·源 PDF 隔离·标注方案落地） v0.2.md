@@ -88,7 +88,7 @@ rawFile/<ID>.md（云端 MinerU / 人工整理）┴─▶ [抽取阶段：唯�
   "textLines": [{"page": 3, "x0": 78.0, "y0": 457.0, "x1": 344.0, "y1": 469.0, "text": "……"}],  // GEN-092：省略号补盲的输入（过滤页眉 y0<80 与页脚纯页码）
   "ellipsisLines": [{"page": 3, "x0": 78.0, "y0": 457.0, "text": "……"}],  // 短省略号行读数
   "frames":    [{"page": 37, "bbox": [...], "style": "frame|shaded"}],     // GEN-052/CSM-STRUCT-006：大尺寸框线读数（有填充→shaded，否则描边→frame）
-  "imageRects": [{"page": 5, "bbox": [...], "width": 433.7, "height": 274.9}],  // GEN-096/098：内容图候选（封面徽标除外）
+  "imageRects": [{"page": 5, "bbox": [...], "width": 433.7, "height": 274.9}],  // GEN-096/098：图元矩形读数（封面徽标除外）；扫描页的整页位图也在读数里——「不是内容图矩形」的判定在消费端（GEN-143）
   "columns":   [{"page": 37, "blocks": [{"type": "text|image|interline_equation", "bbox": [...],
                   "text": "…", "asset": "xxx.jpg", "latex": "…", "spans": [["文本", x0, y0, x1, y1]]}]}],  // GEN-095：并列版面几何（来自 parts/*_middle.json 与整份 middle.json）
   "pages":     [{"page": 3, "width": 595.3, "height": 841.9}],             // 页尺寸（「页底 0.68×页高」类判据需要）
@@ -149,7 +149,7 @@ span——判定按 §3「通道不改判据」留在 `pipeline.py`。`columns` 
 | `_text_layer_content_lines` | 文本层行（含坐标） | — | `textLines`（单一来源在 `layout`） |
 | `_restore_ellipsis_lines` | 目次/公式引导线 `……` 还原 | GEN-092 | `textLines`（＋`ellipsisLines` 读数） |
 | `_stamp_example_styles` | 示例框线风格 | GEN-052/CSM-STRUCT-006 | `frames`（stroke/fill 读数，风格判定在消费端） |
-| `_stamp_figure_source_sizes` | 图源尺寸 | GEN-096/098 | `imageRects`（尺寸匹配与密度回退在消费端） |
+| `_stamp_figure_source_sizes` | 图源尺寸 | GEN-096/098、GEN-143 | `imageRects`（尺寸匹配与密度回退在消费端；整页位图矩形剔除，页尺寸取 `pages`） |
 | `_stamp_side_by_side_layout` | 并列组（**原本已用 middle.json**） | GEN-095 | `columns`（通道优先；`parts/*_middle.json` 保留为回退通道） |
 | `_recover_table_note_markers` | 表角标回收 | GEN-119/CSM-OCR-015 | `textSpans` + `pages` |
 | `_recover_pdf_footnotes` | 条文脚注回收 | GEN-118/CSM-OCR-014 | `textSpans` + `pages` |

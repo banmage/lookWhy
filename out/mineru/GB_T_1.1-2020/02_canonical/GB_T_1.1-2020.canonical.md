@@ -1526,8 +1526,8 @@ a断裂槽应滚压成型。
 
 ##### 示例 1：
 
-<!-- ssir:table id="mineru-table-p019-006" header-rows="1" caption-number="3" -->
-**表3**
+<!-- ssir:table id="mineru-table-p019-006" header-rows="1" -->
+
 | 类型 | 线密度<br>kg/m | 内圆直径<br>mm | 外圆直径<br>mm |
 | --- | --- | --- | --- |
 |  |  |  |  |
@@ -1555,7 +1555,7 @@ a断裂槽应滚压成型。
 示例4:不正确的表头
 
 <!-- ssir:table id="mineru-table-p019-009" header-rows="1" -->
-| 类型尺寸 | A | B | C |
+| 类型\尺寸 | A | B | C |
 | --- | --- | --- | --- |
 |  |  |  |  |
 

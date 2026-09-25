@@ -1021,6 +1021,27 @@ def _stamp_example_styles(ssir_path: Path, layout: dict[str, Any]) -> None:
     _log(f"Example style detected from the layout channel: {style} (stroke={stroke_rects}, fill={fill_rects})")
 
 
+# 整页位图矩形判据（GEN-143）：矩形覆盖源页的多少比例以上就认定它是**源页自身的位图**
+# （扫描页的整页图），而不是内容图矩形。0.9 留出扫描件的白边/裁切误差（SJ_T_11859-2022
+# 实测 595.2x841.7 vs 页 595.28x841.89 = 99.97%）。
+_PAGE_BITMAP_RECT_RATIO = 0.9
+
+
+def _is_page_bitmap_rect(width: float, height: float, page_size: tuple[float, float] | None) -> bool:
+    """该矩形是否就是源页自身的位图（扫描页的整页图），而非内容图矩形（GEN-143）。
+
+    扫描型 PDF（每页一张 1240x1754 位图）逐页只有一个图元，尺寸与页等大——它不是
+    「某张内容图的版面矩形」，拿它当图候选会同时错在两处：命中的裁剪图被判成整页尺寸，
+    而它的**像素密度比**（裁剪图 px ÷ 页位图 pt）又会污染整份文档的密度回退值（见
+    ``_stamp_figure_source_sizes``）。页面尺寸取不到的（通道缺 ``pages``）按「无判据」
+    返回 False——只剔除能证明是整页位图的矩形，不猜。
+    """
+    if not page_size:
+        return False
+    page_width, page_height = page_size
+    return width >= _PAGE_BITMAP_RECT_RATIO * page_width and height >= _PAGE_BITMAP_RECT_RATIO * page_height
+
+
 def _stamp_figure_source_sizes(ssir_path: Path, layout: dict[str, Any]) -> None:
     """Record each figure's original layout size (pt) from the source PDF.
 
@@ -1046,7 +1067,12 @@ def _stamp_figure_source_sizes(ssir_path: Path, layout: dict[str, Any]) -> None:
     - 表格单元格内图（GBT-X02 表中图，`![](ref)` 挂在 table cell 文本上，
       如 表2 试验区域分割/插入角度示意图）：同样参与匹配与密度回退，尺寸
       写入 table["cellImageSizes"] = {ref: [w, h]}，渲染端按原尺寸（上限
-      单元格宽）显示。
+      单元格宽）显示；
+    - **扫描型 PDF 的整页位图**（GEN-143）：逐页只有一个图元、尺寸与页等大的矩形是
+      源页自身的位图，不参与匹配也不参与密度估计（否则宽高比接近页比例的裁剪图会
+      命中它，并把「裁剪图 px ÷ 页位图 pt」当成本文档的密度）。这类文档通常因此
+      一条可用矩形都不剩 → 全部走密度回退的默认值（MinerU 裁剪图重渲染密度
+      200dpi/72 ≈ 2.78，与 middle.json 图块 bbox 取到的尺寸一致）。
 
     注意 assetRef 是相对文档根的（<docroot>/assets/images/...），SSIR 位于
     03_ssir/ 子目录——必须沿祖先目录向上找（同 pdf_renderer._resolve_asset）。
@@ -1072,17 +1098,46 @@ def _stamp_figure_source_sizes(ssir_path: Path, layout: dict[str, Any]) -> None:
     # (rw, rh, page_index)。第 1 页（封面）的徽标/装饰小图（高 < 100pt）已在通道侧
     # 排除——封面徽标由 config/emblems/ 独立处理，非内容图；宽高比接近的内容图误配到
     # 徽标矩形会得到错误尺寸。匹配判据（宽高比/密度贪心）与密度回退不变。
-    rects: list[tuple[float, float, int]] = [
-        (
-            float(item["bbox"][2]) - float(item["bbox"][0]),
-            float(item["bbox"][3]) - float(item["bbox"][1]),
-            int(item.get("page") or 1) - 1,
+    #
+    # GEN-143（扫描页）：逐页只有一个图元、且尺寸与页等大的矩形是**源页自身的位图**，
+    # 不是内容图矩形——不参与匹配，也不参与密度回退。扫描型 PDF（每页一张整页位图）
+    # 因此没有任何可用矩形，全部裁剪图走密度回退；若不清除，某个宽高比刚好接近页
+    # 比例的裁剪图会命中整页矩形（SJ_T_11859-2022 图 Seq0015），把它自己的
+    # 「裁剪图 px ÷ 页位图 pt」当成本文档的像素密度（1.6 而非真实的 2.78），
+    # 于是**全部**图的 sourceWidth/Height 都被放大 1.74 倍。
+    page_sizes: dict[int, tuple[float, float]] = {}
+    for item in layout.get("pages") or []:
+        if not isinstance(item, dict):
+            continue
+        page = item.get("page")
+        width, height = item.get("width"), item.get("height")
+        if page and width and height:
+            page_sizes[int(page)] = (float(width), float(height))
+    raw_rects: list[tuple[float, float, int, int]] = []
+    for item in layout.get("imageRects") or []:
+        if not (isinstance(item, dict) and item.get("bbox")):
+            continue
+        page = int(item.get("page") or 1)
+        raw_rects.append(
+            (
+                float(item["bbox"][2]) - float(item["bbox"][0]),
+                float(item["bbox"][3]) - float(item["bbox"][1]),
+                page - 1,
+                page,
+            )
         )
-        for item in (layout.get("imageRects") or [])
-        if isinstance(item, dict) and item.get("bbox")
-    ]
-    if not rects:
+    # 通道里**一条读数都没有**才退出（无判据，不猜）；有读数但全是整页位图时继续，
+    # 让密度回退接管（扫描型 PDF 的正常路径，见 docstring 末尾）。
+    if not raw_rects:
         return
+    rects: list[tuple[float, float, int]] = [
+        (width, height, page_index)
+        for width, height, page_index, page in raw_rects
+        if not _is_page_bitmap_rect(width, height, page_sizes.get(page))
+    ]
+    dropped = len(raw_rects) - len(rects)
+    if dropped:
+        _log(f"Figure rects from the layout channel: {dropped}/{len(raw_rects)} are page bitmaps (scanned pages, GEN-143), ignored")
 
     def _resolve_asset(ref: str) -> Path:
         # assetRef 相对文档根；SSIR 在 03_ssir/ 时沿祖先目录向上找。

@@ -20,6 +20,23 @@ from pathlib import Path
 
 from leleby_ssir.service import parse_csm
 
+
+def _visible_layer_text(document) -> str:
+    """渲染 PDF 文本层里**有色**字形的文本（跳过白色占位字形）。
+
+    白色占位字（QEM 数值-单位 1/4 字隙、GAP 术语/条号 1em 字隙、角标字隙 GEN-140）
+    是排版用的不可见填充字（「中」），被抽取出来会污染文本比对——按 span 颜色滤掉。
+    """
+    parts: list[str] = []
+    for page in document:
+        for block in page.get_text("dict")["blocks"]:
+            for line in block.get("lines", []):
+                for span in line["spans"]:
+                    if span["color"] != 0xFFFFFF:
+                        parts.append(span["text"])
+    return "".join(parts)
+
+
 FIXTURE = """\
 ---
 csm-version: "1.0"
@@ -119,7 +136,7 @@ class FootnoteAnchorKindTests(unittest.TestCase):
             target = root / "doc.render.pdf"
             render_pdf_file(ssir_path, target)
             document = pymupdf.open(str(target))
-            text = "".join(page.get_text() for page in document)
+            text = _visible_layer_text(document)
 
         flat = re.sub(r"\s+", "", text)
         # 图表脚注定义：原位（正文流里），三条都在文本层

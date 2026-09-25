@@ -135,5 +135,135 @@ class ExplanationGroupBoundaryTests(unittest.TestCase):
         )
 
 
+MULTI_SYMBOL_FIXTURE = """\
+---
+csm-version: "1.0"
+document-type: standard
+document-identifier: "Q/XYZ 004—2026"
+standard-number: "Q/XYZ 004—2026"
+title: "式中并列符号与取值行夹具"
+language: zh-CN
+source:
+  mode: user-markdown
+  original-file-name: "fixture.md"
+  provenance: none
+rendering-profile: GB_T_1.1-2020
+extensions:
+  standard-profile: product
+  profile-rules: ["GB_T_1.1-2020"]
+---
+
+# 式中并列符号与取值行夹具
+
+## 1 范围
+
+本文档用于式中并列符号与取值行回归。
+
+<!-- ssir:formula id="fm-001" -->
+$$
+\\\\overline{\\\\eta} = \\\\dfrac{\\\\overline{P}_{2}}{\\\\overline{P}_{1}}
+$$
+式(1)
+
+式中：
+
+<!-- ssir:formula-vars formula="fm-001" -->
+$t$ —— 综合差错率；
+
+$C_{A}$ —— 译文使用目的系数，建议取值：
+
+      I类使用目的系数： $C_{A}=1$;
+
+      Ⅱ类使用目的系数： $C_{A}=0.75$ ;
+
+$D_{I}$ 、 $D_{II}$ ——Ⅰ类、Ⅱ类差错出现的次数，重复性错误按一次计算；
+
+$c_{I}$ 、 $c_{II}$  —— I 类、Ⅱ类差错的系数，建议取值如下：
+
+$c_{I}$ = 3;
+$c_{II}$ =1。
+
+<!-- ssir:/formula-vars -->
+"""
+
+
+class FormulaVarsUnmatchedLineTests(unittest.TestCase):
+    """括起式式中组里的续行/取值行与并列符号（GEN-142）。
+
+    缺陷与根因（2026-09-24，GB/T 20001.5-2017 附录 A 示例 1 实测）：`symbol` 位要求
+    单符号且 ≤8 字符，并列符号行（`$D_{I}$ 、 $D_{II}$ ——…`）与取值行/续行
+    （`I类使用目的系数： …`、`$c_{I}$ = 3;`）都不匹配判据；builder 一律落
+    `{"text": …}`，而 ExplanationItem 只接受 symbol/definition/unit/terminator
+    （无 `text`）→ schema 校验失败、整份构建中断（6 行命中）。
+
+    通用规则：并列符号进 symbol（整段并列写法原样保留）；无 `——` 的行按**无符号的
+    解释行**登记（symbol 空、整行进 definition、句末标点进 terminator），行序与文字
+    零丢失，且不产生 schema 不允许的字段。
+    """
+
+    def test_multi_symbol_line_keeps_both_symbols_in_one_item(self) -> None:
+        cases = {
+            "$D_{I}$ 、 $D_{II}$ ——Ⅰ类、Ⅱ类差错出现的次数，重复性错误按一次计算；": (
+                "$D_{I}$ 、 $D_{II}$",
+                "Ⅰ类、Ⅱ类差错出现的次数，重复性错误按一次计算",
+            ),
+            "$c_{I}$ 、 $c_{II}$  —— I 类、Ⅱ类差错的系数，建议取值如下：": (
+                "$c_{I}$ 、 $c_{II}$",
+                "I 类、Ⅱ类差错的系数，建议取值如下：",
+            ),
+            "A、B —— 两个符号共用一条解释。": ("A、B", "两个符号共用一条解释"),
+            "k, m —— 拉丁符号也能并列；": ("k, m", "拉丁符号也能并列"),
+        }
+        for line, (symbol, definition) in cases.items():
+            with self.subTest(line=line):
+                match = EXPLANATION_ITEM_RE.match(line)
+                self.assertIsNotNone(match, f"并列符号行未被识别：{line}")
+                self.assertEqual(match.group("symbol").strip(), symbol)
+                self.assertEqual(match.group("definition").strip(), definition)
+
+    def test_value_lines_are_not_symbol_items(self) -> None:
+        for line in (
+            "I类使用目的系数： $C_{A}=1$;",
+            "Ⅱ类使用目的系数： $C_{A}=0.75$ ;",
+            "$c_{I}$ = 3;",
+            "$c_{II}$ =1。",
+        ):
+            with self.subTest(line=line):
+                self.assertIsNone(
+                    EXPLANATION_ITEM_RE.match(line),
+                    f"取值行/续行被误判为符号条目：{line}",
+                )
+
+    def test_group_parses_and_validates_with_continuation_lines(self) -> None:
+        ssir = _parse(MULTI_SYMBOL_FIXTURE)
+        items = (ssir["formulas"][0]["explanationGroup"])["items"]
+        self.assertEqual(len(items), 8, "条目数与括起式声明体的行数不一致（丢行/并行了）")
+        for index, item in enumerate(items):
+            with self.subTest(index=index):
+                self.assertNotIn("text", item, "ExplanationItem 不允许 text 字段")
+                self.assertIn("symbol", item)
+                self.assertTrue(set(item) <= {"symbol", "definition", "unit", "terminator"})
+        self.assertEqual(items[2]["symbol"], "")
+        self.assertEqual(items[2]["definition"], "I类使用目的系数： $C_{A}=1$")
+        self.assertEqual(items[2]["terminator"], ";")
+        self.assertEqual(items[4]["symbol"], "$D_{I}$ 、 $D_{II}$")
+        self.assertEqual(items[7]["definition"], "$c_{II}$ =1")
+        self.assertEqual(items[7]["terminator"], "。")
+
+    def test_render_lines_keep_order_and_text(self) -> None:
+        from leleby_ssir.pdf_renderer import _formula_explanation_lines
+
+        ssir = _parse(MULTI_SYMBOL_FIXTURE)
+        lines = _formula_explanation_lines(ssir["formulas"][0])
+        self.assertEqual(len(lines), 8)
+        self.assertEqual(lines[2], "I类使用目的系数： $C_{A}=1$;")
+        self.assertEqual(
+            lines[4],
+            "$D_{I}$ 、 $D_{II}$——Ⅰ类、Ⅱ类差错出现的次数，重复性错误按一次计算；",
+        )
+        self.assertEqual(lines[7], "$c_{II}$ =1。")
+        self.assertEqual(lines[0], "$t$——综合差错率；")
+
+
 if __name__ == "__main__":
     unittest.main()

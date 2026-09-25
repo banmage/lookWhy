@@ -401,6 +401,61 @@ class FigureSourceSizeStampTests(unittest.TestCase):
         table = data["tables"][0]
         self.assertEqual(table["cellImageSizes"]["assets/images/img_t.png"], [100.0, 100.0])
 
+    def test_scanned_page_bitmap_rects_never_size_figures(self) -> None:
+        """扫描型 PDF：整页位图矩形不是内容图矩形（GEN-143）。
+
+        源页（595x842pt）只有**一张整页位图**（扫描件），逐页一个图元、尺寸与页等大。
+        旧实现把它当图候选：宽高比/密度刚好过得去的那张裁剪图（A，宽高比 0.707 = 页
+        比例、密度 1.28 px/pt ∈ [1.2, 4.0]）被匹配成 **595x842pt**；更糟的是它
+        「裁剪图 px ÷ 页位图 pt = 1.28」被中位数取成本文档的像素密度，把**所有**未匹配
+        图的尺寸放大 2.17 倍（真实的 MinerU 裁剪密度是 200dpi/72 ≈ 2.78）。SJ_T_11859-2022
+        实测同一机制：密度取到 1.6（真实 2.78）→ 附录 A 并列组两列各两张图竖向 792pt
+        > 版心 688pt → reportlab `LayoutError` 中断整份渲染。
+
+        修复后：整页矩形不参与匹配也不参与密度估计 → 两张图都按默认密度 2.78 回退，
+        与 MinerU 图块 bbox（``mineru_middle.image_source_sizes``）取到的尺寸一致。
+        """
+        from mineru_full_standard import _stamp_figure_source_sizes
+        import fitz
+
+        crop_a = self.assets / "crop_a.png"
+        crop_b = self.assets / "crop_b.png"
+        page_image = self.assets / "page_scan.png"
+        self._png(page_image, (1240, 1754), (250, 250, 250))   # 页自身位图
+        self._png(crop_a, (760, 1076), (200, 30, 30))          # aspect 0.706 = 页比例
+        self._png(crop_b, (400, 400), (30, 30, 200))           # aspect 1.0，无匹配矩形
+        source = self.root / "scan.pdf"
+        doc = fitz.open()
+        doc.new_page(width=595, height=842)
+        doc[0].insert_image(fitz.Rect(0, 0, 595, 842), filename=str(page_image))  # 整页位图
+        doc.save(source)
+        doc.close()
+
+        ssir_dir = self.root / "doc" / "03_ssir"
+        ssir_dir.mkdir(parents=True)
+        ssir = ssir_dir / "doc.ssir.json"
+        ssir.write_text(json.dumps({
+            "metadata": {"common": {"title": "T"}, "standard": {"standardNumber": "GB/T 1—2026"}},
+            "figures": [
+                {"id": "f-001", "assetRef": "assets/images/crop_a.png"},
+                {"id": "f-002", "assetRef": "assets/images/crop_b.png"},
+            ],
+            "tables": [],
+        }, ensure_ascii=False), encoding="utf-8")
+        layout = build_layout(source)
+        # 通道读数照搬（整页位图也是一条读数，判据在消费端）。
+        self.assertGreaterEqual(len(layout["imageRects"]), 1)
+        _stamp_figure_source_sizes(ssir, layout)
+
+        data = json.loads(ssir.read_text(encoding="utf-8"))
+        by_ref = {fig["assetRef"].split("/")[-1]: fig for fig in data["figures"]}
+        # A 不得被当成整页尺寸（595x842），也不得因密度污染被放成 760/1.28。
+        self.assertAlmostEqual(by_ref["crop_a.png"]["sourceWidth"], 760 / (200 / 72), delta=1.0)
+        self.assertAlmostEqual(by_ref["crop_a.png"]["sourceHeight"], 1076 / (200 / 72), delta=2.0)
+        # B 同样按默认密度回退（修复前是 400/1.28 ≈ 313pt）。
+        self.assertAlmostEqual(by_ref["crop_b.png"]["sourceWidth"], 400 / (200 / 72), delta=1.0)
+        self.assertAlmostEqual(by_ref["crop_b.png"]["sourceHeight"], 400 / (200 / 72), delta=1.0)
+
 
 class FigureSourceSizeMapStampTests(unittest.TestCase):
     """GEN-076 第二来源：无源 PDF 时用 middle.json 图块 bbox 映射打标

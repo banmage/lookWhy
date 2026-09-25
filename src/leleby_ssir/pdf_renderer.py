@@ -748,8 +748,12 @@ def render_pdf(
                 if _is_example_header(node) and node.get("exampleContent") and not node.get("box"):
                     story.append(Paragraph(_markup(str(node.get("title") or "").strip()), styles["example-label"]))
                     idx += 1
-                    for child in node.get("children", []) or []:
-                        _append_marked_node(sink, child, registries, styles, font_name, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, marker_factory, PageBreak, example_default, box_inner_width=example_inner_width)
+                    children = node.get("children", []) or []
+                    for index, child in enumerate(children):
+                        # 题注子内容的**首个**节点＝示例文档真实标题（框内第一行，
+                        # 黑体居中）；后续节点按框内内容样式。
+                        child_leading = bool(index == 0 and child.get("box") is not None)
+                        _append_marked_node(sink, child, registries, styles, font_name, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, marker_factory, PageBreak, example_default, example_leading=child_leading, box_inner_width=example_inner_width)
                     contents = node.get("contentElements") or []
                     if contents:
                         _append_marked_content_sequence(sink, contents, registries, styles, font_name, report, asset_dir, colors, Table, TableStyle, Paragraph, Spacer, Image, example_inner_width, example_inner_width, enclosing=_node_clause_number(node))
@@ -1418,7 +1422,19 @@ def _append_marked_node(sink: _BoxSink, node: dict[str, Any], registries: dict[s
     heading = _heading_text(number, title, is_annex)
     depth = _heading_depth(number)
     heading_style = styles["section"] if depth == 1 else styles["subclause"] if depth >= 3 else styles["clause"] if depth else styles["front"]
-    if node.get("exampleContent"):
+    # 框外题注「示例N：」+ 其框内容挂在自己之下（GEN-145 框作用域）：题注按框外
+    # 题注样式排（与顶层循环的 _is_example_header 分支一致）。判据带上「子节点带
+    # 框」——只改这种新形态，文档里其它嵌套题注（无框子节点）样式不动。
+    children = node.get("children", []) or []
+    example_label = bool(
+        node.get("exampleContent")
+        and box is None
+        and _is_example_header(node)
+        and any(child.get("box") is not None for child in children)
+    )
+    if example_label:
+        heading_style = styles["example-label"]
+    elif node.get("exampleContent"):
         # 附录编写示例块（GB/T 20001 表框/图框内容，CSM-OCR-006）：框内第一个无编号
         # 节点是示例文档真实标题（黑体居中），其余节点黑体顶格左对齐（与旧分组一致）。
         heading_style = styles["example-title"] if (example_leading and not number) else styles["example-content"]
@@ -1434,10 +1450,13 @@ def _append_marked_node(sink: _BoxSink, node: dict[str, Any], registries: dict[s
     _append_marked_content_sequence(sink, node.get("contentElements", []), registries,
                                     styles, font, report, asset_dir, colors, Table, TableStyle,
                                     Paragraph, Spacer, Image, content_width, inner, enclosing=number or None)
-    for child in node.get("children", []) or []:
+    for index, child in enumerate(children):
+        # 题注子内容的**首个**节点是示例文档真实标题（框内第一行，黑体居中）；
+        # 其余节点的 example_leading 语义（框内首单元）不适用。
+        child_leading = bool(example_label and index == 0 and child.get("box") is not None)
         _append_marked_node(sink, child, registries, styles, font, report, asset_dir, colors,
                             Table, TableStyle, Paragraph, Spacer, Image, marker_factory,
-                            PageBreak, example_default, example_leading=False,
+                            PageBreak, example_default, example_leading=child_leading,
                             content_width=content_width, box_inner_width=inner)
 
 
@@ -1647,6 +1666,68 @@ def _side_by_side_widths(needs: list[float], avail: float) -> list[float]:
             if value > 0:
                 widths[index] -= give * value / total_surplus
     return widths
+
+
+# ---- 并列组竖向整组保护（GEN-144 执行侧，docs/12 §3.92）--------------------------------
+# 并列组渲染成**单行**表格，reportlab 无法切分单行表格：整组竖向总高超过版心时
+# `keepTogether` 会把它推到新页，新页也放不下就抛 `LayoutError` —— **整份渲染中断**
+# （SJ_T_11859-2022 附录 A 两列各两张图：列内 792pt > 版心 688pt）。
+#
+# 判据只用几何：按列可用宽量出各列**非图**内容（题注/标签/文字行）与图的总高，
+# 取「最挤的那一列恰好放得进版心（×0.98 余量）」的比例，**整组图同比例缩放**——
+# 同一比例保证并列对照的相对大小不变（各列独立缩放会让并列关系失去可比性）。
+# 非图内容不缩放，因此比例按「(版心 − 该列非图内容高) ÷ 该列图高」求得。
+_SIDE_BY_SIDE_HEIGHT_RATIO = 0.98    # 版心余量：单元格上下 padding + 排版取整
+_SIDE_BY_SIDE_MIN_SCALE = 0.2        # 低于此比例说明非图内容本身就超版心 → 改上下排布
+
+
+def _fit_side_by_side_to_frame(col_flowables: list[list[Any]], col_widths: list[float], report: PDFRenderReport, Image: Any) -> bool:
+    """把并列组的图缩到整组放得进版心；放不下则返回 False（调用方改上下排布）。
+
+    在文档上下文之外（``_ROTATED_TABLE_MEASURE`` 为 None，如纯函数式调用）不做任何
+    事——与 ``_table_caption_keep_height`` 同约定。只缩图、不动文字，也不改内容：
+    缩过的图仍是同一张图的等比缩小版（GEN-144 只解空间冲突，不丢内容）。
+    """
+    frame_height = _ROTATED_TABLE_MEASURE
+    if frame_height is None:
+        return True
+    limit = float(frame_height) * _SIDE_BY_SIDE_HEIGHT_RATIO
+    factors: list[float] = []
+    for cell, width in zip(col_flowables, col_widths):
+        text_height = 0.0
+        image_height = 0.0
+        for flowable in cell:
+            try:
+                height = float(flowable.wrap(max(1.0, width - 8), frame_height)[1])
+            except Exception:              # 量不了的内容按 0 计：不猜、只留几何余量
+                continue
+            if Image is not None and isinstance(flowable, Image):
+                image_height += height
+            else:
+                text_height += height
+        if image_height > 0:
+            factors.append((limit - text_height) / image_height)
+    if not factors:
+        return True
+    factor = min(1.0, min(factors))
+    if factor >= 1.0:
+        return True
+    if factor < _SIDE_BY_SIDE_MIN_SCALE:
+        report.warnings.append(
+            "Side-by-side group does not fit the page frame even at "
+            f"{_SIDE_BY_SIDE_MIN_SCALE:.2f}x images ({min(factors):.2f} needed): "
+            "columns laid out one above another (GEN-144)"
+        )
+        return False
+    for cell in col_flowables:
+        for flowable in cell:
+            if Image is not None and isinstance(flowable, Image):
+                flowable.drawWidth *= factor
+                flowable.drawHeight *= factor
+    report.warnings.append(
+        f"Side-by-side group images scaled by {factor:.2f} to fit the page frame (GEN-144)"
+    )
+    return True
 
 
 # 分图编号（GB/T 1.1-2020 9.7.6：只准许对图作一个层次的细分，分图用后带半圆括号的
@@ -1953,6 +2034,14 @@ def _append_side_by_side(story: list[Any], members: list[dict[str, Any]], regist
         ("TOPPADDING", (0, 0), (-1, -1), 2),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
     ]))
+    if not _fit_side_by_side_to_frame(col_flowables, col_widths, report, Image):
+        # 整组无论怎么缩都放不进版心（列内非图内容本身就超版心）→ 退化为上下排布：
+        # 内容零丢失、顺序不变，只是并列关系改由 SSIR/投影表达。绝不抛 LayoutError
+        # 中断整份渲染（GEN-144 执行侧，见上方函数注释）。
+        for cell in col_flowables:
+            story.extend(cell)
+            story.append(Spacer(1, 4))
+        return
     story.append(KeepTogether([grid]))
     story.append(Spacer(1, 4))
 
@@ -3948,6 +4037,12 @@ def _latex_to_text(latex: str) -> str:
         (r"\Upsilon", "Υ"),
         (r"\Phi", "Φ"),
         (r"\Psi", "Ψ"),
+        # 撇号命令（GEN-141）：`^{\prime}` 是 MinerU/raw 里**数学撇号**的写法（GB/T
+        # 10401-2023 的 K′_Ti、T′_i 在 raw 里全写成 `^{\prime}`）。旧实现把它当未知
+        # 命令在第 5 步整条删掉——`^{\prime}` 拍成**空**的上标组，渲染端印不出任何撇号
+        # （内容丢失），canonical 里人工 curation 成 `'` 才绕开。字面用 U+2032 PRIME
+        # （与 ASCII `'` 同形，但在上标组里是真正的角标字形）。
+        (r"\prime", "′"),
     ):
         text = text.replace(src, dst)
     # 5) Drop any remaining \command, stray braces, tildes, backslashes.
@@ -4330,6 +4425,10 @@ def _markup(text: str, em_size: float | None = None) -> str:
     # 高度按区间内字符的实际字面（`<i>` / `<font name=…>`）取墨迹高度——必须在希腊
     # 字面替换之后，否则希腊字母还没带上字面标签、量不到字形。
     escaped = _render_math_overline(escaped)
+    # 角标字隙（GEN-140）：上标 / 下标 / 行内数学撇号与基字符之间补字隙。位置在最后——
+    # 字面标签（希腊换族、强调、上划线）都已落定，本步按最终标签判断基字符的字面；
+    # 且插到白字哨兵通道之后，不参与上划线的墨迹测量。
+    escaped = _script_gap_markup(escaped, em_size or _MARKUP_EM_SIZE)
     return _restore_literal_stars(escaped)
 
 
@@ -4557,6 +4656,21 @@ def _italicize_math_regions(text: str) -> str:
     return joined.replace(_MATH_UPRIGHT_OPEN, "").replace(_MATH_UPRIGHT_CLOSE, "")
 
 
+def _sup_group_is_prime(segment: str, index: int) -> bool:
+    """``index`` 处的上标哨兵内容是否**只是撇号**（`^{\\prime}` → `′`）。
+
+    规则对应: GEN-141（撇号命令）。GEN-116 的「单字母基字紧跟上标 → 单位/常数正体」
+    例外只对**幂**成立（m²、10⁻³）；撇号是角标而非幂，基字保持量符号斜体。
+    """
+    if not segment.startswith("\x00SUP\x00", index):
+        return False
+    end = segment.find("\x00/SUP\x00", index + len("\x00SUP\x00"))
+    if end < 0:
+        return False
+    content = segment[index + len("\x00SUP\x00"):end].strip()
+    return bool(content) and set(content) <= {"′", "'", "’"}
+
+
 def _italicize_math_variables(segment: str) -> str:
     """math 区域内的变量斜体化（GEN-116）：跳过直立遮罩、上/下标内容与其它哨兵。"""
     out: list[str] = []
@@ -4587,7 +4701,8 @@ def _italicize_math_variables(segment: str) -> str:
                 end += 1
             run = segment[index:end]
             # 例外：单字母基字紧跟上标（^{…}）→ 单位/常数（m²、m³），源版面正体。
-            if segment.startswith("\x00SUP\x00", end):
+            # 但**撇号上标**（`K^{\prime}`，GEN-141）不是幂：基字仍是量符号，斜体。
+            if segment.startswith("\x00SUP\x00", end) and not _sup_group_is_prime(segment, end):
                 out.append(run)
             else:
                 out.append("\x00EMI\x00" + run + "\x00/EMI\x00")
@@ -4643,6 +4758,214 @@ def _face_ink_em(face: str, char: str) -> float | None:
         ink = None
     _GLYPH_INK_CACHE[key] = ink
     return ink
+
+
+# ---- 角标字隙（GEN-140，docs/12 §3.89）--------------------------------------------
+# 角标 = 上标 `<super>`、下标 `<sub>`、以及行内数学里的撇号（`K'`、`T'`）。它们必须与
+# 基字符之间留一段字隙。
+#
+# 根因（像素实测，见 `_face_band_overhang_em`）：reportlab 从基字符的**推进宽**起点
+# 起画角标，而机斜字面（NotoSerifCJKsc-Oblique）的拉丁字形墨迹普遍越过推进宽——
+# K 越 0.176em、I 0.151em、k 0.117em、T 0.027em；撇号 `'` 的墨迹左边距只有 0.052em。
+# 于是「K′」两处墨迹实际重叠 0.124em（9pt 下 1.1pt），肉眼就是「撇号贴上/压住 K 的
+# 右上角」。正体字面同位置超伸≈0（K +0.001em、T −0.022em、数字 ≤0.02em），所以缺陷只
+# 出现在**斜体变量**之后——与用户实测报告一致（K′_Ti、T′_i；表内的 1′/30″ 分秒记号
+# 是正体、紧跟数值，不受影响）。
+#
+# 判据：字隙 = max(0, 基字符在角标所在**垂直带**内的墨迹超伸) + TeX \scriptspace。
+#   - 上带（上标与撇号）：上标 rise = +0.5em、字号 ×0.8，墨迹自 0.5em 起；撇号墨迹
+#     实测 0.48~0.805em。取 y ≥ 0.45em 的带。
+#   - 下带（下标）：rise = −0.5em、字号 ×0.8，墨迹 −0.5~+0.082em。取 y ≤ 0.09em 的带。
+# 超伸量按「这个字符在这张字面里的字形」取（fontTools，同 `_face_ink_em` 通道）；取不到
+# 时按 0 处理（只留固定字隙，不猜）。字隙用白色占位字实现（`_fixed_gap` 同族技术）：
+# 推进宽恒等于点数字号、两端对齐不会把它拉宽。
+_SCRIPT_SPACE_EM = 0.05                 # TeX \scriptspace = 0.5pt @10pt 字号
+_SCRIPT_RAISED_BAND = (0.45, 4.0)       # em，基线以上；4.0 只是上界，字形不会超过
+_SCRIPT_LOWERED_BAND = (-4.0, 0.09)
+_SCRIPT_OVERHANG_CACHE: dict[tuple[str, str, tuple[float, float]], float | None] = {}
+
+
+def _face_band_overhang_em(face: str, char: str, band: tuple[float, float]) -> float | None:
+    """字符在字面 ``face`` 的垂直带 ``band``（em，基线以上为正）内墨迹 x 超出推进宽的量。
+
+    规则对应: GEN-140（角标字隙）。量的是**渲染出来的同一几何**：推进宽取 hmtx、
+    墨迹取 glyf 轮廓（fontTools 的 glyph set 按 TrueType 的 lsb 规则平移轮廓，与实际
+    落墨一致——像素实测 K 墨迹止于 0.907em = 轮廓 xMax，推进宽 0.731em）。
+
+    取不到（fontTools 未安装 / 字形缺失 / 字面未注册 / 复合字形无轮廓点）返回 None，
+    调用方按 0 处理、只留固定字隙，不猜。
+    """
+    if not face or not char:
+        return None
+    key = (face, char, band)
+    if key in _SCRIPT_OVERHANG_CACHE:
+        return _SCRIPT_OVERHANG_CACHE[key]
+    overhang: float | None = None
+    try:
+        from reportlab.pdfbase import pdfmetrics
+
+        font_file = _FACE_FILE_CACHE.get(face)
+        if font_file is None:
+            font_file = str(getattr(pdfmetrics.getFont(face).face, "filename", "") or "")
+            _FACE_FILE_CACHE[face] = font_file
+        font = _FONT_TOOL_CACHE.get(font_file)
+        if font is None and font_file:
+            from fontTools.ttLib import TTFont
+
+            font = TTFont(font_file, fontNumber=0, lazy=True)
+            _FONT_TOOL_CACHE[font_file] = font
+        if font is not None:
+            glyph_name = font.getBestCmap().get(ord(char))
+            glyph_set = font.getGlyphSet()
+            if glyph_name and glyph_name in glyph_set:
+                from fontTools.pens.recordingPen import RecordingPen
+
+                pen = RecordingPen()
+                glyph_set[glyph_name].draw(pen)
+                upem = float(font["head"].unitsPerEm)
+                low, high = band[0] * upem, band[1] * upem
+                xs = [
+                    point[0]
+                    for _op, args in pen.value
+                    for point in args
+                    if isinstance(point, tuple) and len(point) == 2 and low <= point[1] <= high
+                ]
+                if xs:
+                    advance = float(font["hmtx"][glyph_name][0])
+                    overhang = (max(xs) - advance) / upem
+    except Exception:                      # 缺 fontTools / CFF 轮廓 / 字体未注册
+        overhang = None
+    _SCRIPT_OVERHANG_CACHE[key] = overhang
+    return overhang
+
+
+def _script_gap_html(width_pt: float) -> str:
+    """角标字隙的落墨形态：按点数绘制的白色「中」（推进宽 = 点数字号）。"""
+    width = round(float(width_pt), 3)
+    if width <= 0.05:
+        return ""
+    return f'<font size="{width:g}" color="white">中</font>'
+
+
+_SCRIPT_TAG_RE = re.compile(r"<(/?)([A-Za-z]+)([^>]*)>")
+_SCRIPT_FACE_ATTR_RE = re.compile(r'name\s*=\s*"([^"]*)"')
+_SCRIPT_ENTITY_RE = re.compile(r"&#?[0-9A-Za-z]+;")
+_SCRIPT_SENTINEL_RE = re.compile(r"\x00/?[A-Z0-9]+\x00")
+# 撇号的两种落墨形态（escape() 后）：ASCII `'` → `&#x27;`；U+2032 原样。
+_SCRIPT_PRIME_TOKENS = frozenset({"&#x27;", "′"})
+_SCRIPT_MARKS = {"super": _SCRIPT_RAISED_BAND, "sub": _SCRIPT_LOWERED_BAND}
+
+
+def _script_gap_markup(markup: str, em_size: float) -> str:
+    """在 `<super>`/`<sub>` 与行内数学撇号前插入角标字隙（GEN-140 执行侧）。
+
+    在 `_markup` 末尾调用（此时希腊字面、强调标签、上划线都已落定，字面栈可直接从
+    实际标签读出；插在白字哨兵通道之后，故不参与上划线的墨迹测量）。判据与量值见
+    文件上方「角标字隙」注释块。
+
+    - 基字符 = 紧邻角标的前一个可见字符（跨 `</i>`/`</font>` 等收尾标签）；行首、
+      空白之后、换行之后无基字符 → 不插；
+    - 撇号只在**作角标**时插：紧跟斜体字面的数学变量（GEN-116 判据），且其后不是
+      字母数字（词内撇号如 `*K*'s` 不算）；跟正体数字的撇号是平面角分秒记号
+      （GBT-B12 要求紧跟数值），不插。
+    """
+    if not (("<super" in markup) or ("<sub" in markup) or any(
+        token in markup for token in _SCRIPT_PRIME_TOKENS
+    )):
+        return markup
+    out: list[str] = []
+    faces: list[str] = [_MATH_BODY_FACE]
+    last_char: str | None = None
+    last_face: str = _MATH_BODY_FACE
+    index = 0
+    length = len(markup)
+
+    def gap_width(band: tuple[float, float]) -> float:
+        overhang = _face_band_overhang_em(last_face, last_char, band) if last_char else None
+        return em_size * (_SCRIPT_SPACE_EM + max(0.0, overhang or 0.0))
+
+    def is_math_variable(face: str) -> bool:
+        return bool(_MATH_ITALIC_FACE) and face == _MATH_ITALIC_FACE
+
+    while index < length:
+        char = markup[index]
+        if char == "<":
+            match = _SCRIPT_TAG_RE.match(markup, index)
+            if not match:
+                out.append(char)
+                index += 1
+                continue
+            closing, name = bool(match.group(1)), match.group(2).lower()
+            if name == "br":
+                # 硬换行 = 行首：换行后的角标没有基字符。
+                last_char = None
+                out.append(match.group(0))
+                index = match.end()
+                continue
+            if name in _SCRIPT_MARKS and not closing:
+                # 空角标（`<super></super>`，如抽取里丢失的标记）不插字隙：否则留下
+                # 一段没有任何角标的空白（GEN-140 不改变内容，只调字隙）。
+                empty = markup.startswith(f"</{name}>", match.end())
+                width = gap_width(_SCRIPT_MARKS[name]) if last_char and not empty else 0.0
+                last_char = None
+                out.append(_script_gap_html(width))
+                out.append(match.group(0))
+                index = match.end()
+                continue
+            if name == "i":
+                if closing:
+                    if len(faces) > 1:
+                        faces.pop()
+                else:
+                    faces.append(_MATH_ITALIC_FACE or faces[-1])
+            elif name == "b":
+                if closing:
+                    if len(faces) > 1:
+                        faces.pop()
+                else:
+                    faces.append(_LABEL_FONT or faces[-1])
+            elif name == "font":
+                if closing:
+                    if len(faces) > 1:
+                        faces.pop()
+                else:
+                    named = _SCRIPT_FACE_ATTR_RE.search(match.group(3))
+                    faces.append(named.group(1) if named else faces[-1])
+            out.append(match.group(0))
+            index = match.end()
+            continue
+        sentinel = _SCRIPT_SENTINEL_RE.match(markup, index)
+        if sentinel:
+            # 哨兵（`\x00BR\x00` 硬换行、`\x00HEI\x00` 标记字体等）不算可见字符。
+            if sentinel.group(0) == "\x00BR\x00":
+                last_char = None
+            out.append(sentinel.group(0))
+            index = sentinel.end()
+            continue
+        entity = _SCRIPT_ENTITY_RE.match(markup, index)
+        token = entity.group(0) if entity else char
+        if token in _SCRIPT_PRIME_TOKENS:
+            following = markup[entity.end() if entity else index + 1:]
+            next_visible = following.lstrip()
+            if (
+                last_char
+                and is_math_variable(last_face)
+                and last_char[-1].isalpha()
+                and not next_visible[:1].isalnum()
+            ):
+                out.append(_script_gap_html(gap_width(_SCRIPT_RAISED_BAND)))
+            last_char = token
+            last_face = faces[-1]
+            out.append(token)
+            index = entity.end() if entity else index + 1
+            continue
+        if entity or not char.isspace():
+            last_char, last_face = token, faces[-1]
+        else:
+            last_char = None
+        out.append(token)
+        index = entity.end() if entity else index + 1
+    return "".join(out)
 
 
 _OVL_TAG_RE = re.compile(r"<(/?)([A-Za-z]+)([^>]*)>")
