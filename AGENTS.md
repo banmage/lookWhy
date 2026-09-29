@@ -95,6 +95,7 @@
   `tools/mineru_full_standard.py <ID>`（抽取 + 渲染，快捷模式不再自动跑回环）；
   `tools/build_ssir.py <raw|canonical|ID>`（构建）；**验证是独立程序**：
   `tools/verify_conversion.py <ID|文档根|canonical|ssir>`（SSIR markdown 投影 + 合规/质量报告，含可选 PDF 对比）；
+  `tools/list_references.py <ID|文档根|canonical|ssir>`（规范性引用清单：被引标准/版本/名称/引用类型/引用性质 + 出现条款与被引条款，精确到表/图/公式；只读产物）；
   **规则回放是独立程序**（改动抽取/解析规则后对既有产物做确定性回放，带内容不变量与幂等断言）：
   `tools/replay_table_header_rows.py [--apply] [文件…]`（GEN-114 表头行数，canonical 与 raw 同源回放）；
   `tools/replay_figure_foot_definitions.py [--apply] [文件…]`（GEN-118 图表脚注定义行：`$^{L}$ 注文` → `<!--ssir:foot:L-->…<!--ssir:/foot-->`）；

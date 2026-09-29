@@ -85,6 +85,7 @@ lookWhy/
 │   ├── exporters.py            # JSON 权威输出 + Turtle(RDF) 投影
 │   ├── report.py               # 转换报告（SHA-256、issue 列表、修复动作）
 │   ├── compliance.py           # 三层合规验证（GEN→GBT→P10），写 findings
+│   ├── references.py           # ★ 规范性引用抽取：清单条目 + 正文引用 + 内部 表/图/式 引用点
 │   ├── standard_name.py        # ★ 标准名称解析：类型（GBT-N01）与主对象（GBT-N02）
 │   ├── mineru_middle.py        # MinerU middle.json → CSM raw Markdown（raw 起点工具用）
 │   ├── pipeline.py             # ★ 构建/验证阶段库：normalize→canonical→SSIR→印记→render→manifest
@@ -98,6 +99,7 @@ lookWhy/
 │   │   ├── reprocess_canonical.py  # canonical 半程重跑（已被 build_ssir.py 的同款入口覆盖）
 │   │   ├── build_ssir.py          # ★ 构建入口：raw(json/md) 或 canonical → canonical → SSIR → render（验证独立）
 │   │   ├── verify_conversion.py    # ★ 独立验证：markdown 投影 + 合规/质量报告（+ 可选 PDF 对比），只读产物
+│   │   ├── list_references.py      # ★ 规范性引用清单查询（六元组 + 出现条款/被引条款/内部引用点），只读产物
 │   │   └── extract_schema.py       # schema 工具
 ├── config/
 │   ├── rendering/GB_T_1.1-2020.yaml   # 渲染 profile：字体/字号/边距/emblems 徽标映射
@@ -135,6 +137,7 @@ lookWhy/
 ```bash
 .venv/bin/python -m unittest discover                       # 全部测试
 .venv/bin/python tools/verify_conversion.py GB_T_39567-2020        # 独立验证（投影 + 合规报告 + PDF 对比）
+.venv/bin/python tools/list_references.py GB_T_39567-2020          # 规范性引用清单（精确到被引条款 / 本文表·图·式引用点）
 # 手动单文档：
 .venv/bin/ssir csm normalize --input in.md --canonical-output out/GB_T_15034-2012.canonical.md --report out/r.json
 .venv/bin/ssir csm parse     --input out/GB_T_15034-2012.canonical.md --output out/GB_T_15034-2012.ssir.json --format json --report out/r2.json

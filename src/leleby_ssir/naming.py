@@ -197,7 +197,12 @@ def escape_standard_number(text: str) -> str:
         ISO 80000-1:2022     -> ISO_80000-1_2022
         IEC 60027            -> IEC_60027
     """
-    raw = str(text).strip().replace("—", "-")
+    raw = str(text).strip()
+    # 版本分隔符归一：一字线/短横线/全角连字符/波浪号，以及抽取层把一字线认成汉字「一」的
+    # 常见 OCR 变体（「GB/T 4208一2017」）。只在「数字 + 分隔符 + 4 位年份」位置归一，
+    # 不碰其它位置的字符。
+    raw = re.sub(r"(?<=\d)\s*[—–－~〜一﹣‑]\s*(?=(?:19|20)\d{2}(?!\d))", "-", raw)
+    raw = raw.replace("—", "-")
     raw = raw.replace("/", "_").replace(":", "_")
     return re.sub(r"\s+", "_", raw)
 

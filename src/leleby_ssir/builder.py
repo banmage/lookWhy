@@ -16,6 +16,7 @@ from .naming import (
     numbered_element_path,
     owned_element_id,
 )
+from .references import canonical_offsets, extract as extract_references
 from .parser import (
     DECLARATION_ITEM_RES,
     EX_HEADER_RE,
@@ -414,6 +415,9 @@ class _BuilderState:
     unknown_contents: list[dict[str, Any]]
     canonical_parts: list[str]
     canonical_refs: list[str]
+    # 与 canonical_parts 同序的片段属主 id（元素 id / 结构节点 id，无属主记空串）：
+    # 供 references.canonical_offsets 把引用点定位到 canonicalText.text 的字符区间。
+    canonical_owners: list[str]
     unresolved_figures: list[str]
     # 公式 id → 创建时的（框, 并列组）作用域（GEN-128）：「式中」组的显式声明 id 必须与
     # 结构位置处同一作用域，跨作用域的声明按结构位置归属。
@@ -468,6 +472,17 @@ class _BuilderState:
         return anchor
 
 
+def _canonical_part(state: _BuilderState, owner_id: str, part: str) -> None:
+    """追加 canonical 片段并登记属主（引用点定位用；两表必须同序、同时追加）。
+
+    规则对应: TDRS §二（来源位置：canonical 行号 + SSIR 节点）——片段属主账本让
+    references.Reference.textSpan 能给出 canonicalText 内的**字符级区间**，而不是
+    凭空填写偏移。无属主的块（并列/框事件、文档标题）记空串。
+    """
+    state.canonical_owners.append(owner_id)
+    state.canonical_parts.append(part)
+
+
 class SSIRBuilder:
     """Convert the constrained CSM AST into the SSIR v0.4 object graph."""
 
@@ -492,6 +507,7 @@ class SSIRBuilder:
             unknown_contents=[],
             canonical_parts=[],
             canonical_refs=[],
+            canonical_owners=[],
             unresolved_figures=[],
         )
 
@@ -554,7 +570,7 @@ class SSIRBuilder:
                     active_columns = None
                     active_column = 0
                     active_columns_widths = None
-                state.canonical_parts.append(block.text)
+                _canonical_part(state, "", block.text)
                 continue
             if block.kind == "box":
                 if block.data.get("event") == "open" and active_box is None:
@@ -577,20 +593,20 @@ class SSIRBuilder:
                         if box_scope["stack"]:
                             stack.append(box_scope["stack"][-1])
                         box_scope = None
-                state.canonical_parts.append(block.text)
+                _canonical_part(state, "", block.text)
                 continue
             if block.kind == "heading":
                 # The document title is the sole H1 that is not a structural
                 # node.  MinerU commonly emits annex starts as later H1s.
                 if block.level == 1 and not _is_annex_heading(block.text):
-                    state.canonical_parts.append(block.text)
+                    _canonical_part(state, "", block.text)
                     continue
                 heading_text = block.text.strip()
                 # 正文首页标题重复：MinerU 把正文首页的标准名称也抽成 ## 标题，
                 # 其文本与文档标题相同，不应作为章节节点（否则引言末尾多出
                 # 一个标准名称且进入目次）。
                 if (block.level or 0) >= 2 and heading_text == doc_title:
-                    state.canonical_parts.append(block.text)
+                    _canonical_part(state, "", block.text)
                     continue
                 node = self._make_node(state, block, node_sort)
                 node_sort += 1
@@ -659,7 +675,7 @@ class SSIRBuilder:
                     parent = stack[-1][1] if stack else root
                 parent.setdefault("children", []).append(node)
                 stack.append((depth, node))
-                state.canonical_parts.append(block.text)
+                _canonical_part(state, str(node.get("id") or ""), block.text)
                 # 术语章/术语条目状态机（扁平树：3.1、3.2 与文档块都是根级兄弟）
                 if chapter_re.match(heading_text) and "术语" in heading_text:
                     in_terms = True
@@ -719,7 +735,7 @@ class SSIRBuilder:
                 self._resolve_list_group(element, parent)
             parent.setdefault("contentElements", []).append(element)
             state.canonical_refs.append(element["id"])
-            state.canonical_parts.append(self._canonical_fragment(block))
+            _canonical_part(state, str(element["id"]), self._canonical_fragment(block))
             state.elements_by_id[element["id"]] = element
             # 脚注关系：正文元素中出现的 [^N] 记录其所属条款节点；脚注定义元素
             # 据此写入 footnoteMarker / footnoteAnchorRef（本体层可做 脚注-条款 关系）。
@@ -841,7 +857,26 @@ class SSIRBuilder:
             self._resolve_note_refs(state)
             ssir["notes"] = state.notes_registry
         self._mark_annex_examples(root)
+        references = self._references(state, ssir, canonical_text)
+        if references:
+            ssir["references"] = references
         return ssir
+
+    @staticmethod
+    def _references(
+        state: _BuilderState,
+        ssir: dict[str, Any],
+        canonical_text: str,
+    ) -> list[dict[str, Any]]:
+        """规范性引用（TDRS「标准中规范性引用文件的管理」§二/§四；GB/T 1.1-2020 8.6、9.5.4）。
+
+        抽取由 ``leleby_ssir.references`` 完成（纯函数、判据可复核）；这里只提供
+        canonical 片段账本算出的字符区间，使每个引用点的 ``textSpan`` 精确落在
+        ``canonicalText.text`` 上。引用为空（无标准号、无内部引用点）时不输出该键，
+        保持既有产物的结构等价。
+        """
+        offsets = canonical_offsets(state.canonical_owners, state.canonical_parts, canonical_text)
+        return extract_references(ssir, offsets)
 
     @staticmethod
     def _mark_annex_examples(root: dict[str, Any]) -> None:
@@ -1511,6 +1546,9 @@ class SSIRBuilder:
             notes=state.notes_registry,
         )
         state.canonical_refs[:] = [state.ids.id_map.get(ref, ref) for ref in state.canonical_refs]
+        state.canonical_owners[:] = [
+            state.ids.id_map.get(ref, ref) for ref in state.canonical_owners
+        ]
         state.unresolved_figures[:] = [
             state.ids.id_map.get(ref, ref) for ref in state.unresolved_figures
         ]

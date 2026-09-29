@@ -464,6 +464,77 @@ _STANDARD_NUMBER_RE = re.compile(
 )
 
 
+def _check_reference_entries_cited(document: dict[str, Any], report: ComplianceReport) -> None:
+    """GBT-C06: 清单条目应在正文中被引用（8.6.3.1 的反向判定，用户 2026-09-29 裁定）。
+
+    清单里列出、但正文（含附录）中**没有任何引用点**的条目 → 列为待复核问题
+    （可能正文漏写引用，或清单多列了未被引用的文件）。判据实现见
+    ``references.uncited_list_entries``（前置/文后要素内的提及不计作正文引用）。
+    """
+    from .references import uncited_list_entries
+
+    for entry in uncited_list_entries(document):
+        where = f"清单第 2 章（元素 {entry.get('element_id') or '—'}）"
+        message = (
+            f"规范性引用文件清单列出的 {entry.get('standard_number') or entry.get('standard_id')}"
+            f" 在正文中没有引用点（{where}）；请复核是否漏写引用，或清单多列了未被引用的文件"
+        )
+        similar = entry.get("similar_citations") or []
+        if similar:
+            hint = "、".join(
+                f"{item.get('raw') or item['standard_id']}"
+                + (f"（{item['clause']}）" if item.get("clause") else "")
+                for item in similar[:3]
+            )
+            message += f"；正文有同顺序号但文件代号不同的引用：{hint}"
+        report.findings.append(
+            ComplianceFinding(
+                "GBT-C06",
+                "GB_T_1.1-2020",
+                "should",
+                "reference-entry-not-cited",
+                message,
+            )
+        )
+
+
+def _check_unlisted_normative_citations(document: dict[str, Any], report: ComplianceReport) -> None:
+    """GBT-C06: 正文规范性引用了、但清单未列出的文件（8.6.3.1 正向判定，用户 2026-09-29 裁定）。
+
+    与 ``_check_reference_entries_cited`` 对称：清单应列出正文中规范性引用的每个文件；本检查
+    报出「正文用了、清单没有」的情形（可能清单漏列，或正文引用了不该引的文件）。判据实现见
+    ``references.unlisted_citation_entries``（示例内容内的引用、资料性引用不在范围）。
+    """
+    from .references import unlisted_citation_entries
+
+    for entry in unlisted_citation_entries(document):
+        occurrences = entry.get("occurrences") or []
+        first = occurrences[0] if occurrences else {}
+        quote = str(first.get("raw") or entry.get("raw") or entry.get("standard_id"))
+        where = "、".join(
+            sorted(
+                {
+                    f"{occurrence.get('clause') or '—'}（元素 {occurrence.get('element_id')}）"
+                    for occurrence in occurrences[:5]
+                }
+            )
+        )
+        message = (
+            f"正文规范性引用了 {entry.get('standard_id') or entry.get('base_id')}（原文“{quote}”），"
+            f"但第 2 章规范性引用文件清单未列出；出现于 {where}"
+            f"（共 {len(occurrences)} 处）。请复核清单是否漏列，或该引用是否应改为资料性引用"
+        )
+        report.findings.append(
+            ComplianceFinding(
+                "GBT-C06",
+                "GB_T_1.1-2020",
+                "should",
+                "normative-citation-not-listed",
+                message,
+            )
+        )
+
+
 def _check_reference_item_number(text: str, report: ComplianceReport) -> None:
     """GBT-C06: 引用清单条目必须含标准文件编号（GB/T ×××—××××）。
 
@@ -757,6 +828,8 @@ def verify_compliance(document: dict[str, Any], metadata: dict[str, Any] | None 
     _check_list_item_numbering(document, report)
     _check_glyph_confusion(document, report)
     _check_reference_chapter(document, report)
+    _check_reference_entries_cited(document, report)
+    _check_unlisted_normative_citations(document, report)
     _check_sibling_heading_titles(document, report)
     _check_hanging_paragraphs(document, report)
     _check_note_example_formats(document, report)

@@ -54,6 +54,18 @@ class EscapeStandardNumberTest(unittest.TestCase):
     def test_hyphen_preserved(self):
         self.assertEqual(escape_standard_number("GB/T 20001.10-2014"), "GB_T_20001.10-2014")
 
+    def test_version_separator_variants_normalised(self):
+        """抽取层把一字线认成「一」/全角连字符等时，标识仍与规范写法同值（同一标准同一标识）。"""
+        expected = "GB_T_4208-2017"
+        for raw in ("GB/T 4208—2017", "GB/T 4208-2017", "GB/T 4208一2017",
+                    "GB/T 4208－2017", "GB/T 4208~2017", "GB/T 4208 一 2017"):
+            with self.subTest(raw=raw):
+                self.assertEqual(escape_standard_number(raw), expected)
+
+    def test_cjk_numeral_outside_year_position_untouched(self):
+        """「一」只在「数字 + 分隔符 + 4 位年份」位置归一，其它位置的原文字符不动。"""
+        self.assertEqual(escape_standard_number("GB/T 第一"), "GB_T_第一")
+
 
 class ElementIdTest(unittest.TestCase):
     """TDRS §二/§三/§四/§五 条款路径。"""

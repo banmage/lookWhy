@@ -39,6 +39,7 @@ rawFile/<ID>.md（云端 MinerU / 人工整理）───────┘
 - **版式还原渲染**：GB/T 1.1 封面/前置要素/章条/表格/图/公式/附录/页眉页脚；封面必备信息缺失时以 `××` 占位并记录规则 ID（GBT-C01），不伪造数据。
 - **三层规则合规**：`GEN-*` → `GBT-*` → `P10-*` 逐条验证，must 违规记 error、should 记 warning，写入解析报告。
 - **独立验证**：`tools/verify_conversion.py` 生成 SSIR markdown 投影与合规/质量报告，并可选与源 PDF 做版面/文本量对比（回环四层比较已下线）。
+- **规范性引用管理**：解析层把第 2 章清单与正文引用点抽成 `SSIR.references`（被引标准号/版本/名称/引用类型/被引条款/出现条款 + 引用性质），可列出某标准引用的全部文件及本文内部 表/图/式 引用点（`tools/list_references.py`，精确到条款与元素 id）。
 - **知识图谱**：SSIR → `kg.json` 图切片 + 可重建 sqlite 索引 + Web 查看器（结构树浏览与本体图）。
 - **溯源**：SSIR 保留章条层级、Markdown 行号锚点与处理记录。
 
@@ -51,7 +52,8 @@ rawFile/<ID>.md（云端 MinerU / 人工整理）───────┘
 | 抽取 | `tools/mineru_full_standard.py` | PDF → `01_extract/<ID>.raw.md`（+ `parts/`、`00_source/`） | 不做 normalize / SSIR / 渲染（`--stage all` 例外，见 §4.3） |
 | 构建 | `tools/build_ssir.py` | raw（`.md`/`.json`）或 canonical → `02_canonical/` → `03_ssir/` → `render.pdf` + `render.md` → `manifest.json` | 不做 OCR 抽取；**不做验证** |
 | 验证 | `tools/verify_conversion.py` | SSIR markdown 投影 + 合规/质量报告（+ 可选 PDF 对比），只读产物 | 不生成 canonical、不改任何输入 |
-| CLI | `ssir`（`src/leleby_ssir/cli.py`） | 单阶段命令：`csm validate/normalize/parse/project`、`pdf extract/render` | 不编排全流程 |
+| 引用查询 | `tools/list_references.py` | 某标准的规范性引用清单（六元组 + 出现条款/被引条款/内部引用点），只读产物 | 不重跑构建、不改 canonical |
+| CLI | `ssir`（`src/leleby_ssir/cli.py`） | 单阶段命令：`csm validate/normalize/parse/project`、`pdf extract/render`、`references` | 不编排全流程 |
 
 **两个可人工修改的起点**（都能独立重跑下游）：`rawFile`（或 `01_extract/*.raw.md`）与
 `02_canonical/<ID>.canonical.md`。canonical 是权威基线，重跑下游时**永不被写回**。
@@ -250,6 +252,26 @@ PY
 
 退出码：`0` 等价，`3` 不等价（关键信息丢失等），`2` 用法或引擎错误。
 
+### 4.2b `tools/list_references.py` — 规范性引用清单（只读）
+
+```bash
+.venv/bin/python tools/list_references.py <ID|文档根|canonical.md|ssir.json> [--standard 号] [--include-informative] [--no-internal] [--json]
+```
+
+列出该标准引用了哪些文件（TDRS 六元组：被引标准号 / 版本 / 名称 / 引用类型
+`dated|undated|all_parts` / 被引条款 / 出现条款 + 引用性质 `normative|informative`），
+并列出**本文内部引用点**（`表N` / `图X.N` / `式(N)` / 条款号）及其目标元素 id；
+每个引用点带 canonical 字符区间（`textSpan`）与 SSIR 元素 id，便于回溯到原文。
+末尾给出两段「待复核」：① 清单里列出、但正文中没有引用点的条目（合规告警
+`GBT-C06/reference-entry-not-cited`）；② 正文规范性引用了、但清单未列出的文件（合规告警
+`GBT-C06/normative-citation-not-listed`）。两段都只给条款号、引用原文与元素 id（不给行号：
+解析器行号记账在目次区段后有系统偏移，见 `docs/12` §3.97）。数据来自解析层 `SSIR.references`
+（解析层一次抽取，可由 canonical 独立产出，见 `docs/12` §3.95/§3.96）。
+等价的 CLI 入口：`ssir references <文件>`。
+
+给的是**文档根或 SSIR 产物**时优先读 `03_ssir/*.ssir.json`；产物早于引用抽取（无
+`references` 键）会提示改用 canonical 现场解析或重跑构建。
+
 ### 4.3 `tools/mineru_full_standard.py` — PDF 抽取
 
 ```bash
@@ -307,6 +329,7 @@ PYTHONPATH=src .venv/bin/python -m leleby_ssir csm parse \
   --input out/<ID>.canonical.md --output out/<ID>.ssir.json --format json
 PYTHONPATH=src .venv/bin/python -m leleby_ssir pdf render \
   --input out/<ID>.ssir.json --output out/<ID>.render.pdf --toc-depth all
+PYTHONPATH=src .venv/bin/python -m leleby_ssir references out/<ID>.canonical.md   # 规范性引用清单
 ```
 
 ---

@@ -1966,6 +1966,10 @@
         "resolvedClause": {
           "type": "string"
         },
+        "resolvedTargetId": {
+          "type": "string",
+          "$comment": "被引对象在本文件内的 SSIR 标识（internalTable/internalFigure/internalFormula/internalClause 解析成功时给出；TDRS 引用管理「精确到具体条款或图/表/公式」所需）"
+        },
         "citedText": {
           "type": "string"
         },
@@ -2007,6 +2011,7 @@
         "internalAnnex",
         "internalTable",
         "internalFigure",
+        "internalFormula",
         "externalStandard",
         "externalRegulation",
         "externalDocument",

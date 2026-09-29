@@ -61,6 +61,17 @@ def _parser() -> argparse.ArgumentParser:
     render.add_argument("--profile", type=Path, help="rendering profile YAML")
     render.add_argument("--report", type=Path, help="rendering report path")
     render.add_argument("--toc-depth", type=_toc_depth, default=2, metavar="LEVEL|all", help="maximum numbered TOC level (default: 2; use all to expand every level)")
+    references = command.add_parser(
+        "references",
+        help="list normative references (external standards + internal clause/table/figure/formula targets)",
+    )
+    references.add_argument("path", nargs="?", type=Path, help="canonical CSM Markdown or SSIR JSON input")
+    references.add_argument("--input", dest="input_opt", type=Path, help="same as the positional argument")
+    references.add_argument("--standard", action="append", default=[], help="only entries matching this standard id/number (repeatable)")
+    references.add_argument("--include-informative", dest="include_informative", action="store_true", help="also list informative references")
+    references.add_argument("--no-internal", dest="no_internal", action="store_true", help="skip internal reference targets")
+    references.add_argument("--target", action="append", default=[], metavar="表1|图2|式(3)", help="which clauses cite this internal target (repeatable)")
+    references.add_argument("--json", dest="as_json", action="store_true", help="emit the six-tuple summary as JSON")
     return parser
 
 
@@ -68,6 +79,43 @@ def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
     try:
+        if getattr(args, "command", None) == "references":
+            from .references import format_summary, summarise
+
+            target = args.input_opt or args.path
+            if target is None:
+                print("ssir references: need a file (positional path or --input)", file=sys.stderr)
+                return 2
+            if target.suffix.lower() == ".json":
+                document = json.loads(target.read_text(encoding="utf-8"))
+            else:
+                from .service import parse_csm
+
+                document = parse_csm(target)
+            summary = summarise(document)
+            if args.as_json:
+                payload: object = summary
+                if args.target:
+                    from .references import query_target
+
+                    payload = {"targets": {item: query_target(summary, item) for item in args.target}}
+                print(json.dumps(payload, ensure_ascii=False, indent=2))
+                return 0
+            if args.target:
+                from .references import format_target_view
+
+                print(format_target_view(summary, args.target))
+                return 0
+            for needle in args.standard or [None]:
+                print(
+                    format_summary(
+                        summary,
+                        standard=needle,
+                        include_informative=args.include_informative,
+                        include_internal=not args.no_internal,
+                    )
+                )
+            return 0
         if getattr(args, "command", None) == "pdf" and args.pdf_command == "extract":
             from .pdf_extractor import extract_pdf_to_csm
             report = extract_pdf_to_csm(args.input, args.output, backend=args.backend, report=args.report, sidecar=args.sidecar)
